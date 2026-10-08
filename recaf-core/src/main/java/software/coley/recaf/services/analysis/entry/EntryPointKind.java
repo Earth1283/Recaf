@@ -18,5 +18,7 @@ public record EntryPointKind(@Nonnull String id, @Nonnull String displayName) {
 	public static final EntryPointKind MC_FABRIC_MOD_INIT = new EntryPointKind("mc.fabric", "Fabric mod initializer");
 	public static final EntryPointKind MC_FORGE_MOD_INIT = new EntryPointKind("mc.forge", "Forge mod initializer");
 	public static final EntryPointKind MC_BUKKIT_PLUGIN_INIT = new EntryPointKind("mc.bukkit", "Bukkit plugin initializer");
+	public static final EntryPointKind MC_BUNGEE_PLUGIN_INIT = new EntryPointKind("mc.bungee", "BungeeCord plugin initializer");
+	public static final EntryPointKind MC_PAPER_PLUGIN_BOOTSTRAP = new EntryPointKind("mc.paper.bootstrap", "Paper plugin bootstrapper / loader");
 	public static final EntryPointKind MC_VELOCITY_PLUGIN_INIT = new EntryPointKind("mc.velocity", "Velocity plugin initializer");
 }

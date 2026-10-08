@@ -39,6 +39,7 @@ dependencies {
     }
     api(libs.vineflower)
     api(libs.sourcesolver)
+    api(libs.snakeyaml)
 
     // We use Jackson as a test dependency so that we can convert Android API XML models into JSON.
     // This way, we only need to include GSON in the final Recaf build.

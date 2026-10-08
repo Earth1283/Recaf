@@ -41,6 +41,7 @@ richtextfx = "bb63ddb997" # fork based on 0.11.7 with folding performance improv
 treemapfx = "1.1.0"
 vineflower = "1.12.0"
 sourcesolver = "1.5.2"
+snakeyaml = "2.5"
 spatialcanvas = "1.0.0"
 # Plugins
 benmanes-versions = "0.52.0"
@@ -144,6 +145,8 @@ treemapfx = { module = "software.coley:treemap-fx", version.ref = "treemapfx" }
 vineflower = { module = "org.vineflower:vineflower", version.ref = "vineflower" }
 
 sourcesolver = { module = "software.coley:source-solver", version.ref = "sourcesolver" }
+
+snakeyaml = { module = "org.yaml:snakeyaml", version.ref = "snakeyaml" }
 
 spatialcanvas = { module = "software.coley:spatial-canvas", version.ref = "spatialcanvas" }
 

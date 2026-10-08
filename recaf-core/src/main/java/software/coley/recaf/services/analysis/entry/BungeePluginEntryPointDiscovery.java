@@ -19,22 +19,20 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Discovery process for locating entry points in Bukkit plugins.
+ * Discovery process for locating entry points in BungeeCord plugins <i>(And forks like Waterfall)</i>.
  * <p>
- * A class is considered a plugin if it extends {@code JavaPlugin}, <i>or</i> if it is the {@code main} class declared
- * in the {@code plugin.yml} / {@code paper-plugin.yml} of the resource. Either signal is enough, which keeps discovery
- * working when the class hierarchy is incomplete and when the manifest points to an unusual base class.
+ * A class is considered a plugin if it extends {@code net.md_5.bungee.api.plugin.Plugin}, <i>or</i> if it is the
+ * {@code main} class declared in the {@code bungee.yml} of the resource.
  *
- * @author TheWakz
- * @see <a href="https://docs.papermc.io/paper/dev/how-do-plugins-work/#plugin-lifecycle">Bukkit plugin entry points</a>
+ * @see <a href="https://www.spigotmc.org/wiki/bungeecord-plugin-development/">BungeeCord plugin development</a>
  */
 @ApplicationScoped
-public class BukkitPluginEntryPointDiscovery implements EntryPointDiscovery {
+public class BungeePluginEntryPointDiscovery implements EntryPointDiscovery {
 	private final InheritanceGraphService inheritanceGraphService;
 	private final MinecraftPluginAnalysisService pluginAnalysisService;
 
 	@Inject
-	public BukkitPluginEntryPointDiscovery(@Nonnull InheritanceGraphService inheritanceGraphService,
+	public BungeePluginEntryPointDiscovery(@Nonnull InheritanceGraphService inheritanceGraphService,
 	                                       @Nonnull MinecraftPluginAnalysisService pluginAnalysisService) {
 		this.inheritanceGraphService = inheritanceGraphService;
 		this.pluginAnalysisService = pluginAnalysisService;
@@ -43,14 +41,20 @@ public class BukkitPluginEntryPointDiscovery implements EntryPointDiscovery {
 	@Nonnull
 	@Override
 	public EntryPointKind kind() {
-		return EntryPointKind.MC_BUKKIT_PLUGIN_INIT;
+		return EntryPointKind.MC_BUNGEE_PLUGIN_INIT;
 	}
 
 	@Nonnull
 	@Override
 	public List<EntryPoint> findEntryPoints(@Nonnull Workspace workspace, @Nonnull WorkspaceResource resource) {
 		InheritanceGraph graph = inheritanceGraphService.getOrCreateInheritanceGraph(workspace);
-		Set<String> manifestMainClasses = findManifestMainClasses(workspace, resource);
+		Set<String> manifestMainClasses = new HashSet<>();
+		pluginAnalysisService.findManifests(workspace, resource).forEach(located -> {
+			String mainClass = located.manifest().mainClass();
+			if (mainClass != null && located.manifest().platform() == MinecraftPluginPlatform.BUNGEE)
+				manifestMainClasses.add(mainClass);
+		});
+
 		List<EntryPoint> entries = new ArrayList<>();
 		resource.jvmAllClassBundleStream().forEach(bundle -> bundle.forEach(cls -> {
 			String className = cls.getName();
@@ -59,28 +63,25 @@ public class BukkitPluginEntryPointDiscovery implements EntryPointDiscovery {
 			Boolean isPlugin = isManifestMain ? Boolean.TRUE : null;
 			boolean foundLifecycleMethod = false;
 			for (MethodMember method : cls.getMethods()) {
-				// Must be a plugin load, enable, or disable method name.
+				// Must be a plugin load, enable, or disable method with the lifecycle signature.
 				String methodName = method.getName();
+				if (!method.getDescriptor().equals("()V"))
+					continue;
 				if (!methodName.equals("onEnable") && !methodName.equals("onLoad") && !methodName.equals("onDisable"))
 					continue;
 
 				// Lazily check if this class is a plugin subtype.
 				if (isPlugin == null)
-					isPlugin = isPlugin(graph, className);
-
-				// Skip methods if the class is not a valid plugin.
+					isPlugin = graph.isAssignableFrom("net/md_5/bungee/api/plugin/Plugin", className);
 				if (!isPlugin)
 					continue;
 
-				// Add the entry point.
 				if (classPath == null)
 					classPath = PathNodes.classPath(workspace, resource, bundle, cls);
 				entries.add(new EntryPoint(kind(), classPath, classPath.child(method)));
 				foundLifecycleMethod = true;
 			}
 
-			// The manifest says this is the main class, but it has no lifecycle methods of its own.
-			// Still point to the class since the manifest is how the server will find it.
 			if (isManifestMain && !foundLifecycleMethod) {
 				if (classPath == null)
 					classPath = PathNodes.classPath(workspace, resource, bundle, cls);
@@ -88,21 +89,5 @@ public class BukkitPluginEntryPointDiscovery implements EntryPointDiscovery {
 			}
 		}));
 		return entries;
-	}
-
-	@Nonnull
-	private Set<String> findManifestMainClasses(@Nonnull Workspace workspace, @Nonnull WorkspaceResource resource) {
-		Set<String> mainClasses = new HashSet<>();
-		pluginAnalysisService.findManifests(workspace, resource).forEach(located -> {
-			MinecraftPluginPlatform platform = located.manifest().platform();
-			String mainClass = located.manifest().mainClass();
-			if (mainClass != null && (platform == MinecraftPluginPlatform.BUKKIT || platform == MinecraftPluginPlatform.PAPER))
-				mainClasses.add(mainClass);
-		});
-		return mainClasses;
-	}
-
-	private static boolean isPlugin(@Nonnull InheritanceGraph graph, @Nonnull String className) {
-		return graph.isAssignableFrom("org/bukkit/plugin/java/JavaPlugin", className);
 	}
 }

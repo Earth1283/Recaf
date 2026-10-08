@@ -8,6 +8,7 @@ import software.coley.recaf.services.info.summary.builtin.AreaAnalysisSummarizer
 import software.coley.recaf.services.info.summary.builtin.EntryPointSummarizer;
 import software.coley.recaf.services.info.summary.builtin.HashSummarizer;
 import software.coley.recaf.services.info.summary.builtin.JarSigningSummarizer;
+import software.coley.recaf.services.info.summary.builtin.MinecraftPluginSummarizer;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
@@ -33,6 +34,8 @@ public interface ResourceSummarizer extends PrioritySortable {
 	int PRIORITY_AREA_ANALYSIS = 2000;
 	/** @see EntryPointSummarizer */
 	int PRIORITY_ENTRY_POINT = 0;
+	/** @see MinecraftPluginSummarizer */
+	int PRIORITY_MINECRAFT_PLUGIN = 500;
 	/** @see HashSummarizer */
 	int PRIORITY_FILE_HASH = 4000;
 	/** @see JarSigningSummarizer */
