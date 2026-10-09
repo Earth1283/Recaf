@@ -23,6 +23,7 @@ import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.slf4j.Logger;
 import software.coley.collections.Lists;
 import software.coley.collections.Unchecked;
+import software.coley.observables.ChangeListener;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.Named;
@@ -43,6 +44,7 @@ import software.coley.recaf.services.navigation.UpdatableNavigable;
 import software.coley.recaf.services.text.TextFormatConfig;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.util.threading.ThreadUtil;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.workspace.model.Workspace;
 
@@ -72,6 +74,7 @@ public class MethodCallGraphTreePane extends BorderPane implements ClassNavigabl
 	private final CallGraphMode mode;
 	private final Workspace workspace;
 	private final Actions actions;
+	private final ChangeListener<Boolean> graphReadyListener;
 	private ClassPathNode path;
 
 	public MethodCallGraphTreePane(@Nonnull Workspace workspace, @Nonnull CallGraph callGraph, @Nonnull CellConfigurationService configurationService,
@@ -84,6 +87,12 @@ public class MethodCallGraphTreePane extends BorderPane implements ClassNavigabl
 		this.format = format;
 		this.mode = mode;
 
+		// The call graph is built in the background, so show the tree once it is ready rather than waiting on a thread.
+		graphReadyListener = (ob, old, ready) -> {
+			if (ready)
+				graphTreeView.onUpdate();
+		};
+		callGraph.isReady().addAsyncChangeListener(graphReadyListener, FxThreadUtil.executor());
 		currentMethod.addListener((ob, old, cur) -> graphTreeView.onUpdate());
 		graphTreeView.onUpdate();
 
@@ -118,6 +127,7 @@ public class MethodCallGraphTreePane extends BorderPane implements ClassNavigabl
 
 	@Override
 	public void disable() {
+		callGraph.isReady().removeChangeListener(graphReadyListener);
 		graphTreeView.setRoot(null);
 	}
 
@@ -270,14 +280,13 @@ public class MethodCallGraphTreePane extends BorderPane implements ClassNavigabl
 			final MethodMember methodInfo = currentMethod.get();
 			if (methodInfo == null) {
 				setRoot(null);
-			} else {
-				CompletableFuture.supplyAsync(() -> {
-					while (!callGraph.isReady().getValue()) Unchecked.run(() -> Thread.sleep(100));
-					return buildCallGraph(methodInfo, mode.childrenGetter);
-				}).thenAcceptAsync(root -> {
-					root.setExpanded(true);
-					setRoot(root);
-				}, FxThreadUtil.executor());
+			} else if (callGraph.isReady().getValue()) {
+				// When the graph is not ready yet, the ready listener calls this again once it is.
+				CompletableFuture.supplyAsync(() -> buildCallGraph(methodInfo, mode.childrenGetter), ThreadUtil.executor())
+						.thenAcceptAsync(root -> {
+							root.setExpanded(true);
+							setRoot(root);
+						}, FxThreadUtil.executor());
 			}
 		}
 

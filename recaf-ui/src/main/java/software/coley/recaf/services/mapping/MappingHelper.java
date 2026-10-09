@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 
 /**
@@ -46,6 +48,45 @@ public class MappingHelper {
 		IntermediateMappings parsedMappings = format.parse(mappingsText);
 		logger.info("Loaded mappings from {} in {} format", mappingFile.getFileName(), format.implementationName());
 		return parsedMappings;
+	}
+
+	/**
+	 * Reads and parses a mapping file off the UI thread. Large files, such as Mojang's mappings, take a while.
+	 *
+	 * @param format
+	 * 		Format of the file.
+	 * @param mappingFile
+	 * 		File to read.
+	 *
+	 * @return Future of the parsed mappings, which completes exceptionally if the file cannot be read or parsed.
+	 */
+	@Nonnull
+	public CompletableFuture<IntermediateMappings> parseAsync(@Nonnull MappingFileFormat format, @Nonnull Path mappingFile) {
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				return parse(format, mappingFile);
+			} catch (IOException | InvalidMappingException ex) {
+				throw new CompletionException(ex);
+			}
+		}, importPool);
+	}
+
+	/**
+	 * Reads, parses, and applies a mapping file, all off the UI thread.
+	 *
+	 * @param format
+	 * 		Format of the file.
+	 * @param mappingFile
+	 * 		File to read.
+	 */
+	public void importMappings(@Nonnull MappingFileFormat format, @Nonnull Path mappingFile) {
+		parseAsync(format, mappingFile)
+				.thenAccept(mappings -> applyMappings(format, mappings))
+				.exceptionally(t -> {
+					logger.error("Failed importing mappings from {}", mappingFile.getFileName(),
+							t instanceof CompletionException && t.getCause() != null ? t.getCause() : t);
+					return null;
+				});
 	}
 
 	public void applyMappings(@Nonnull MappingFileFormat format, @Nonnull Mappings mappings) {

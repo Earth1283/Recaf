@@ -10,9 +10,6 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.stage.Stage;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
-import org.slf4j.Logger;
-import software.coley.recaf.analytics.logging.Logging;
-import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.mapping.MappingHelper;
 import software.coley.recaf.services.mapping.aggregate.AggregateMappingManager;
 import software.coley.recaf.services.mapping.format.MappingFileFormat;
@@ -21,6 +18,7 @@ import software.coley.recaf.services.window.WindowManager;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.config.RecentFilesConfig;
 import software.coley.recaf.ui.control.FontIconView;
+import software.coley.recaf.ui.pane.plugin.PluginNavigation;
 import software.coley.recaf.ui.window.MappingApplicationWindow;
 import software.coley.recaf.ui.window.MappingGeneratorWindow;
 import software.coley.recaf.ui.window.SimilarityMappingWindow;
@@ -43,7 +41,6 @@ import static software.coley.recaf.util.Menus.*;
  */
 @Dependent
 public class MappingMenu extends WorkspaceAwareMenu {
-	private static final Logger logger = Logging.get(MappingMenu.class);
 	private final WindowManager windowManager;
 	private final MappingFormatManager formatManager;
 	private final MappingHelper mappingHelper;
@@ -57,6 +54,7 @@ public class MappingMenu extends WorkspaceAwareMenu {
 	                   @Nonnull Instance<MappingGeneratorWindow> generatorWindowProvider,
 	                   @Nonnull Instance<SimilarityMappingWindow> similarityWindowProvider,
 	                   @Nonnull Instance<MappingApplicationWindow> applyWindowProvider,
+	                   @Nonnull PluginNavigation pluginNavigation,
 	                   @Nonnull RecentFilesConfig recentFiles) {
 		super(workspaceManager);
 
@@ -94,6 +92,7 @@ public class MappingMenu extends WorkspaceAwareMenu {
 		getItems().addAll(apply, export,
 				action("menu.mappings.generate", CarbonIcons.LICENSE_MAINTENANCE, () -> openGenerate(generatorWindowProvider)),
 				action("menu.mappings.similarity", CarbonIcons.SEARCH, () -> openSimilarity(similarityWindowProvider)),
+				action("menu.mappings.plugin-names", CarbonIcons.MAGIC_WAND, pluginNavigation::openNameRecovery),
 				action("menu.mappings.view", CarbonIcons.VIEW, this::openView),
 				new SeparatorMenuItem(),
 				action("menu.mappings.apply-advanced", CarbonIcons.LICENSE_GLOBAL, () -> openApply(applyWindowProvider))
@@ -125,14 +124,8 @@ public class MappingMenu extends WorkspaceAwareMenu {
 		MenuItem importAsItem = actionLiteral(formatName, CarbonIcons.LICENSE, () -> {
 			// Show the prompt, load the mappings text ant attempt to load them.
 			File file = choosers.showFileOpen(windowManager.getMainWindow());
-			if (file != null) {
-				try {
-					IntermediateMappings mappings = mappingHelper.parse(format, file.toPath());
-					mappingHelper.applyMappings(format, mappings);
-				} catch (Throwable t) {
-					logger.error("Failed importing mappings from {}", file.getName(), t);
-				}
-			}
+			if (file != null)
+				mappingHelper.importMappings(format, file.toPath());
 		});
 		MenuItem exportAsItem = actionLiteral(formatName, CarbonIcons.LICENSE, () -> {
 			// Show the prompt, write current mappings to the given path.

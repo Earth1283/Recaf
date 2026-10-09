@@ -138,41 +138,39 @@ public class DecompileAllPopup extends RecafStage {
 				}
 				AtomicInteger actionedClasses = new AtomicInteger(targetCount);
 
-				// Decompile all classes
+				// Decompile all classes. Results arrive on decompiler threads, possibly several at once.
 				JvmDecompiler decompiler = decompilerProperty.getValue();
 				ZipCreationUtils.ZipBuilder builder = ZipCreationUtils.builder();
+				Path path = pathProperty.get();
 				targetClasses.forEach(cls -> {
 					String name = cls.getName();
 					decompilerManager.decompile(decompiler, workspace, cls)
 							.orTimeout(decompilerPaneConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
-							.whenComplete((result, error) -> {
-								int remaining = actionedClasses.decrementAndGet();
-								if (result != null) {
-									// Handle errors
-									if (result.getException() != null) {
-										logger.error("Failed to decompile '{}'", name, result.getException());
-										return;
-									}
-
-									// Write decompilation output
-									String text = result.getText();
-									if (text != null)
-										builder.add(name + ".java", text.getBytes(StandardCharsets.UTF_8));
-								} else {
+							.handle((result, error) -> {
+								// 'handle' runs for failures and timeouts too, so every class is counted.
+								if (error != null) {
 									logger.error("Failed to decompile '{}'", name, error);
-								}
-
-								// If done, write the zip file
-								if (remaining <= 0) {
-									inProgressProperty.setValue(false);
-									Path path = pathProperty.get();
-									try {
-										Files.write(path, builder.bytes());
-									} catch (IOException ex) {
-										logger.error("Failed to write archive of decompiled classes to '{}'", path, ex);
+								} else if (result.getException() != null) {
+									logger.error("Failed to decompile '{}'", name, result.getException());
+								} else if (result.getText() != null) {
+									byte[] text = result.getText().getBytes(StandardCharsets.UTF_8);
+									synchronized (builder) {
+										builder.add(name + ".java", text);
 									}
 								}
-							}).thenRunAsync(() -> progress.setProgress(1 - (actionedClasses.doubleValue() / targetCount)), FxThreadUtil.executor());
+
+								// Only count the class once its output is recorded, so that whichever class finishes
+								// last sees the output of all the others when writing the archive.
+								int remaining = actionedClasses.decrementAndGet();
+								if (remaining == 0)
+									writeArchive(builder, path);
+								FxThreadUtil.run(() -> {
+									progress.setProgress(1 - (actionedClasses.doubleValue() / targetCount));
+									if (remaining == 0)
+										inProgressProperty.setValue(false);
+								});
+								return null;
+							});
 				});
 			} catch (Throwable t) {
 				logger.error("Failed to schedule all classes for decompilation", t);
@@ -235,5 +233,17 @@ public class DecompileAllPopup extends RecafStage {
 	 */
 	public void setNamePredicate(@Nonnull Predicate<String> namePredicate) {
 		this.namePredicate = namePredicate;
+	}
+
+	private static void writeArchive(@Nonnull ZipCreationUtils.ZipBuilder builder, @Nonnull Path path) {
+		try {
+			byte[] archive;
+			synchronized (builder) {
+				archive = builder.bytes();
+			}
+			Files.write(path, archive);
+		} catch (IOException ex) {
+			logger.error("Failed to write archive of decompiled classes to '{}'", path, ex);
+		}
 	}
 }

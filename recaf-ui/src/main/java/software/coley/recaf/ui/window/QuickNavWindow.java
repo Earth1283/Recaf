@@ -43,6 +43,8 @@ import software.coley.recaf.path.FilePathNode;
 import software.coley.recaf.path.IncompletePathException;
 import software.coley.recaf.path.LineNumberPathNode;
 import software.coley.recaf.path.PathNode;
+import software.coley.recaf.services.analysis.plugin.semantic.PluginElement;
+import software.coley.recaf.services.analysis.plugin.semantic.PluginIndex;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.cell.context.ContextSource;
 import software.coley.recaf.services.comment.ClassComments;
@@ -57,6 +59,8 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.AbstractSearchBar;
 import software.coley.recaf.ui.control.BoundTab;
 import software.coley.recaf.ui.control.FontIconView;
+import software.coley.recaf.ui.pane.plugin.PluginElementDisplay;
+import software.coley.recaf.ui.pane.plugin.PluginNavigation;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Icons;
 import software.coley.recaf.util.Lang;
@@ -83,11 +87,15 @@ import java.util.stream.Stream;
 @Dependent
 public class QuickNavWindow extends AbstractIdentifiableStage {
 	private static final Logger logger = Logging.get(QuickNavWindow.class);
+	private final TabPane tabs = new TabPane();
+	private final Tab tabPlugin;
+	private final ContentPaneBase pluginContent;
 
 	@Inject
 	public QuickNavWindow(@Nonnull WorkspaceManager workspaceManager, @Nonnull CommentManager commentManager,
 	                      @Nonnull Actions actions, @Nonnull TextFormatConfig formatConfig,
-	                      @Nonnull CellConfigurationService configurationService) {
+	                      @Nonnull CellConfigurationService configurationService,
+	                      @Nonnull PluginNavigation pluginNavigation) {
 		super(WindowManager.WIN_QUICK_NAV);
 
 		// Giant chunk of code, ought to clean this up later.
@@ -308,13 +316,68 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 		OneToOneContentPane<PathNode<?>> commentContent = new OneToOneContentPane<>(actions, this,
 				commentProvider, commentTextMapper, commentRenderer);
 
+		Supplier<Stream<QuickNavResult>> pluginProvider = () -> {
+			if (!workspaceManager.hasCurrentWorkspace())
+				return Stream.empty();
+			PluginIndex index = pluginNavigation.indexForImmediateUse();
+			if (index == null)
+				return Stream.empty();
+			return index.elements().stream().map(element -> {
+				PathNode<?> path = pluginNavigation.resolve(element.location());
+				if (path == null)
+					return null;
+				String text = PluginElementDisplay.summary(element) + ' ' + element.kind().searchTerms() + ' ' +
+						element.location() + (element.related() == null ? "" : " " + element.related().display());
+				return new QuickNavResult(QuickNavResultType.PLUGIN, path, text, element);
+			}).filter(Objects::nonNull);
+		};
+		ContainmentMatcher<QuickNavResult> pluginMatcher = (result, search, caseSensitive) -> {
+			// All words must match, so 'permission admin' finds permissions containing 'admin'.
+			String text = result.text();
+			if (text == null)
+				return false;
+			if (!caseSensitive)
+				text = text.toLowerCase();
+			for (String word : search.trim().split("\\s+"))
+				if (!text.contains(word))
+					return false;
+			return true;
+		};
+		BiConsumer<ListCell<?>, QuickNavResult> renderPlugin = (cell, result) -> {
+			PluginElement element = Objects.requireNonNull(result.element());
+			Label kindDisplay = new Label(PluginElementDisplay.kindName(element.kind()),
+					new FontIconView(PluginElementDisplay.icon(element.kind())));
+			kindDisplay.setOpacity(0.7);
+
+			Label keyDisplay = new Label(PluginElementDisplay.keyText(element));
+			keyDisplay.setTextOverrun(OverrunStyle.CENTER_WORD_ELLIPSIS);
+
+			// Owner and member together, since obfuscated member names alone are ambiguous.
+			Label locationDisplay = new Label();
+			locationDisplay.setText(element.location().display());
+			locationDisplay.setGraphic(configurationService.graphicOf(result.path()));
+			locationDisplay.setOpacity(0.5);
+
+			Spacer spacer = new Spacer();
+			HBox box = new HBox(8, kindDisplay, keyDisplay, spacer, locationDisplay);
+			HBox.setHgrow(spacer, Priority.ALWAYS);
+			cell.setText(null);
+			cell.setGraphic(box);
+
+			cell.setOnMouseClicked(configurationService.contextMenuHandlerOf(cell, result.path(), ContextSource.REFERENCE));
+		};
+		AllContentPane pluginPane = new AllContentPane(actions, this, pluginProvider,
+				cell -> renderPlugin.accept(cell, cell.getItem()), pluginMatcher);
+		pluginContent = pluginPane;
+
 		AllContentPane allContent = new AllContentPane(actions, this, () -> Stream.of(
 				classProvider.get().map(path -> new QuickNavResult(QuickNavResultType.CLASS, path, classTextMapper.apply(path))),
 				memberProvider.get().map(path -> new QuickNavResult(QuickNavResultType.MEMBER, path, memberTextMapper.apply(path))),
 				fileProvider.get().map(path -> new QuickNavResult(QuickNavResultType.FILE, path, fileTextMapper.apply(path))),
 				textProvider.get().flatMap(path -> lineUnroller.apply(path)
 						.map(linePath -> new QuickNavResult(QuickNavResultType.TEXT, linePath, lineTextMapper.apply(linePath)))),
-				commentProvider.get().map(path -> new QuickNavResult(QuickNavResultType.COMMENT, path, commentTextMapper.apply(path)))
+				commentProvider.get().map(path -> new QuickNavResult(QuickNavResultType.COMMENT, path, commentTextMapper.apply(path))),
+				pluginProvider.get()
 		).flatMap(Function.identity()), cell -> {
 			QuickNavResult result = cell.getItem();
 			switch (result.type()) {
@@ -323,17 +386,20 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 				case FILE -> renderFile.accept(cell, (FilePathNode) result.path());
 				case TEXT -> renderLine.accept(cell, (LineNumberPathNode) result.path());
 				case COMMENT -> renderComment.accept(cell, result.path());
+				case PLUGIN -> renderPlugin.accept(cell, result);
 			}
 		}, (result, search, caseSensitive) -> {
 			if (result.type() == QuickNavResultType.CLASS)
 				return classTextMatcher.matches((ClassPathNode) result.path(), search, caseSensitive);
+			if (result.type() == QuickNavResultType.PLUGIN)
+				return pluginMatcher.matches(result, search, caseSensitive);
 
 			String text = result.text();
 			if (!caseSensitive && text != null)
 				text = text.toLowerCase();
 			return contains(text, search);
 		});
-		List<ContentPaneBase> contentPanes = List.of(allContent, classContent, memberContent, fileContent, textContent, commentContent);
+		List<ContentPaneBase> contentPanes = List.of(allContent, classContent, memberContent, fileContent, textContent, commentContent, pluginPane);
 		contentPanes.forEach(workspaceManager::addWorkspaceCloseListener);
 
 		BoundTab tabAll = new BoundTab(Lang.getBinding("dialog.quicknav.tab.all"), new FontIconView(CarbonIcons.SEARCH), allContent);
@@ -342,9 +408,9 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 		BoundTab tabFiles = new BoundTab(Lang.getBinding("dialog.quicknav.tab.files"), new FontIconView(CarbonIcons.DOCUMENT), fileContent);
 		BoundTab tabText = new BoundTab(Lang.getBinding("dialog.quicknav.tab.text"), new FontIconView(CarbonIcons.STRING_TEXT), textContent);
 		BoundTab tabCommented = new BoundTab(Lang.getBinding("dialog.quicknav.tab.commented"), new FontIconView(CarbonIcons.CHAT), commentContent);
+		tabPlugin = new BoundTab(Lang.getBinding("dialog.quicknav.tab.plugin"), new FontIconView(CarbonIcons.CATEGORIES), pluginPane);
 
-		TabPane tabs = new TabPane();
-		tabs.getTabs().addAll(tabAll, tabClasses, tabMembers, tabFiles, tabText, tabCommented);
+		tabs.getTabs().addAll(tabAll, tabClasses, tabMembers, tabFiles, tabText, tabCommented, tabPlugin);
 		tabs.getTabs().forEach(tab -> tab.setClosable(false));
 
 		// Add event filter to handle closing the window when escape is pressed.
@@ -366,6 +432,14 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 		setMinWidth(300);
 		setMinHeight(300);
 		setScene(new RecafScene(tabs, 750, 550));
+	}
+
+	/**
+	 * Switches to the tab listing plugin structure, such as event handlers, commands, and permissions.
+	 */
+	public void selectPluginTab() {
+		tabs.getSelectionModel().select(tabPlugin);
+		FxThreadUtil.run(pluginContent::focusSearchBar);
 	}
 
 	private static boolean contains(@Nullable String text, @Nonnull String search) {
@@ -417,7 +491,8 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 		MEMBER,
 		FILE,
 		TEXT,
-		COMMENT
+		COMMENT,
+		PLUGIN
 	}
 
 	/**
@@ -429,10 +504,17 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 	 * 		Path to navigate to.
 	 * @param text
 	 * 		Text to search against.
+	 * @param element
+	 * 		Plugin structure the result is for, for {@link QuickNavResultType#PLUGIN} results.
 	 */
 	private record QuickNavResult(@Nonnull QuickNavResultType type,
 	                              @Nonnull PathNode<?> path,
-	                              @Nullable String text) implements Comparable<QuickNavResult> {
+	                              @Nullable String text,
+	                              @Nullable PluginElement element) implements Comparable<QuickNavResult> {
+		private QuickNavResult(@Nonnull QuickNavResultType type, @Nonnull PathNode<?> path, @Nullable String text) {
+			this(type, path, text, null);
+		}
+
 		@Override
 		public int compareTo(@Nonnull QuickNavResult other) {
 			int cmp = type.compareTo(other.type);

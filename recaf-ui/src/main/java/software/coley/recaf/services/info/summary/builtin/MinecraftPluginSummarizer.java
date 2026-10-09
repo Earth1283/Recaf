@@ -9,7 +9,9 @@ import javafx.scene.Cursor;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
+import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.JvmClassInfo;
@@ -27,6 +29,8 @@ import software.coley.recaf.services.info.summary.SummaryConsumer;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
+import software.coley.recaf.ui.control.FontIconView;
+import software.coley.recaf.ui.pane.plugin.PluginNavigation;
 import software.coley.recaf.util.Animations;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Lang;
@@ -51,16 +55,19 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	private final MinecraftPluginAnalysisService analysisService;
 	private final MinecraftPluginApiService apiService;
 	private final CellConfigurationService cellConfigurationService;
+	private final PluginNavigation pluginNavigation;
 	private final Actions actions;
 
 	@Inject
 	public MinecraftPluginSummarizer(@Nonnull MinecraftPluginAnalysisService analysisService,
 	                                 @Nonnull MinecraftPluginApiService apiService,
 	                                 @Nonnull CellConfigurationService cellConfigurationService,
+	                                 @Nonnull PluginNavigation pluginNavigation,
 	                                 @Nonnull Actions actions) {
 		this.analysisService = analysisService;
 		this.apiService = apiService;
 		this.cellConfigurationService = cellConfigurationService;
+		this.pluginNavigation = pluginNavigation;
 		this.actions = actions;
 	}
 
@@ -102,6 +109,10 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 
 		for (PluginApiRequest request : apiService.detectRequests(workspace))
 			batch.add(() -> consumer.appendSummary(createAttachControl(workspace, request)));
+
+		// The navigator and name recovery work on the primary resource, where mappings are applied.
+		if (resource == workspace.getPrimaryResource())
+			batch.add(() -> consumer.appendSummary(createToolButtons()));
 
 		batch.execute();
 		return true;
@@ -154,6 +165,19 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	}
 
 	@Nonnull
+	private HBox createToolButtons() {
+		Button navigator = new Button(Lang.get("menu.analysis.plugin-navigator"), new FontIconView(CarbonIcons.CATEGORIES));
+		navigator.setTooltip(new Tooltip(Lang.get("mcplugin.navigator.tip")));
+		navigator.setOnAction(e -> pluginNavigation.openNavigator(null));
+		Button names = new Button(Lang.get("menu.mappings.plugin-names"), new FontIconView(CarbonIcons.MAGIC_WAND));
+		names.setTooltip(new Tooltip(Lang.get("mcplugin.names.tip")));
+		names.setOnAction(e -> pluginNavigation.openNameRecovery());
+		HBox box = new HBox(6, navigator, names);
+		box.setPadding(new Insets(6, 0, 0, 0));
+		return box;
+	}
+
+	@Nonnull
 	private VBox createAttachControl(@Nonnull Workspace workspace, @Nonnull PluginApiRequest request) {
 		Label status = new Label();
 		status.setWrapText(true);
@@ -181,7 +205,7 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 			} finally {
 				running.set(false);
 			}
-		});
+		}).async();
 		button.setTooltip(new Tooltip(Lang.get("service.analysis.minecraft-plugin.attach.tip")));
 
 		VBox box = new VBox(6, button, status);

@@ -7,6 +7,8 @@ loadable.
 - [What Recaf recognizes](#what-recaf-recognizes)
 - [Attaching the server API](#attaching-the-server-api)
 - [Renaming classes safely](#renaming-classes-safely)
+- [Navigating a plugin](#navigating-a-plugin)
+- [Recovering names in obfuscated plugins](#recovering-names-in-obfuscated-plugins)
 - [Configuration](#configuration)
 - [Limitations](#limitations)
 - [For developers](#for-developers)
@@ -131,6 +133,118 @@ After any mapping operation, Recaf updates these top-level keys in the plugin's 
   YAML or a multi-line value, nothing is changed and a **warning is logged** naming the key, so that a stale name is
   never left behind unnoticed. Edit it by hand in that case.
 
+## Navigating a plugin
+
+An obfuscator can rename a plugin's own classes and members, but not the server API. The server calls `onEnable` by
+name, reads `@EventHandler` annotations at runtime, and the plugin passes plain strings to the API for command names,
+config paths, and permission nodes. Recaf reads the plugin's bytecode for those API uses and builds an outline of the
+plugin from them, so you can find your way around even when every name is `a`, `b`, or `c`.
+
+### What is found
+
+| Kind                    | Found from                                                                                             |
+|-------------------------|--------------------------------------------------------------------------------------------------------|
+| Main class, lifecycle   | The manifest, or a class extending `JavaPlugin` / BungeeCord's `Plugin`. Lists `onEnable`, `onDisable`, `onLoad` |
+| Commands                | `getCommand("name")`, then `setExecutor(...)` / `setTabCompleter(...)`. BungeeCord `registerCommand`, `CommandMap.register`, and `Command` subclasses passing their name to `super(...)`. Manifest commands without an executor are handled by the main class |
+| Listeners               | `registerEvents(listener, plugin)`, classes implementing `Listener`, and classes with `@EventHandler` methods |
+| Event handlers          | `@EventHandler` methods (Bukkit and BungeeCord) and Velocity `@Subscribe`, with priority and `ignoreCancelled` |
+| Events fired, custom events | `callEvent(new SomeEvent(...))`, and event classes the plugin declares                             |
+| Scheduled tasks         | `BukkitScheduler.runTask*` and `schedule*`, `BukkitRunnable.runTask*`, Folia schedulers, BungeeCord's `TaskScheduler`. Lambdas are linked to their method |
+| Config paths            | `getString`, `getInt`, `set`, `contains` and the other `ConfigurationSection` methods. Paths read through `getConfigurationSection("a").getString("b")` are joined into `a.b` |
+| Permissions             | `hasPermission`, `isPermissionSet`, `setPermission`, `new Permission(...)`, and the manifest's `permissions` |
+| Other keys              | Plugin messaging channels, `NamespacedKey`s, metadata keys, and other plugins or Vault services looked up |
+| Other types             | `ConfigurationSerializable` (with `@SerializableAs`), inventory holders, PlaceholderAPI expansions, plugin message listeners |
+
+String arguments are followed back to where they come from, so a command name stored in a local variable or a
+constant field is still found. Strings that are built at runtime, or decrypted by the obfuscator, are not. Run
+Recaf's deobfuscation first if the plugin encrypts its strings.
+
+Classes from libraries that plugins commonly bundle, such as bStats and HikariCP, are ignored. This can be turned off in
+the configuration.
+
+### The plugin navigator
+
+Open it with **Analysis → Minecraft plugin navigator**, or the button in the workspace summary. It opens as a tab next
+to the workspace explorer, and shows the plugin's structure grouped into sections: plugin entry points, commands,
+events, listeners, tasks, config paths, permissions, and the other keys and types listed above.
+
+- Type in the search field to filter. Every word must match, and matching covers the kind of entry, its key, and where
+  it is, so `permission admin`, `PlayerJoin`, or `max-homes` all work.
+- Double-click an entry, or press Enter, to open the code. Right-click it for the usual class or method menu.
+- Entries such as *Registered in* and *Scheduled in* jump to the other end: where a listener is registered, or where a
+  task is scheduled.
+- Commands and permissions that the manifest declares but the code never uses are listed as such.
+- The outline refreshes by itself after classes change, for example after renaming.
+
+### Quick navigation
+
+Press **Ctrl+Shift+G** to open quick navigation on its **Plugin** tab, and jump straight to an event handler, command,
+permission, config path, or task by typing part of it. Plugin entries also appear in the **All** tab. The shortcut can
+be changed in the keybinding settings.
+
+### In the editor
+
+Right-click a class, method, or field, including in decompiled code, for a **Minecraft plugin** submenu:
+
+| On                                      | Shows                                                                           |
+|-----------------------------------------|---------------------------------------------------------------------------------|
+| An event class                          | All handlers of the event, and where it is fired                                |
+| An event handler                        | The event class, other handlers of the same event, and where the event is fired |
+| A listener, executor, completer or task | Where it is registered or scheduled                                             |
+| A method that registers or schedules    | What it registers or schedules                                                  |
+| A method using a config path, permission or other key | Every other place the same key is used                            |
+| A field holding a key or a config value | Every place the key is used                                                     |
+
+Every submenu ends with **Show in plugin navigator**, which opens the navigator filtered to that item.
+
+## Recovering names in obfuscated plugins
+
+**Mappings → Recover Minecraft plugin names** suggests meaningful names for the plugin's classes, fields, methods,
+and variables, based on what the navigator finds. Nothing is renamed until you choose to apply.
+
+### What names are suggested
+
+| Target    | Example                     | Based on                                                                    |
+|-----------|-----------------------------|-----------------------------------------------------------------------------|
+| Class     | `HomesPlugin`               | The main class, named after the plugin in the manifest. Bootstrappers and loaders likewise |
+| Class     | `HomeCommand`               | The executor of `/home`. Tab completers become `...TabCompleter`             |
+| Class     | `PlayerListener`, `PlayerJoinListener` | The events a listener handles: one event, or the common category of several |
+| Class     | `RepeatingTask`             | How the task is scheduled (`runTaskTimer`, `runTaskLater`, async)           |
+| Class     | `CustomPlayerEvent`, `HomeData`, `ShopExpansion` | Custom events, `@SerializableAs("...")`, PlaceholderAPI identifiers |
+| Field     | `maxHomes`                  | Assigned from `config.getInt("settings.max-homes")`                          |
+| Field     | `homeCountKey`              | Assigned `new NamespacedKey(plugin, "home_count")`                           |
+| Field     | `PERMISSION_ADMIN`          | A constant passed to `hasPermission`. Config path, channel and other key constants likewise |
+| Field     | `plugin`, `config`, `playerListener`, `players` | The field's type: API types, renamed plugin classes, and collections of them |
+| Field     | `instance`                  | A static field holding its own class                                        |
+| Method    | `onPlayerJoin`              | The event an `@EventHandler` receives                                       |
+| Method    | `getMaxHomes`, `setPrefix`, `isEnabled`, `getInstance` | Methods that only get or set a field, named after the field |
+| Method    | `getPrefix`                 | Returns `config.getString("messages.prefix")`                                |
+| Method    | `registerListeners`, `registerCommands`, `startTasks`, `loadConfig`, `setupEconomy` | What the method does with the API |
+| Variable  | `event`, `sender`, `args`   | Event handler and command method parameters, and the variable's type or config path |
+
+Variables can only be renamed when the plugin still has variable debug information.
+
+Methods the server calls by name, such as `onEnable` or `onCommand`, are never renamed. When the API is attached,
+neither is any other method that overrides the API. Methods are renamed across their whole class hierarchy, so
+overrides keep matching.
+
+### Choosing what to apply
+
+Each suggestion shows the current name, the new name, the kind of clue it is based on, a confidence from 0 to 100, and
+the reason in words, such as *Value of config path 'settings.max-homes' (getInt)*.
+
+- Suggestions for names that look obfuscated, with a confidence of at least 50, are selected to begin with.
+- **Only obfuscated names** hides suggestions for names that already look like a person wrote them.
+- Filter by kind of target and by clue, and search across names and reasons.
+- Edit a new name by double-clicking it. Editing a name selects it.
+- Double-click any other part of a row to open the code it is about.
+- **Apply selected** applies the selection through Recaf's normal mapping process, so the manifest is updated and the
+  mappings can be exported like any others. A suggestion that would clash with an existing name, or is not a valid
+  name, is skipped and logged. Afterwards the list shows what is left to suggest.
+
+Names are chosen so they do not collide with each other or with existing names: a second `HomeCommand` in the same
+package becomes `HomeCommand2`.
+
 ## Configuration
 
 Settings for the API attachment are under the analysis services as **Minecraft plugin API**.
@@ -142,6 +256,14 @@ Settings for the API attachment are under the analysis services as **Minecraft p
 | `max-dependency-size-mb`  | `8`     | Libraries larger than this are skipped                               |
 | `max-api-size-mb`         | `64`    | Largest API jar that will be accepted                                |
 
+Settings for the navigator and name recovery are under the analysis services as **Minecraft plugin semantics**.
+
+| Key                       | Default | Meaning                                                              |
+|---------------------------|---------|----------------------------------------------------------------------|
+| `skip-shaded-libraries`   | `true`  | Ignore classes of commonly bundled libraries, such as bStats         |
+
+The quick navigation shortcut is `quicknav-plugin` in the keybinding settings.
+
 ## Limitations
 
 - Velocity plugins are recognized as entry points, but do not have a manifest-driven API attach. Velocity plugins are
@@ -152,6 +274,14 @@ Settings for the API attachment are under the analysis services as **Minecraft p
   those types resolve, and the right mappings for them are separate.
 - Manifest updates after renaming cover `main`, `bootstrapper`, and `loader`. Class names that appear elsewhere in a
   manifest are not updated.
+- The navigator and name recovery read string arguments that are constants. Strings built at runtime or decrypted by
+  the obfuscator are not seen, so run string deobfuscation first.
+- Code that wraps the API in the plugin's own helpers, such as a custom config wrapper or command framework, is only
+  partly understood. The API calls inside the helper are found, but not what each caller passes to it.
+- Variables are only renamed when the plugin still has variable debug information. Most obfuscators remove it, in
+  which case the decompiler's own variable names are kept.
+- Suggested names are a starting point. Generic names such as `CommandHandler`, `EventListener`, or `MenuHolder` have
+  low confidence and are not selected unless you choose them.
 
 ## For developers
 
@@ -170,6 +300,25 @@ The code lives in `software.coley.recaf.services.analysis.plugin` (manifests and
 | `MavenRepositoryClient`               | Reads versions and files from Maven repositories, with caching and checksum checks           |
 | `MavenDependencyResolver`             | Small best-effort dependency resolver                                                        |
 | `PluginApiFetcher`                    | The only point that touches the network. Replace it to test without one                      |
+
+The navigator and name recovery live in `software.coley.recaf.services.analysis.plugin.semantic`. The UI is in
+`software.coley.recaf.ui.pane.plugin`.
+
+| Class                                 | Role                                                                                         |
+|---------------------------------------|----------------------------------------------------------------------------------------------|
+| `PluginSemanticService`               | Entry point. Caches the index of the current workspace, suggests names, and turns chosen suggestions into mappings |
+| `PluginIndexer`                       | Reads bytecode into a `PluginIndex`. Add new API patterns in `handleCall`                    |
+| `MethodFlow`                          | Follows a value back to the instruction that created it, through locals, `DUP`, casts and `Objects.requireNonNull` |
+| `PluginIndex`, `PluginElement`        | Searchable result. Each element has a kind, a key, a location, and an optional related location |
+| `NamingFacts`                         | Facts only used for naming: values flowing into fields, constant keys, accessors, method behaviors |
+| `SemanticNameSuggester`               | Picks names from the index. Classes first, then fields, methods, and variables, so each can use the names before it |
+| `NameHeuristics`                      | Decides whether a name looks obfuscated, and converts text to Java names                     |
+| `PluginNavigation` (UI)               | Resolves index locations to paths, opens the navigator and the name recovery window          |
+| `PluginContextMenuAdapter` (UI)       | Adds the plugin submenu to class, method and field context menus                             |
+
+`PluginSemanticServiceTest` compiles a small stand-in for the Bukkit API and an obfuscated plugin with javac
+(`ObfuscatedPluginFixture`), then checks what is indexed, what names are suggested, and that applying them leaves a
+working plugin.
 
 To support another entry point, implement `EntryPointDiscovery` as a CDI bean; it is picked up automatically.
 To support another API, add a constant to `PluginApiTarget` with its repositories and a version selector, and map a

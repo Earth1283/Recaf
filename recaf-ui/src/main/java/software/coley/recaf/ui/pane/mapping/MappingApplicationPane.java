@@ -38,12 +38,16 @@ import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.util.FileChooserBundle;
+import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.util.StringUtil;
+import software.coley.recaf.util.threading.ThreadUtil;
 
 import java.awt.Toolkit;
 import java.io.File;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 @Dependent
 public class MappingApplicationPane extends BorderPane {
@@ -145,12 +149,13 @@ public class MappingApplicationPane extends BorderPane {
 			// Show the prompt, load the mappings text ant attempt to load them.
 			File file = choosers.showFileOpen(getScene().getWindow());
 			if (file != null) {
-				try {
-					IntermediateMappings mappings = mappingHelper.parse(formatBox.getValue(), file.toPath());
-					mappingsProperty.set(mappings);
-				} catch (Throwable t) {
-					logger.error("Failed importing mappings from {}", file.getName(), t);
-				}
+				mappingHelper.parseAsync(formatBox.getValue(), file.toPath())
+						.whenCompleteAsync((mappings, error) -> {
+							if (error != null)
+								logger.error("Failed importing mappings from {}", file.getName(), error);
+							else
+								mappingsProperty.set(mappings);
+						}, FxThreadUtil.executor());
 			}
 		});
 		Button setMappingDir = new ActionButton(CarbonIcons.FOLDER, Lang.getBinding("mapapply.pick.dir"), () -> {
@@ -158,13 +163,21 @@ public class MappingApplicationPane extends BorderPane {
 			if (formatBox.getValue() instanceof EnigmaMappings enigmaMappings) {
 				File file = choosers.showDirOpen(getScene().getWindow());
 				if (file != null) {
-					try {
-						IntermediateMappings mappings = enigmaMappings.parse(file.toPath());
-						logger.info("Loaded enigma directory mappings from {}", file.getName());
-						mappingsProperty.set(mappings);
-					} catch (Throwable t) {
-						logger.error("Failed importing mappings from {}", file.getName(), t);
-					}
+					// Directories of mappings can be large, so read them off the UI thread.
+					CompletableFuture.supplyAsync(() -> {
+						try {
+							return enigmaMappings.parse(file.toPath());
+						} catch (Exception ex) {
+							throw new CompletionException(ex);
+						}
+					}, ThreadUtil.executor()).whenCompleteAsync((mappings, error) -> {
+						if (error != null) {
+							logger.error("Failed importing mappings from {}", file.getName(), error);
+						} else {
+							logger.info("Loaded enigma directory mappings from {}", file.getName());
+							mappingsProperty.set(mappings);
+						}
+					}, FxThreadUtil.executor());
 				}
 			} else {
 				Toolkit.getDefaultToolkit().beep();

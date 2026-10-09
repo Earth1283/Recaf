@@ -14,6 +14,7 @@ import software.coley.recaf.ui.RecafTheme;
 import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.ui.config.WindowScaleConfig;
 import software.coley.recaf.ui.menubar.MainMenu;
+import software.coley.recaf.ui.window.QuickNavWindow;
 import software.coley.recaf.ui.pane.LoggingPane;
 import software.coley.recaf.ui.docking.DockingManager;
 import software.coley.recaf.ui.window.RecafScene;
@@ -67,6 +68,12 @@ public class RecafApplication extends Application {
 				event.consume();
 			} else if (keybindingConfig.getNavigateForward().match(event) && navigationHistoryService.forward()) {
 				event.consume();
+			} else if (keybindingConfig.getQuickNavPlugin().match(event)) {
+				Stage quickNav = windowManager.getQuickNav();
+				if (quickNav instanceof QuickNavWindow quickNavWindow)
+					quickNavWindow.selectPluginTab();
+				quickNav.show();
+				quickNav.requestFocus();
 			} else if (keybindingConfig.getQuickNav().match(event)) {
 				Stage quickNav = windowManager.getQuickNav();
 				quickNav.show();

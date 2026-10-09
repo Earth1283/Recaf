@@ -97,6 +97,7 @@ import software.coley.recaf.ui.control.richtext.syntax.RegexLanguages;
 import software.coley.recaf.ui.control.richtext.syntax.RegexSyntaxHighlighter;
 import software.coley.recaf.util.AccessFlag;
 import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.util.threading.ThreadUtil;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.util.StringUtil;
 import software.coley.recaf.util.ToStringConverter;
@@ -126,6 +127,7 @@ public class MappingGeneratorPane extends StackPane {
 	private static final NameGeneratorProvider<?> fallbackProvider = new IncrementingNameGeneratorProvider();
 	private final StringProperty currentProvider = new SimpleStringProperty(IncrementingNameGeneratorProvider.ID);
 	private final ObjectProperty<Mappings> mappingsToApply = new SimpleObjectProperty<>();
+	private final BooleanProperty applying = new SimpleBooleanProperty();
 	private final ListView<FilterWithConfigNode<?>> filters = new ListView<>();
 	private final List<String> stringPredicates;
 	private final List<String> stringPredicatesWithNull;
@@ -272,22 +274,31 @@ public class MappingGeneratorPane extends StackPane {
 
 	private void apply() {
 		Mappings mappings = mappingsToApply.get();
-		if (mappings == null)
+		if (mappings == null || applying.get())
 			return;
 
 		MappingApplier applier = mappingApplierService.inCurrentWorkspace();
 		if (applier == null)
 			return;
 
-		// Apply the mappings
-		MappingResults results = applier.applyToPrimaryResource(mappings);
-		results.apply();
+		// Generated mappings can rename every class in the workspace, so they are applied off the UI thread.
+		applying.set(true);
+		CompletableFuture.runAsync(() -> {
+			MappingResults results = applier.applyToPrimaryResource(mappings);
+			results.apply();
+		}, ThreadUtil.executor()).whenCompleteAsync((ignored, error) -> {
+			applying.set(false);
+			if (error != null) {
+				logger.error("Failed to apply generated mappings", error);
+				return;
+			}
 
-		// Clear property now that the mappings have been applied
-		mappingsToApply.set(null);
+			// Clear property now that the mappings have been applied
+			mappingsToApply.set(null);
 
-		// Notify listeners
-		if (applyCallback != null) applyCallback.run();
+			// Notify listeners
+			if (applyCallback != null) applyCallback.run();
+		}, FxThreadUtil.executor());
 	}
 
 	@Nonnull
@@ -355,7 +366,8 @@ public class MappingGeneratorPane extends StackPane {
 		generateButton.setMaxWidth(Double.MAX_VALUE);
 		applyButton.setMaxWidth(Double.MAX_VALUE);
 		HBox.setHgrow(applyButton, Priority.ALWAYS);
-		applyButton.disableProperty().bind(mappingsToApply.isNull());
+		applyButton.disableProperty().bind(mappingsToApply.isNull().or(applying));
+		generateButton.disableProperty().bind(applying);
 
 		// Layout
 		InputGroup inputGroup = new InputGroup(configureGenerator, generateButton, generatorCombo);

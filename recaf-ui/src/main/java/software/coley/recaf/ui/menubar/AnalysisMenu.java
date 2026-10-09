@@ -17,6 +17,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.ActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.docking.DockingManager;
+import software.coley.recaf.ui.pane.plugin.PluginNavigation;
 import software.coley.recaf.ui.window.DeobfuscationWindow;
 import software.coley.recaf.util.FxThreadUtil;
 
@@ -41,6 +42,7 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 	                    @Nonnull WindowManager windowManager,
 	                    @Nonnull Instance<DeobfuscationWindow> deobfuscationWindowProvider,
 	                    @Nonnull TransformationPresetManager presetManager,
+	                    @Nonnull PluginNavigation pluginNavigation,
 	                    @Nonnull Actions actions) {
 		super(workspaceManager);
 
@@ -73,6 +75,11 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		ActionMenuItem itemListComments = action("menu.analysis.list-comments", CarbonIcons.CHAT, actions::openCommentList);
 		itemListComments.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 		getItems().add(itemListComments);
+
+		ActionMenuItem itemPluginNavigator = action("menu.analysis.plugin-navigator", CarbonIcons.CATEGORIES,
+				() -> pluginNavigation.openNavigator(null));
+		itemPluginNavigator.disableProperty().bind(hasWorkspace.not());
+		getItems().add(itemPluginNavigator);
 	}
 
 	/**
