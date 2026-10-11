@@ -5,17 +5,16 @@ import atlantafx.base.theme.Styles;
 import atlantafx.base.theme.Tweaks;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.StringBinding;
-import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
-import javafx.scene.Scene;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
@@ -25,6 +24,7 @@ import javafx.scene.control.SplitPane;
 import javafx.scene.control.TreeCell;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
@@ -33,8 +33,6 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
-import javafx.stage.Window;
-import javafx.stage.WindowEvent;
 import org.kordamp.ikonli.Ikon;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.slf4j.Logger;
@@ -47,6 +45,7 @@ import software.coley.recaf.services.config.ConfigComponentManager;
 import software.coley.recaf.services.config.ConfigIconManager;
 import software.coley.recaf.services.config.ConfigManager;
 import software.coley.recaf.services.config.ManagedConfigListener;
+import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
 import software.coley.recaf.ui.control.FontIconView;
@@ -55,12 +54,12 @@ import software.coley.recaf.ui.control.tree.FilterableTreeItem;
 import software.coley.recaf.ui.control.tree.TreeFiltering;
 import software.coley.recaf.util.ErrorDialogs;
 import software.coley.recaf.util.Lang;
-import software.coley.recaf.util.SceneUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import static software.coley.recaf.config.ConfigGroups.PACKAGE_SPLIT;
@@ -92,17 +91,19 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 	private final ConfigComponentManager componentManager;
 	private final ConfigIconManager iconManager;
 	private final ConfigManager configManager;
+	private final KeybindingConfig keybindingConfig;
 	private boolean updatingProfileSelection;
-	private boolean profileLifecycleInstalled;
 	private boolean activeProfileInitialized;
 
 	@Inject
 	public ConfigPane(@Nonnull ConfigManager configManager,
 	                  @Nonnull ConfigComponentManager componentManager,
-	                  @Nonnull ConfigIconManager iconManager) {
+	                  @Nonnull ConfigIconManager iconManager,
+	                  @Nonnull KeybindingConfig keybindingConfig) {
 		this.configManager = configManager;
 		this.componentManager = componentManager;
 		this.iconManager = iconManager;
+		this.keybindingConfig = keybindingConfig;
 		configManager.addManagedConfigListener(this);
 
 		// Setup UI
@@ -115,8 +116,17 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 		// Select first page
 		selectFirstVisibleItem();
 
-		// Register hooks to detect when the pane is shown/hidden to trigger profile loading/saving.
-		SceneUtils.whenAddedToSceneConsume(this, pane -> installWindowHooks(pane.getScene()));
+		initializeProfiles();
+	}
+
+	/**
+	 * Should be called when the pane is no longer used.
+	 * Detaches from the config manager and persists the active profile so changes are not lost.
+	 */
+	@PreDestroy
+	public void dispose() {
+		configManager.removeManagedConfigListener(this);
+		persistActiveProfile();
 	}
 
 	private void initialize() {
@@ -169,6 +179,13 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 		searchField.setLeft(new FontIconView(CarbonIcons.SEARCH));
 		searchField.promptTextProperty().bind(getBinding("menu.config.filter-prompt"));
 		searchField.textProperty().addListener((ob, old, cur) -> updateTreeFilter());
+		addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+			if (keybindingConfig.getFind().match(e)) {
+				searchField.requestFocus();
+				searchField.selectAll();
+				e.consume();
+			}
+		});
 
 		noResultsLabel.setGraphic(new FontIconView(CarbonIcons.SEARCH));
 		noResultsLabel.setMouseTransparent(true);
@@ -320,15 +337,17 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 	 */
 	private void updateTreeFilter() {
 		String query = searchField.getText();
-		if (query == null || query.isBlank()) {
+		List<String> tokens = query == null ? List.of() : ConfigPaneSearch.tokenizeQuery(query);
+		if (tokens.isEmpty()) {
 			root.predicateProperty().set(null);
 		} else {
-			List<String> tokens = ConfigPaneSearch.tokenizeQuery(query);
 			root.predicateProperty().set(item -> {
 				ConfigContainer container = idToContainer.get(item.getValue());
 				return container != null && ConfigPaneSearch.matches(container, tokens);
 			});
 		}
+		for (ContainerPane page : idToPage.values())
+			page.applyFilter(tokens);
 		noResultsLabel.setVisible(root.getChildren().isEmpty() && !searchField.getText().isBlank());
 
 		// Select first visible item if current selection is not visible.
@@ -361,42 +380,13 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 		return false;
 	}
 
-	private void installWindowHooks(@Nullable Scene scene) {
-		if (scene == null)
-			return;
-		Window window = scene.getWindow();
-		if (window != null) {
-			installWindowHooks(window);
-		} else {
-			scene.windowProperty().addListener(new ChangeListener<>() {
-				@Override
-				public void changed(javafx.beans.value.ObservableValue<? extends Window> observable, Window oldValue, Window newValue) {
-					if (newValue != null) {
-						scene.windowProperty().removeListener(this);
-						installWindowHooks(newValue);
-					}
-				}
-			});
-		}
-	}
-
-	private void installWindowHooks(@Nonnull Window window) {
-		if (profileLifecycleInstalled)
-			return;
-		profileLifecycleInstalled = true;
-		window.addEventHandler(WindowEvent.WINDOW_SHOWING, e -> onWindowShowing());
-		window.addEventHandler(WindowEvent.WINDOW_HIDDEN, e -> onWindowHidden());
-	}
-
 	/**
-	 * When shown, ensure the active profile is loaded and refresh the profile list to reflect any external changes.
+	 * Ensure the active profile is loaded and populate the profile selector.
 	 */
-	private void onWindowShowing() {
+	private void initializeProfiles() {
 		try {
-			if (!activeProfileInitialized) {
-				configManager.ensureActiveProfile();
-				activeProfileInitialized = true;
-			}
+			configManager.ensureActiveProfile();
+			activeProfileInitialized = true;
 			refreshProfiles();
 		} catch (IOException ex) {
 			logger.error("Failed to initialize config profiles", ex);
@@ -405,16 +395,16 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 	}
 
 	/**
-	 * When hidden, attempt to persist the active profile to ensure changes are not lost.
+	 * Attempt to persist the active profile to ensure changes are not lost.
 	 */
-	private void onWindowHidden() {
+	private void persistActiveProfile() {
 		if (!activeProfileInitialized)
 			return;
 
 		try {
 			configManager.exportProfile(configManager.getServiceConfig().getCurrentProfile().getValue());
 		} catch (IOException ex) {
-			logger.error("Failed to persist active config profile on window close", ex);
+			logger.error("Failed to persist active config profile on close", ex);
 		}
 	}
 
@@ -550,8 +540,13 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 	 * Page for a single {@link ConfigContainer}.
 	 */
 	private class ContainerPane extends GridPane {
+		private final Map<String, List<Node>> valueIdToNodes = new TreeMap<>();
+		private final ConfigContainer container;
+
 		@SuppressWarnings({"rawtypes", "unchecked"})
 		private ContainerPane(@Nonnull ConfigContainer container) {
+			this.container = container;
+
 			// Title
 			Label title = createTranslatedLabel(container.getGroupAndId(), container.getId());
 			title.getStyleClass().add(Styles.TITLE_4);
@@ -565,12 +560,19 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 				ConfigValue<?> value = entry.getValue();
 				if (value.isHidden()) continue;
 				ConfigComponentFactory componentFactory = componentManager.getFactory(container, value);
+				List<Node> rowNodes = valueIdToNodes.computeIfAbsent(value.getId(), id -> new ArrayList<>());
 				if (componentFactory.isStandAlone()) {
-					add(componentFactory.create(container, value), 0, row, 2, 1);
+					Node editor = componentFactory.create(container, value);
+					add(editor, 0, row, 2, 1);
+					rowNodes.add(editor);
 				} else {
 					String key = container.getScopedId(value);
-					add(createTranslatedLabel(key, value.getId()), 0, row);
-					add(componentFactory.create(container, value), 1, row);
+					Node label = createTranslatedLabel(key, value.getId());
+					Node editor = componentFactory.create(container, value);
+					add(label, 0, row);
+					add(editor, 1, row);
+					rowNodes.add(label);
+					rowNodes.add(editor);
 				}
 				row++;
 			}
@@ -585,6 +587,23 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 			columnEditor.setFillWidth(true);
 			columnEditor.setHgrow(Priority.ALWAYS);
 			getColumnConstraints().addAll(columnLabel, columnEditor);
+		}
+
+		/**
+		 * Hides values that do not match the query. An empty query shows all values.
+		 *
+		 * @param tokens
+		 * 		Query tokens.
+		 */
+		private void applyFilter(@Nonnull List<String> tokens) {
+			Set<String> matching = ConfigPaneSearch.matchingValueIds(container, tokens);
+			valueIdToNodes.forEach((id, nodes) -> {
+				boolean show = tokens.isEmpty() || matching.contains(id);
+				for (Node node : nodes) {
+					node.setVisible(show);
+					node.setManaged(show);
+				}
+			});
 		}
 
 		@Nonnull

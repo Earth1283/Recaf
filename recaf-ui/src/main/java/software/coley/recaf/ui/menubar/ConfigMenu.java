@@ -7,12 +7,12 @@ import javafx.beans.binding.StringBinding;
 import javafx.scene.control.Menu;
 import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.ToggleGroup;
-import javafx.stage.Stage;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.kordamp.ikonli.javafx.FontIcon;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.config.ConfigManager;
+import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.window.WindowManager;
 import software.coley.recaf.util.ErrorDialogs;
 import software.coley.recaf.util.FileChooserBuilder;
@@ -36,13 +36,16 @@ import static software.coley.recaf.util.Menus.menu;
 @Dependent
 public class ConfigMenu extends Menu {
 	private static final Logger logger = Logging.get(ConfigMenu.class);
+	private final Actions actions;
 	private final WindowManager windowManager;
 	private final ConfigManager configManager;
 	private final Menu profileMenu;
 
 	@Inject
-	public ConfigMenu(WindowManager windowManager,
+	public ConfigMenu(Actions actions,
+					  WindowManager windowManager,
 					  ConfigManager configManager) {
+		this.actions = actions;
 		this.windowManager = windowManager;
 		this.configManager = configManager;
 
@@ -52,7 +55,7 @@ public class ConfigMenu extends Menu {
 
 		profileMenu = createProfileMenu();
 
-		getItems().add(action("menu.config.edit", CarbonIcons.CALIBRATE, this::openEditor));
+		getItems().add(action("menu.config.edit", CarbonIcons.CALIBRATE, actions::openConfig));
 		getItems().add(profileMenu);
 		getItems().add(action("menu.config.export", CarbonIcons.DOCUMENT_EXPORT, this::exportProfile));
 		getItems().add(action("menu.config.import", CarbonIcons.DOCUMENT_IMPORT, this::importProfile));
@@ -110,15 +113,6 @@ public class ConfigMenu extends Menu {
 			item.setOnAction(event -> switchProfile(profileName));
 			profileMenu.getItems().add(item);
 		}
-	}
-
-	/**
-	 * Display the config window.
-	 */
-	private void openEditor() {
-		Stage configWindow = windowManager.getConfigWindow();
-		configWindow.show();
-		configWindow.requestFocus();
 	}
 
 	/**

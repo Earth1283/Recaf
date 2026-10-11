@@ -27,6 +27,7 @@ import org.slf4j.Logger;
 import software.coley.bentofx.dockable.Dockable;
 import software.coley.bentofx.dockable.DockableIconFactory;
 import software.coley.bentofx.layout.container.DockContainerLeaf;
+import software.coley.bentofx.path.DockContainerPath;
 import software.coley.bentofx.path.DockablePath;
 import software.coley.collections.Unchecked;
 import software.coley.recaf.analytics.logging.Logging;
@@ -75,6 +76,7 @@ import software.coley.recaf.ui.control.popup.ItemTreeSelectionPopup;
 import software.coley.recaf.ui.control.popup.NamePopup;
 import software.coley.recaf.ui.control.popup.OverrideMethodPopup;
 import software.coley.recaf.ui.docking.DockingManager;
+import software.coley.recaf.ui.pane.ConfigPane;
 import software.coley.recaf.ui.pane.WorkspaceExplorerPane;
 import software.coley.recaf.ui.pane.WorkspaceInformationPane;
 import software.coley.recaf.ui.pane.analysis.AreaAnalysisPane;
@@ -173,6 +175,7 @@ public class Actions implements Service {
 	private final Instance<AreaAnalysisPane> areaAnalysisPaneProvider;
 	private final Instance<CommentEditPane> commentPaneProvider;
 	private final Instance<CommentListPane> commentListPaneProvider;
+	private final Instance<ConfigPane> configPaneProvider;
 	private final Instance<MethodCallGraphTreesPane> callGraphsTreePaneProvider;
 	private final Instance<StringTablePane> stringTablePaneProvider;
 	private final Instance<SimilarClassTablePane> similarClassTablePaneProvider;
@@ -208,6 +211,7 @@ public class Actions implements Service {
 	               @Nonnull Instance<AreaAnalysisPane> areaAnalysisPaneProvider,
 	               @Nonnull Instance<CommentEditPane> commentPaneProvider,
 	               @Nonnull Instance<CommentListPane> commentListPaneProvider,
+	               @Nonnull Instance<ConfigPane> configPaneProvider,
 	               @Nonnull Instance<StringTablePane> stringTablePaneProvider,
 	               @Nonnull Instance<SimilarClassTablePane> similarClassTablePaneProvider,
 	               @Nonnull Instance<SimilarMethodTablePane> similarMethodTablePaneProvider,
@@ -238,6 +242,7 @@ public class Actions implements Service {
 		this.areaAnalysisPaneProvider = areaAnalysisPaneProvider;
 		this.commentPaneProvider = commentPaneProvider;
 		this.commentListPaneProvider = commentListPaneProvider;
+		this.configPaneProvider = configPaneProvider;
 		this.stringTablePaneProvider = stringTablePaneProvider;
 		this.similarClassTablePaneProvider = similarClassTablePaneProvider;
 		this.similarMethodTablePaneProvider = similarMethodTablePaneProvider;
@@ -716,6 +721,44 @@ public class Actions implements Service {
 			addCloseActions(menu, d);
 			return menu;
 		});
+	}
+
+	/**
+	 * Display the config editor, focusing the existing tab if one is already open.
+	 * Without a workspace there is no primary container to dock into, so the tab is placed in a new window.
+	 */
+	public void openConfig() {
+		for (DockablePath path : dockingManager.getBento().search().allDockables()) {
+			Dockable dockable = path.dockable();
+			Node node = dockable.nodeProperty().get();
+			if (node instanceof ConfigPane) {
+				path.leafContainer().selectDockable(dockable);
+				FxThreadUtil.run(() -> {
+					node.requestFocus();
+					Animations.animateNotice(node, 1000);
+				});
+				return;
+			}
+		}
+
+		ConfigPane content = configPaneProvider.get();
+		DockContainerPath primaryPath = dockingManager.getBento().search().container(DockingManager.ID_CONTAINER_WORKSPACE_PRIMARY);
+		DockContainerLeaf container = primaryPath != null && primaryPath.tailContainer() instanceof DockContainerLeaf leaf ? leaf : null;
+		Dockable dockable = createDockable(container, getBinding("menu.config"),
+				d -> new FontIconView(CarbonIcons.SETTINGS), content);
+		dockable.setDragGroupMask(DockingManager.GROUP_ANYWHERE);
+		dockable.addCloseListener((_, _) -> configPaneProvider.destroy(content));
+		dockable.setContextMenuFactory(d -> {
+			ContextMenu menu = new ContextMenu();
+			addCloseActions(menu, d);
+			return menu;
+		});
+		if (container == null) {
+			Scene originScene = dockingManager.getRoot().asRegion().getScene();
+			Stage stage = dockingManager.getBento().stageBuilding().newStageForDockable(originScene, dockable, 900, 600);
+			stage.show();
+			stage.requestFocus();
+		}
 	}
 
 	/**

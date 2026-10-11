@@ -40,7 +40,6 @@ public class WindowManager implements Service {
 	// Built-in window keys
 	public static final String WIN_MAIN = "main";
 	public static final String WIN_REMOTE_VMS = "remote-vms";
-	public static final String WIN_CONFIG = "config";
 	public static final String WIN_INFO = "system-information";
 	public static final String WIN_SCRIPTS = "script-manager";
 	public static final String WIN_MAP_PROGRESS = "mapping-progress";
@@ -204,14 +203,6 @@ public class WindowManager implements Service {
 	@Nonnull
 	public Stage getRemoteVmWindow() {
 		return Objects.requireNonNull(getWindow(WIN_REMOTE_VMS));
-	}
-
-	/**
-	 * @return Window for the config display.
-	 */
-	@Nonnull
-	public Stage getConfigWindow() {
-		return Objects.requireNonNull(getWindow(WIN_CONFIG));
 	}
 
 	/**

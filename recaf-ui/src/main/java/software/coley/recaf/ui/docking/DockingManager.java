@@ -30,6 +30,7 @@ import software.coley.bentofx.layout.DockContainer;
 import software.coley.bentofx.layout.container.DockContainerBranch;
 import software.coley.bentofx.layout.container.DockContainerLeaf;
 import software.coley.bentofx.layout.container.DockContainerRootBranch;
+import software.coley.bentofx.path.DockablePath;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.behavior.PriorityKeys;
 import software.coley.recaf.services.info.summary.ResourceSummaryServiceConfig;
@@ -41,6 +42,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.services.workspace.WorkspaceOpenListener;
 import software.coley.recaf.ui.control.ActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
+import software.coley.recaf.ui.pane.ConfigPane;
 import software.coley.recaf.ui.pane.LoggingPane;
 import software.coley.recaf.ui.pane.WelcomePane;
 import software.coley.recaf.ui.pane.WorkspaceExplorerPane;
@@ -50,7 +52,9 @@ import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Facilitates creation, inspection, and updates of dockable UI content.
@@ -485,6 +489,40 @@ public class DockingManager {
 	}
 
 	/**
+	 * Replaces the top half of the main UI, carrying any {@link ConfigPane} tabs over to the new content
+	 * so that opening or closing a workspace does not discard the user's open settings.
+	 *
+	 * @param factory
+	 * 		Supplier of the new top container.
+	 * @param landingLeafId
+	 * 		ID of the leaf within the new top container to move carried tabs into.
+	 *
+	 * @return {@code true} when the container was replaced.
+	 */
+	private boolean replaceTopContainer(@Nonnull Supplier<DockContainer> factory, @Nonnull String landingLeafId) {
+		List<Dockable> carried = bento.search().allDockables().stream()
+				.filter(path -> path.dockable().getNode() instanceof ConfigPane)
+				.filter(path -> path.containers().stream().anyMatch(c -> ID_CONTAINER_ROOT_TOP.equals(c.getIdentifier())))
+				.peek(path -> path.leafContainer().removeDockable(path.dockable()))
+				.map(DockablePath::dockable)
+				.toList();
+
+		boolean replaced = bento.search().replaceContainer(ID_CONTAINER_ROOT_TOP, factory);
+		if (carried.isEmpty())
+			return replaced;
+
+		var landing = bento.search().container(landingLeafId);
+		if (landing != null && landing.tailContainer() instanceof DockContainerLeaf leaf) {
+			for (Dockable dockable : carried)
+				leaf.addDockable(dockable);
+			leaf.selectDockable(carried.getLast());
+		} else {
+			logger.error("Could not find '{}' to carry settings tabs into", landingLeafId);
+		}
+		return replaced;
+	}
+
+	/**
 	 * Listener to show the workspace summary page for opened workspaces.
 	 */
 	private class SummaryDisplayListener implements WorkspaceOpenListener {
@@ -492,7 +530,7 @@ public class DockingManager {
 		public void onWorkspaceOpened(@Nonnull Workspace workspace) {
 			// Replace root with a summary of the workspace when it is opened.
 			FxThreadUtil.run(() -> {
-				if (bento.search().replaceContainer(ID_CONTAINER_ROOT_TOP, DockingManager.this::newWorkspaceContainer)) {
+				if (replaceTopContainer(DockingManager.this::newWorkspaceContainer, ID_CONTAINER_WORKSPACE_PRIMARY)) {
 					if (resourceSummaryConfig.getSummarizeOnOpen().getValue()) actions.openSummary();
 				} else {
 					logger.error("Failed replacing root on workspace open");
@@ -517,7 +555,7 @@ public class DockingManager {
 		public void onWorkspaceClosed(@Nonnull Workspace workspace) {
 			// When a workspace is closed, show the welcome screen.
 			FxThreadUtil.run(() -> {
-				if (!bento.search().replaceContainer(ID_CONTAINER_ROOT_TOP, DockingManager.this::newWelcomeContainer))
+				if (!replaceTopContainer(DockingManager.this::newWelcomeContainer, ID_CONTAINER_ROOT_TOP))
 					logger.error("Failed replacing root on workspace close");
 			});
 		}
