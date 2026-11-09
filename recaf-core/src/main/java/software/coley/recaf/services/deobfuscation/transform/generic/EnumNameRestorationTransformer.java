@@ -112,12 +112,24 @@ public class EnumNameRestorationTransformer implements JvmClassTransformer {
 		if (!(nameInsn.cst instanceof String nameString) || !nameString.matches("\\w+"))
 			return;
 
+		// Get the enum ordinal.
 		AbstractInsnNode indexInsn = getNextFollowGoto(nameInsn);
 		if (indexInsn == null || !isConstIntValue(indexInsn))
 			return;
 
+		// Validate the name + index are followed by a constructor call for this enum.
+		AbstractInsnNode constructorInsn = getNextFollowGoto(indexInsn);
+		if (!(constructorInsn instanceof MethodInsnNode constructorCall)
+				|| constructorInsn.getOpcode() != INVOKESPECIAL
+				|| !constructorCall.owner.equals(initialClassState.getName())
+				|| !constructorCall.name.equals("<init>")
+				|| !constructorCall.desc.startsWith("(Ljava/lang/String;I"))
+			return;
+
+		// Find the putstatic that follows the constructor call,
+		// which is the assignment of the enum constant to its field.
 		Set<AbstractInsnNode> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-		AbstractInsnNode next = getNextFollowGoto(indexInsn);
+		AbstractInsnNode next = getNextFollowGoto(constructorInsn);
 		while (next != null && next.getOpcode() != PUTSTATIC && visited.add(next))
 			next = getNextFollowGoto(next);
 		if (next != null && next.getOpcode() == PUTSTATIC) {
@@ -136,5 +148,33 @@ public class EnumNameRestorationTransformer implements JvmClassTransformer {
 	@Override
 	public String identifier() {
 		return IDENTIFIER;
+	}
+
+	@Nonnull
+	@Override
+	public String beforeExample() {
+		return """
+				enum ObfuscatedEnum {
+					A, B, C;
+				
+					// Obfuscator renamed the enum constants, but the static initializer still leaks their original names.
+					// since enum constants are constructed with a String name and int ordinal.
+					static {
+						A = new ObfuscatedEnum("First", 0);
+						B = new ObfuscatedEnum("Second", 1);
+						C = new ObfuscatedEnum("Third", 2);
+					}
+				}
+				""";
+	}
+
+	@Nonnull
+	@Override
+	public String afterExample() {
+		return """
+				class ObfuscatedEnum {
+					FIRST, SECOND, THIRD;
+				}
+				""";
 	}
 }

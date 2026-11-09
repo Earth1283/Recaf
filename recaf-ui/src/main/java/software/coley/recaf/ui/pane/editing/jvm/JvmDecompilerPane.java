@@ -48,7 +48,7 @@ import software.coley.recaf.ui.control.richtext.problem.ProblemPhase;
 import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.ui.control.richtext.source.JavaContextActionSupport;
 import software.coley.recaf.ui.control.richtext.suggest.TabCompletionConfig;
-import software.coley.recaf.ui.control.richtext.suggest.java.typeindex.JavaTypeIndexService;
+import software.coley.recaf.ui.control.richtext.suggest.typeindex.TypeIndexService;
 import software.coley.recaf.ui.pane.editing.AbstractDecompilePane;
 import software.coley.recaf.ui.pane.editing.ToolsContainerComponent;
 import software.coley.recaf.ui.pane.editing.text.TextConfig;
@@ -57,11 +57,13 @@ import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.JavaVersion;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.util.threading.ThreadPoolFactory;
+import software.coley.recaf.workspace.WorkspaceSaveService;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.Bundle;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -88,6 +90,7 @@ public class JvmDecompilerPane extends AbstractDecompilePane {
 	private final ObservableBoolean javacDebug;
 	private final ModalPaneComponent overlayModal = new ModalPaneComponent();
 	private final JavacCompiler javac;
+	private final WorkspaceSaveService saveService;
 
 	@Inject
 	public JvmDecompilerPane(@Nonnull DecompilerPaneConfig decompileConfig,
@@ -100,19 +103,21 @@ public class JvmDecompilerPane extends AbstractDecompilePane {
 	                         @Nonnull NavigationHistoryService navigationHistoryService,
 	                         @Nonnull CellConfigurationService cellConfigurationService,
 	                         @Nonnull FileTypeSyntaxAssociationService languageAssociation,
+	                         @Nonnull WorkspaceSaveService saveService,
 	                         @Nonnull DecompilerManager decompilerManager,
-	                         @Nonnull JavaTypeIndexService javaTypeIndexService,
+	                         @Nonnull TypeIndexService typeIndexService,
 	                         @Nonnull JavacCompiler javac,
 	                         @Nonnull JavacCompilerConfig javacConfig,
 	                         @Nonnull TabCompletionConfig tabCompletionConfig,
 	                         @Nonnull TextConfig textConfig,
 	                         @Nonnull Actions actions) {
 		super(decompileConfig, tutorialConfig, keys, searchBar, astService, contextActionSupport, navigationHistoryService, cellConfigurationService,
-				languageAssociation, decompilerManager, javaTypeIndexService, tabCompletionConfig, textConfig, actions);
+				languageAssociation, decompilerManager, typeIndexService, tabCompletionConfig, textConfig, actions);
 		this.javacDebug = new ObservableBoolean(javacConfig.getDefaultEmitDebug().getValue());
 		this.javacTarget = new ObservableInteger(javacConfig.getDefaultTargetVersion().getValue());
 		this.javacDownsampleTarget = new ObservableInteger(javacConfig.getDefaultDownsampleTargetVersion().getValue());
 		this.javac = javac;
+		this.saveService = saveService;
 
 		// Install tools container with configurator
 		new JvmDecompilerPaneConfigurator(toolsContainer, decompileConfig, decompiler, javacTarget, javacDownsampleTarget, javacDebug, decompilerManager);
@@ -258,42 +263,53 @@ public class JvmDecompilerPane extends AbstractDecompilePane {
 				// Compilation map has contents, update the workspace.
 				Animations.animateSuccess(this, 1000);
 				updateLock.set(true);
-				compilations.forEach((name, bytecode) -> {
-					JvmClassInfo newInfo;
-					if (infoName.equals(name)) {
-						// Adapt from existing.
-						newInfo = info.toJvmClassBuilder()
-								.adaptFrom(bytecode)
-								.build();
-						path = Objects.requireNonNull(path.getParent(), "Class missing parent in path").child(newInfo);
-					} else {
-						// Handle inner classes.
-						JvmClassInfo originalClass = bundle.get(name);
-						if (originalClass != null) {
+				List<JvmClassInfo> updatedClasses = new ArrayList<>(compilations.size());
+				try {
+					compilations.forEach((name, bytecode) -> {
+						JvmClassInfo newInfo;
+						if (infoName.equals(name)) {
 							// Adapt from existing.
-							newInfo = originalClass
-									.toJvmClassBuilder()
+							newInfo = info.toJvmClassBuilder()
 									.adaptFrom(bytecode)
 									.build();
+							path = Objects.requireNonNull(path.getParent(), "Class missing parent in path").child(newInfo);
 						} else {
-							// Class is new.
-							newInfo = new JvmClassInfoBuilder(bytecode).build();
+							// Handle inner classes.
+							JvmClassInfo originalClass = bundle.get(name);
+							if (originalClass != null) {
+								// Adapt from existing.
+								newInfo = originalClass
+										.toJvmClassBuilder()
+										.adaptFrom(bytecode)
+										.build();
+							} else {
+								// Class is new.
+								newInfo = new JvmClassInfoBuilder(bytecode).build();
+							}
 						}
-					}
 
-					// Update cached decompile property to current editor text.
-					// If the class is opened later, we can use the code we compiled with.
-					JvmDecompiler currentDecompiler = decompiler.getValue();
-					int configHash = currentDecompiler.getConfig().getHash();
-					CachedDecompileProperty.set(newInfo, currentDecompiler,
-							new DecompileResult(editor.getText(), configHash));
+						// Update cached decompile property to current editor text.
+						// If the class is opened later, we can use the code we compiled with.
+						JvmDecompiler currentDecompiler = decompiler.getValue();
+						int configHash = currentDecompiler.getConfig().getHash();
+						CachedDecompileProperty.set(newInfo, currentDecompiler, new DecompileResult(editor.getText(), configHash));
 
-					// Update the class in the bundle.
-					bundle.put(newInfo);
-				});
-				for (String removedClass : notInCompilation)
-					bundle.remove(removedClass);
-				updateLock.set(false);
+						updatedClasses.add(newInfo);
+					});
+
+					saveService.commit(workspace, bundle, updatedClasses, notInCompilation).whenComplete((v, t) -> {
+						if (t != null) {
+							logger.error("Failed to commit changes to workspace", t);
+						} else {
+							ClassPathNode contextPath = contextActionSupport.getPath();
+							if (contextPath.getValue() != path.getValue())
+								super.onUpdatePath(path);
+						}
+					});
+
+				} finally {
+					updateLock.set(false);
+				}
 			} else {
 				// Handle compile-result failure, or uncaught thrown exception.
 				if (result != null) {

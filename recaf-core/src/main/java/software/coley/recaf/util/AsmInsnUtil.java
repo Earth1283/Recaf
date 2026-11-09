@@ -2,10 +2,9 @@ package software.coley.recaf.util;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
-import me.darknet.assembler.printer.JvmPrinterUtil;
-import me.darknet.assembler.util.JvmOpcodes;
+import me.darknet.assembler.backend.jvm.printer.JvmPrinterUtil;
+import me.darknet.assembler.backend.jvm.util.JvmOpcodes;
 import me.darknet.dex.tree.definitions.code.Code;
-import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -140,6 +139,20 @@ public class AsmInsnUtil implements Opcodes {
 			case Opcodes.FSTORE, Opcodes.FLOAD -> Type.FLOAT_TYPE;
 			case Opcodes.DSTORE, Opcodes.DLOAD -> Type.DOUBLE_TYPE;
 			default -> Types.OBJECT_TYPE;
+		};
+	}
+
+	/**
+	 * @param op
+	 * 		Instruction opcode.
+	 *
+	 * @return {@code true} when it is any integer binary operation.
+	 */
+	public static boolean isIntBinaryOperation(int op) {
+		return switch (op) {
+			case IADD, ISUB, IMUL, IDIV, IREM,
+			     ISHL, ISHR, IUSHR, IAND, IOR, IXOR -> true;
+			default -> false;
 		};
 	}
 
@@ -619,8 +632,22 @@ public class AsmInsnUtil implements Opcodes {
 	 */
 	@Nullable
 	public static AbstractInsnNode getPreviousInsn(@Nonnull AbstractInsnNode insn) {
+		return getPreviousInsn(insn, false);
+	}
+
+	/**
+	 * @param insn
+	 * 		Instruction to begin from.
+	 * @param skipNop
+	 *        {@code true} to skip {@link Opcodes#NOP} instructions, {@code false} to include them.
+	 *
+	 * @return Previous non-metadata instruction.
+	 * Can be {@code null} for no previous instruction at the start of a method.
+	 */
+	@Nullable
+	public static AbstractInsnNode getPreviousInsn(@Nonnull AbstractInsnNode insn, boolean skipNop) {
 		AbstractInsnNode prev = insn.getPrevious();
-		while (prev != null && isMetaData(prev))
+		while (prev != null && (isMetaData(prev) || (skipNop && prev.getOpcode() == NOP)))
 			prev = prev.getPrevious();
 		return prev;
 	}
@@ -630,14 +657,26 @@ public class AsmInsnUtil implements Opcodes {
 	 * 		Instruction to begin from.
 	 *
 	 * @return Next non-metadata instruction, following {@link Opcodes#GOTO} if found.
-	 * Can be {@code null} for no next instruction at the end of a method.
+	 * Can be {@code null} if no next instruction exists or following {@link Opcodes#GOTO}s enters a cycle.
 	 */
 	@Nullable
 	public static AbstractInsnNode getNextFollowGoto(@Nonnull AbstractInsnNode insn) {
 		AbstractInsnNode next = getNextInsn(insn);
+		AbstractInsnNode cycleCheckpoint = next;
+		long cycleCheckpointRange = 1;
+		long stepsSinceCycleCheckpoint = 0;
 		while (next != null && next.getOpcode() == GOTO) {
 			JumpInsnNode jin = (JumpInsnNode) next;
 			next = getNextInsn(jin.label);
+			if (next == null || next.getOpcode() != GOTO)
+				return next;
+			if (next == cycleCheckpoint)
+				return null;
+			if (++stepsSinceCycleCheckpoint == cycleCheckpointRange) {
+				cycleCheckpoint = next;
+				stepsSinceCycleCheckpoint = 0;
+				cycleCheckpointRange <<= 1;
+			}
 		}
 		return next;
 	}
@@ -673,6 +712,21 @@ public class AsmInsnUtil implements Opcodes {
 			list.add(t);
 		}
 		return list;
+	}
+
+	/**
+	 * @param instructions
+	 * 		Instructions to index.
+	 *
+	 * @return Map of instructions to their index in the list.
+	 */
+	@Nonnull
+	public static Map<AbstractInsnNode, Integer> indexInstructions(@Nonnull InsnList instructions) {
+		Map<AbstractInsnNode, Integer> indices = new IdentityHashMap<>(instructions.size());
+		int size = instructions.size();
+		for (int i = 0; i < size; i++)
+			indices.put(instructions.get(i), i);
+		return indices;
 	}
 
 	/**
@@ -742,6 +796,12 @@ public class AsmInsnUtil implements Opcodes {
 		if (op == NEW || op == ANEWARRAY || op == NEWARRAY || op == MULTIANEWARRAY ||
 				op == CHECKCAST || op == INSTANCEOF)
 			return true;
+
+		// TODO: Additional cases?
+		//   - Field access triggering class resolution, <clinit> fails, etc.
+		//   - Ldc of type/handle triggering class resolution
+		//   - Question is if this would be too broad of a check and cause transformers to become overly aggressive/convservative (depending on use case).
+		//     - See: canThrowForPhantomAnalysis (and update its comments) if we come back to this.
 
 		// NullPointerException
 		return op == GETFIELD || op == PUTFIELD || op == ARRAYLENGTH ||

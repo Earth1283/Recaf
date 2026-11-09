@@ -39,19 +39,18 @@ import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.TreeMap;
 
 import static org.objectweb.asm.Opcodes.*;
 
@@ -149,6 +148,27 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 
 	@Nonnull
 	@Override
+	public String beforeExample() {
+		return """
+				// The try-catch is redundant since no code in the block can possibly throw the exception.
+				try {
+					return 5;
+				} catch (java.lang.NullPointerException ex) {
+					return -1;
+				}
+				""";
+	}
+
+	@Nonnull
+	@Override
+	public String afterExample() {
+		return """
+				return 5;
+				""";
+	}
+
+	@Nonnull
+	@Override
 	public List<TransformationParameter<?>> getParameterDefinitions() {
 		return List.of(DELETE_JUNK_WORKSPACE_EXCEPTIONS_PARAMETER);
 	}
@@ -174,14 +194,40 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 		InsnList instructions = method.instructions;
 
 		// Snapshot the original state of the try-catch blocks so we can check if we made any changes at the end.
-		List<TryCatchState> originalState = snapshotStates(instructions, method.tryCatchBlocks);
+		Map<AbstractInsnNode, Integer> instructionIndices = AsmInsnUtil.indexInstructions(instructions);
+		List<TryCatchState> originalState = snapshotStates(instructions, instructionIndices, method.tryCatchBlocks);
 
 		// Pruning occurs in multiple passes to allow later passes to take advantage of the results of earlier ones.
 		List<TryCatchBlockNode> tryCatches = new ArrayList<>(method.tryCatchBlocks);
-		tryCatches.removeIf(block -> isTransparentRethrowHandler(instructions, block, method.tryCatchBlocks));
-		tryCatches = mergeContinuousRanges(instructions, tryCatches);
-		tryCatches = removeExactDuplicates(instructions, tryCatches);
-		tryCatches = removeShadowedRanges(instructions, tryCatches);
+		Map<LabelNode, Integer> handlerUseCounts = new IdentityHashMap<>();
+		for (TryCatchBlockNode block : method.tryCatchBlocks)
+			handlerUseCounts.merge(block.handler, 1, Integer::sum);
+
+		// Determine if any of the handlers are unique.
+		boolean hasUniqueHandler = false;
+		for (TryCatchBlockNode block : method.tryCatchBlocks) {
+			if (handlerUseCounts.getOrDefault(block.handler, 0) == 1) {
+				hasUniqueHandler = true;
+				break;
+			}
+		}
+
+		// If there is a unique handler, we can build a normal-control-flow map to help identify transparent rethrow handlers.
+		NormalFlow flow = null;
+		if (hasUniqueHandler && instructions.size() >= 3) {
+			for (TryCatchBlockNode block : method.tryCatchBlocks) {
+				if (handlerUseCounts.getOrDefault(block.handler, 0) == 1 && instructionIndices.containsKey(block.handler)) {
+					flow = NormalFlow.buildNormalFlow(instructions);
+					break;
+				}
+			}
+		}
+		NormalFlow rethrowFlow = flow;
+		tryCatches.removeIf(block -> isTransparentRethrowHandler(instructions, block, handlerUseCounts, instructionIndices, rethrowFlow));
+		tryCatches = mergeContinuousRanges(instructions, instructionIndices, tryCatches);
+		tryCatches = removeExactDuplicates(instructions, instructionIndices, tryCatches);
+		Map<String, Set<String>> assignableTypeNames = new HashMap<>();
+		tryCatches = removeShadowedRanges(instructions, instructionIndices, tryCatches, assignableTypeNames);
 
 		// Last pass requires frame analysis, so we do it after the cheaper passes to minimize the number of frames we need to analyze.
 		Frame<ReValue>[] frames;
@@ -191,10 +237,10 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 			// Can't analyze the method, so we can't prune any try-catch blocks.
 			return false;
 		}
-		tryCatches = removeImpossibleCatches(instructions, frames, tryCatches);
+		tryCatches = removeImpossibleCatches(instructions, instructionIndices, frames, tryCatches);
 
 		// If the final state is the same as the original state, we don't need to update anything.
-		List<TryCatchState> updatedState = snapshotStates(instructions, tryCatches);
+		List<TryCatchState> updatedState = snapshotStates(instructions, instructionIndices, tryCatches);
 		if (originalState.equals(updatedState))
 			return false;
 
@@ -210,17 +256,23 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 * 		Method instructions.
 	 * @param candidate
 	 * 		Try-catch block to inspect.
-	 * @param allBlocks
-	 * 		All try-catch blocks in the method.
+	 * @param handlerUseCounts
+	 * 		Handler reference counts keyed by label identity.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions keyed by instruction identity.
+	 * @param flow
+	 * 		Precomputed normal-control-flow data, or {@code null} when no candidate can use it.
 	 *
 	 * @return {@code true} when the try-catch block is a transparent rethrow handler that can be removed without changing behavior.
 	 */
 	private static boolean isTransparentRethrowHandler(@Nonnull InsnList instructions,
 	                                                   @Nonnull TryCatchBlockNode candidate,
-	                                                   @Nonnull List<TryCatchBlockNode> allBlocks) {
-		// Sanity check, handler must be present in the instruction list to be a valid candidate.
-		int handlerIndex = instructions.indexOf(candidate.handler);
-		if (handlerIndex < 0)
+	                                                   @Nonnull Map<LabelNode, Integer> handlerUseCounts,
+	                                                   @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                                   @Nullable NormalFlow flow) {
+		// A shared handler may be intentional code even when one exception edge is redundant.
+		// Check this before looking up candidate-specific positions.
+		if (handlerUseCounts.getOrDefault(candidate.handler, 0) != 1)
 			return false;
 
 		// It is impossible to have a rethrow handler with less than 3 instructions, since the minimum shape is:
@@ -230,45 +282,18 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 		if (instructions.size() < 3)
 			return false;
 
-		// A handler shared by multiple ranges may be intentional code even when one edge is redundant.
-		int sharedCount = 0;
-		for (TryCatchBlockNode block : allBlocks)
-			if (block.handler == candidate.handler)
-				sharedCount++;
-		if (sharedCount != 1)
-			return false;
-
-		// Build normal control-flow edges only (no exception edges) so the reachability walk below
-		// reflects application flow, not the exception edge we are considering removing.
-		Int2ObjectMap<List<Integer>> successors = new Int2ObjectMap<>(instructions.size());
-		Int2ObjectMap<List<Integer>> predecessors = new Int2ObjectMap<>(instructions.size());
-		MethodNode flowMethod = new MethodNode();
-		flowMethod.instructions = instructions;
-		flowMethod.tryCatchBlocks = Collections.emptyList();
-		AsmInsnUtil.populateFlowMaps(flowMethod, successors, predecessors, false);
-
-		// Mark everything application control-flow can reach from the method entry.
-		// Anything reachable must survive the removal of the exception edge, since it is live application code.
-		boolean[] reachable = new boolean[instructions.size()];
-		reachable[0] = true;
-		Deque<Integer> queue = new ArrayDeque<>();
-		queue.add(0);
-		while (!queue.isEmpty()) {
-			int current = queue.removeFirst();
-			for (int next : successors.getOrDefault(current, Collections.emptyList()))
-				if (next >= 0 && next < reachable.length && !reachable[next]) {
-					reachable[next] = true;
-					queue.addLast(next);
-				}
-		}
-
-		// Handler must not be reachable by normal application flow, otherwise it is not a transparent rethrow.
+		// If the handler is reachable by normal application flow, then it is not a transparent rethrow.
+		Integer handlerPosition = instructionIndices.get(candidate.handler);
+		if (handlerPosition == null || flow == null)
+			return false; // Didn't compute flow, so we can't check this candidate.
+		int handlerIndex = handlerPosition;
+		boolean[] reachable = flow.reachable;
 		if (reachable[handlerIndex])
 			return false;
 
 		// If any reachable instruction has an edge into the handler, treat the
 		// handler as reachable application code rather than risk deleting a live rethrow.
-		for (int predecessor : predecessors.getOrDefault(handlerIndex, Collections.emptyList()))
+		for (int predecessor : flow.predecessors.getOrDefault(handlerIndex, Collections.emptyList()))
 			if (predecessor >= 0 && predecessor < reachable.length && reachable[predecessor])
 				return false;
 
@@ -277,8 +302,8 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 		List<Integer> bodyIndices = new ArrayList<>();
 		List<AbstractInsnNode> realInstructions = new ArrayList<>(3);
 		for (AbstractInsnNode current = candidate.handler; current != null; current = current.getNext()) {
-			int index = instructions.indexOf(current);
-			if (index < 0)
+			Integer index = instructionIndices.get(current);
+			if (index == null)
 				return false;
 			bodyIndices.add(index);
 
@@ -313,7 +338,7 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 		for (int bodyIndex : bodyIndices) {
 			if (reachable[bodyIndex])
 				return false;
-			for (int predecessor : predecessors.getOrDefault(bodyIndex, Collections.emptyList()))
+			for (int predecessor : flow.predecessors.getOrDefault(bodyIndex, Collections.emptyList()))
 				if (predecessor >= 0
 						&& predecessor < reachable.length
 						&& reachable[predecessor]
@@ -323,62 +348,6 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 
 		// The entry only ever forwards to an unconditional rethrow, so dropping it preserves observable behavior.
 		return true;
-	}
-
-	/**
-	 * Removes ranges that cannot possibly be utilized at runtime.
-	 *
-	 * @param instructions
-	 * 		Method instructions.
-	 * @param tryCatches
-	 * 		Method try-catches.
-	 *
-	 * @return Deduplicated try-catch list.
-	 */
-	@Nonnull
-	private List<TryCatchBlockNode> removeIgnoredRanges(@Nonnull InsnList instructions, @Nonnull List<TryCatchBlockNode> tryCatches) {
-		// Collect all try-catch handlers keyed by their range
-		Map<TryRange, List<TryCatchBlockNode>> handlersMap = new HashMap<>();
-		for (TryCatchBlockNode tryCatch : tryCatches) {
-			int start = codeBoundaryIndex(instructions, tryCatch.start);
-			int end = codeBoundaryIndex(instructions, tryCatch.end);
-			if (start < end) {
-				TryRange range = new TryRange(start, end);
-				handlersMap.computeIfAbsent(range, r -> new ArrayList<>()).add(tryCatch);
-			}
-		}
-
-		// Prune handlers of narrower (or equal) types in the collection
-		//  - Gives preference to handlers that appear first in the list, since the JVM will check them first.
-		new HashMap<>(handlersMap).forEach((range, blocks) -> {
-			Set<String> seenTypes = new HashSet<>();
-			Iterator<TryCatchBlockNode> it = blocks.iterator();
-			while (it.hasNext()) {
-				TryCatchBlockNode block = it.next();
-				String handledType = Objects.requireNonNullElse(block.type, "java/lang/Object");
-				inner:
-				{
-					for (String seenType : seenTypes) {
-						if (inheritanceGraph.isAssignableFrom(seenType, handledType)) {
-							it.remove();
-							break inner;
-						}
-					}
-					seenTypes.add(handledType);
-				}
-			}
-		});
-
-		// Retain only remaining handlers in the collection
-		Set<TryCatchBlockNode> allHandlers = handlersMap.values()
-				.stream()
-				.flatMap(Collection::stream)
-				.collect(Collectors.toCollection(() -> Collections.newSetFromMap(new IdentityHashMap<>())));
-		List<TryCatchBlockNode> retained = new ArrayList<>(tryCatches);
-		retained.retainAll(tryCatches.stream()
-				.filter(allHandlers::contains)
-				.toList());
-		return retained;
 	}
 
 	/**
@@ -403,13 +372,17 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 *
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param tryCatches
 	 * 		Method try-catches.
 	 *
 	 * @return Condensed try-catch list.
 	 */
 	@Nonnull
-	private static List<TryCatchBlockNode> mergeContinuousRanges(@Nonnull InsnList instructions, @Nonnull List<TryCatchBlockNode> tryCatches) {
+	private static List<TryCatchBlockNode> mergeContinuousRanges(@Nonnull InsnList instructions,
+	                                                             @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                                             @Nonnull List<TryCatchBlockNode> tryCatches) {
 		// Skip if there is only one entry, as it can't be merged with anything else.
 		if (tryCatches.size() <= 1)
 			return new ArrayList<>(tryCatches);
@@ -422,8 +395,8 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 		for (TryCatchBlockNode current : tryCatches) {
 			if (previous != null &&
 					Objects.equals(previous.type, current.type) &&
-					codeBoundaryIndex(instructions, previous.end) == codeBoundaryIndex(instructions, current.start) &&
-					codeBoundaryIndex(instructions, previous.handler) == codeBoundaryIndex(instructions, current.handler)) {
+					codeBoundaryIndex(instructions, instructionIndices, previous.end) == codeBoundaryIndex(instructions, instructionIndices, current.start) &&
+					codeBoundaryIndex(instructions, instructionIndices, previous.handler) == codeBoundaryIndex(instructions, instructionIndices, current.handler)) {
 				previous.end = current.end;
 				continue;
 			}
@@ -439,13 +412,17 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 *
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param tryCatches
 	 * 		Method try-catches.
 	 *
 	 * @return Deduplicated try-catch list.
 	 */
 	@Nonnull
-	private static List<TryCatchBlockNode> removeExactDuplicates(@Nonnull InsnList instructions, @Nonnull List<TryCatchBlockNode> tryCatches) {
+	private static List<TryCatchBlockNode> removeExactDuplicates(@Nonnull InsnList instructions,
+	                                                             @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                                             @Nonnull List<TryCatchBlockNode> tryCatches) {
 		// Skip if there is only one entry, as it can't be merged with anything else.
 		if (tryCatches.size() <= 1)
 			return new ArrayList<>(tryCatches);
@@ -455,7 +432,7 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 		Set<TryCatchState> seen = new HashSet<>(tryCatches.size());
 		List<TryCatchBlockNode> kept = new ArrayList<>(tryCatches.size());
 		for (TryCatchBlockNode tryCatch : tryCatches)
-			if (seen.add(snapshotState(instructions, tryCatch)))
+			if (seen.add(snapshotState(instructions, instructionIndices, tryCatch)))
 				kept.add(tryCatch);
 		return kept;
 	}
@@ -478,31 +455,56 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 *
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param tryCatches
 	 * 		Method try-catches.
+	 * @param assignableTypeNames
+	 * 		Cached assignable supertypes keyed by child type.
 	 *
 	 * @return Try-catch list without shadowed entries.
 	 */
 	@Nonnull
-	private List<TryCatchBlockNode> removeShadowedRanges(@Nonnull InsnList instructions, @Nonnull List<TryCatchBlockNode> tryCatches) {
+	private List<TryCatchBlockNode> removeShadowedRanges(@Nonnull InsnList instructions,
+	                                                     @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                                     @Nonnull List<TryCatchBlockNode> tryCatches,
+	                                                     @Nonnull Map<String, Set<String>> assignableTypeNames) {
+		List<TryCatchState> states = snapshotStates(instructions, instructionIndices, tryCatches);
 		List<TryCatchBlockNode> kept = new ArrayList<>(tryCatches.size());
-		for (TryCatchBlockNode tryCatch : tryCatches) {
-			TryCatchState state = snapshotState(instructions, tryCatch);
+		Map<String, RangeFrontier> rangesByType = new HashMap<>();
 
-			// Compare this try-catch block against all previously-kept blocks to see if
-			// it is fully covered by any of them and has a more specific catch type.
-			boolean shadowed = false;
-			for (TryCatchBlockNode previous : kept) {
-				TryCatchState previousState = snapshotState(instructions, previous);
-				if (previousState.covers(state) && catchesSameOrBroaderException(previous.type, tryCatch.type)) {
-					shadowed = true;
-					break;
+		for (int i = 0; i < tryCatches.size(); i++) {
+			TryCatchBlockNode tryCatch = tryCatches.get(i);
+			TryCatchState state = states.get(i);
+			if (state.start >= state.end) {
+				// If the start and end are the same, or the start is beyond the end,
+				// then there are no instructions protected by this try-catch, so
+				kept.add(tryCatch);
+				continue;
+			}
+
+			// A catch-all shadows every later entry whose protected range it covers.
+			RangeFrontier catchAllRanges = rangesByType.get(null);
+			boolean shadowed = catchAllRanges != null && catchAllRanges.covers(state.start, state.end);
+
+			// A typed entry only shadows types assignable to its catch type.
+			String catchType = tryCatch.type;
+			if (!shadowed && catchType != null) {
+				Set<String> broaderTypes = assignableTypeNames.computeIfAbsent(catchType, inheritanceGraph::getAssignableSupertypes);
+				for (String broaderType : broaderTypes) {
+					RangeFrontier ranges = rangesByType.get(broaderType);
+					if (ranges != null && ranges.covers(state.start, state.end)) {
+						shadowed = true;
+						break;
+					}
 				}
 			}
 
 			// If the block is not shadowed by any previous block, we keep it for the final list.
-			if (!shadowed)
+			if (!shadowed) {
 				kept.add(tryCatch);
+				rangesByType.computeIfAbsent(catchType, ignored -> new RangeFrontier()).add(state.start, state.end);
+			}
 		}
 		return kept;
 	}
@@ -512,6 +514,8 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 *
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param frames
 	 * 		Method stack frames.
 	 * @param tryCatches
@@ -521,12 +525,14 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 */
 	@Nonnull
 	private List<TryCatchBlockNode> removeImpossibleCatches(@Nonnull InsnList instructions,
+	                                                        @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
 	                                                        @Nonnull Frame<ReValue>[] frames,
 	                                                        @Nonnull List<TryCatchBlockNode> tryCatches) {
+		List<TryCatchState> states = snapshotStates(instructions, instructionIndices, tryCatches);
 		List<TryCatchBlockNode> kept = new ArrayList<>(tryCatches.size());
-		for (TryCatchBlockNode tryCatch : tryCatches)
-			if (canCatchBeUsed(instructions, frames, tryCatch))
-				kept.add(tryCatch);
+		for (int i = 0; i < tryCatches.size(); i++)
+			if (canCatchBeUsed(instructions, frames, tryCatches.get(i), states.get(i)))
+				kept.add(tryCatches.get(i));
 		return kept;
 	}
 
@@ -537,24 +543,25 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 * 		Method stack frames.
 	 * @param tryCatch
 	 * 		Try-catch entry to inspect.
+	 * @param state
+	 * 		Precomputed range coordinates.
 	 *
 	 * @return {@code true} when the try-catch has a reachable protected instruction that may match it.
 	 */
 	private boolean canCatchBeUsed(@Nonnull InsnList instructions,
 	                               @Nonnull Frame<ReValue>[] frames,
-	                               @Nonnull TryCatchBlockNode tryCatch) {
+	                               @Nonnull TryCatchBlockNode tryCatch,
+	                               @Nonnull TryCatchState state) {
 		// If the catch type is a type defined in the workspace, but never thrown in the workspace,
 		// then it can't be caught at runtime, and we can remove the try-catch block.
 		String catchType = tryCatch.type;
 		if (catchType != null && isWorkspaceExceptionNeverThrown(catchType))
 			return false;
 
-		int start = codeBoundaryIndex(instructions, tryCatch.start);
-		int end = codeBoundaryIndex(instructions, tryCatch.end);
-		int handler = codeBoundaryIndex(instructions, tryCatch.handler);
-
 		// If the start and end are the same, or the start is beyond the end,
 		// then there are no instructions protected by this try-catch, so it can't be used.
+		int start = state.start;
+		int end = state.end;
 		if (start >= end)
 			return false;
 
@@ -1077,23 +1084,6 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	}
 
 	/**
-	 * @param broaderType
-	 * 		Possibly broader catch type.
-	 * @param narrowerType
-	 * 		Possibly narrower catch type.
-	 *
-	 * @return {@code true} when the first type catches the same or broader set of exceptions.
-	 */
-	private boolean catchesSameOrBroaderException(@Nullable String broaderType, @Nullable String narrowerType) {
-		if (broaderType == null)
-			return true;
-		if (narrowerType == null)
-			return false;
-		return broaderType.equals(narrowerType)
-				|| inheritanceGraph.isAssignableFrom(broaderType, narrowerType);
-	}
-
-	/**
 	 * @param value
 	 * 		Reference candidate.
 	 *
@@ -1134,48 +1124,60 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	/**
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param label
 	 * 		Boundary label.
 	 *
 	 * @return Index of the first executable instruction at or after the label.
 	 */
-	private static int codeBoundaryIndex(@Nonnull InsnList instructions, @Nonnull LabelNode label) {
-		AbstractInsnNode current = label;
-		current = AsmInsnUtil.getNextInsn(current);
-		return current == null ?
-				instructions.size() :
-				instructions.indexOf(current);
+	private static int codeBoundaryIndex(@Nonnull InsnList instructions,
+	                                     @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                     @Nonnull LabelNode label) {
+		AbstractInsnNode current = AsmInsnUtil.getNextInsn(label);
+		if (current == null)
+			return instructions.size();
+		Integer index = instructionIndices.get(current);
+		return index != null ? index : -1;
 	}
 
 	/**
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param tryCatch
 	 * 		Try-catch entry.
 	 *
 	 * @return Snapshot of the try-catch's effective range and handler.
 	 */
 	@Nonnull
-	private static TryCatchState snapshotState(@Nonnull InsnList instructions, @Nonnull TryCatchBlockNode tryCatch) {
-		return new TryCatchState(codeBoundaryIndex(instructions, tryCatch.start),
-				codeBoundaryIndex(instructions, tryCatch.end),
-				codeBoundaryIndex(instructions, tryCatch.handler),
+	private static TryCatchState snapshotState(@Nonnull InsnList instructions,
+	                                           @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                           @Nonnull TryCatchBlockNode tryCatch) {
+		return new TryCatchState(codeBoundaryIndex(instructions, instructionIndices, tryCatch.start),
+				codeBoundaryIndex(instructions, instructionIndices, tryCatch.end),
+				codeBoundaryIndex(instructions, instructionIndices, tryCatch.handler),
 				tryCatch.type);
 	}
 
 	/**
 	 * @param instructions
 	 * 		Method instructions.
+	 * @param instructionIndices
+	 * 		Method-local instruction positions.
 	 * @param tryCatches
 	 * 		Try-catch entries.
 	 *
 	 * @return Snapshots of all entries in declaration order.
 	 */
 	@Nonnull
-	private static List<TryCatchState> snapshotStates(@Nonnull InsnList instructions, @Nonnull List<TryCatchBlockNode> tryCatches) {
+	private static List<TryCatchState> snapshotStates(@Nonnull InsnList instructions,
+	                                                  @Nonnull Map<AbstractInsnNode, Integer> instructionIndices,
+	                                                  @Nonnull List<TryCatchBlockNode> tryCatches) {
 		List<TryCatchState> states = new ArrayList<>(tryCatches.size());
 		for (TryCatchBlockNode tryCatch : tryCatches)
-			states.add(snapshotState(instructions, tryCatch));
+			states.add(snapshotState(instructions, instructionIndices, tryCatch));
 		return states;
 	}
 
@@ -1191,33 +1193,94 @@ public class RedundantTryCatchRemovingTransformer implements JvmClassTransformer
 	 * @param type
 	 * 		Handled exception type. Can be {@code null} for catch-all handlers.
 	 */
-	private record TryCatchState(int start, int end, int handler, @Nullable String type) {
-		private boolean covers(@Nonnull TryCatchState other) {
-			return start <= other.start && end >= other.end;
+	private record TryCatchState(int start, int end, int handler, @Nullable String type) {}
+
+	/**
+	 * Non-exceptional <i>("normal")</i> control flow summary.
+	 *
+	 * @param successors
+	 * 		Map of instruction indices to their normal successors.
+	 * @param predecessors
+	 * 		Map of instruction indices to their normal predecessors.
+	 * @param reachable
+	 * 		Array of booleans indicating which instructions are reachable by normal control flow.
+	 */
+	private record NormalFlow(@Nonnull Int2ObjectMap<List<Integer>> successors,
+	                          @Nonnull Int2ObjectMap<List<Integer>> predecessors,
+	                          @Nonnull boolean[] reachable) {
+		/**
+		 * Builds non-exceptional control-flow maps and entry reachability for reuse by transparent-rethrow checks.
+		 *
+		 * @param instructions
+		 * 		Instructions to analyze.
+		 */
+		@Nonnull
+		private static NormalFlow buildNormalFlow(@Nonnull InsnList instructions) {
+			// Build normal control-flow edges only (no exception edges) so the reachability walk below
+			// reflects application flow, not the exception edge we are considering removing.
+			Int2ObjectMap<List<Integer>> successors = new Int2ObjectMap<>(instructions.size());
+			Int2ObjectMap<List<Integer>> predecessors = new Int2ObjectMap<>(instructions.size());
+			MethodNode flowMethod = new MethodNode();
+			flowMethod.instructions = instructions;
+			flowMethod.tryCatchBlocks = Collections.emptyList();
+			AsmInsnUtil.populateFlowMaps(flowMethod, successors, predecessors, false);
+
+			// Mark everything application control-flow can reach from the method entry.
+			// Anything reachable must survive the removal of the exception edge, since it is live application code.
+			boolean[] reachable = new boolean[instructions.size()];
+			reachable[0] = true;
+			Deque<Integer> queue = new ArrayDeque<>();
+			queue.add(0);
+			while (!queue.isEmpty()) {
+				int current = queue.removeFirst();
+				for (int next : successors.getOrDefault(current, Collections.emptyList()))
+					if (next >= 0 && next < reachable.length && !reachable[next]) {
+						reachable[next] = true;
+						queue.addLast(next);
+					}
+			}
+			return new NormalFlow(successors, predecessors, reachable);
 		}
 	}
 
 	/**
-	 * Simplified range.
-	 *
-	 * @param start
-	 * 		Protected range start.
-	 * @param end
-	 * 		Protected range end.
+	 * Tracks the effective ranges of try-catch entries by their start and end indices.
 	 */
-	private record TryRange(int start, int end) {}
+	private static final class RangeFrontier {
+		private final NavigableMap<Integer, Integer> endsByStart = new TreeMap<>();
 
-	/**
-	 * Collection of try catch blocks.
-	 *
-	 * @param blocks
-	 * 		Wrapped list of blocks.
-	 * @param seenTypes
-	 * 		Observed types handled by the blocks.
-	 */
-	private record Handlers(@Nonnull List<TryCatchBlockNode> blocks, @Nonnull Set<String> seenTypes) {
-		private Handlers() {
-			this(new ArrayList<>(), new HashSet<>());
+		/**
+		 * @param start
+		 * 		Protected range start.
+		 * @param end
+		 * 		Protected range end.
+		 *
+		 * @return {@code true} when the range is covered by a previously added range.
+		 */
+		private boolean covers(int start, int end) {
+			Map.Entry<Integer, Integer> candidate = endsByStart.floorEntry(start);
+			return candidate != null && candidate.getValue() >= end;
+		}
+
+		/**
+		 * Adds a new range to the frontier, merging with any overlapping or adjacent ranges.
+		 *
+		 * @param start
+		 * 		Protected range start.
+		 * @param end
+		 * 		Protected range end.
+		 */
+		private void add(int start, int end) {
+			Map.Entry<Integer, Integer> previous = endsByStart.floorEntry(start);
+			if (previous != null && previous.getValue() >= end)
+				return;
+
+			Map.Entry<Integer, Integer> next = endsByStart.ceilingEntry(start);
+			while (next != null && next.getValue() <= end) {
+				endsByStart.remove(next.getKey());
+				next = endsByStart.ceilingEntry(start);
+			}
+			endsByStart.put(start, end);
 		}
 	}
 }

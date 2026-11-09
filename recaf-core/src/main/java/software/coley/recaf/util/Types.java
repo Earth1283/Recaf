@@ -23,6 +23,7 @@ public class Types {
 	public static final Type OBJECT_TYPE = Type.getObjectType("java/lang/Object");
 	public static final Type CLASS_TYPE = Type.getObjectType("java/lang/Class");
 	public static final Type STRING_TYPE = Type.getObjectType("java/lang/String");
+	public static final Type CHARSET_TYPE = Type.getObjectType("java/nio/charset/Charset");
 	public static final Type BOX_VOID = Type.getObjectType("java/lang/Void");
 	public static final Type BOX_BOOLEAN = Type.getObjectType("java/lang/Boolean");
 	public static final Type BOX_CHAR = Type.getObjectType("java/lang/Character");
@@ -97,9 +98,76 @@ public class Types {
 		if (desc == null || desc.length() != 1)
 			return false;
 		char c = desc.charAt(0);
+		return isPrimitive(c);
+	}
+
+	/**
+	 * @param c
+	 * 		Some single-char descriptor to check.
+	 *
+	 * @return {@code true} if it matches one of the primitive type chars.
+	 */
+	public static boolean isPrimitive(char c) {
 		return switch (c) {
 			case 'V', 'Z', 'C', 'B', 'S', 'I', 'F', 'J', 'D' -> true;
 			default -> false;
+		};
+	}
+
+	/**
+	 * @param desc
+	 * 		Some internal type descriptor.
+	 *
+	 * @return Source name of the primitive, or {@code null} if it is not a primitive.
+	 */
+	@Nullable
+	public static String primitiveToSource(@Nonnull String desc) {
+		if (desc.length() != 1)
+			return null;
+		return primitiveToSource(desc.charAt(0));
+	}
+
+	/**
+	 * @param desc
+	 * 		Some single-char descriptor.
+	 *
+	 * @return Source name of the primitive, or {@code null} if it is not a primitive.
+	 */
+	@Nullable
+	public static String primitiveToSource(char desc) {
+		return switch (desc) {
+			case 'V' -> "void";
+			case 'Z' -> "boolean";
+			case 'B' -> "byte";
+			case 'C' -> "char";
+			case 'S' -> "short";
+			case 'I' -> "int";
+			case 'J' -> "long";
+			case 'F' -> "float";
+			case 'D' -> "double";
+			default -> null;
+		};
+	}
+
+	/**
+	 * @param type
+	 * 		Source name of a primitive.
+	 *
+	 * @return Internal descriptor of the primitive, or {@code null} if it is not a primitive.
+	 */
+	@Nullable
+	public static String sourceToPrimitive(@Nonnull String type) {
+		return switch (type) {
+			case "void" -> "V";
+			case "boolean" -> "Z";
+			case "byte" -> "B";
+			case "char" -> "C";
+			case "short" -> "S";
+			case "int" -> "I";
+			case "long" -> "J";
+			case "float" -> "F";
+			case "double" -> "D";
+			default -> null;
 		};
 	}
 
@@ -222,6 +290,18 @@ public class Types {
 	/**
 	 * @param isStatic
 	 * 		Whether the method is static.
+	 * @param desc
+	 * 		Method descriptor.
+	 *
+	 * @return Number of variable slots occupied by the parameters, including {@code this} if non-static.
+	 */
+	public static int parameterEndSlot(boolean isStatic, @Nonnull String desc) {
+		return parameterEndSlot(isStatic, Type.getType(desc));
+	}
+
+	/**
+	 * @param isStatic
+	 * 		Whether the method is static.
 	 * @param methodType
 	 * 		Parsed method descriptor type.
 	 *
@@ -281,6 +361,16 @@ public class Types {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * @param type
+	 * 		Type to check.
+	 *
+	 * @return {@code true} for {@link Type#OBJECT} or {@link Type#ARRAY} types.
+	 */
+	public static boolean isReference(@Nonnull Type type) {
+		return type.getSort() == Type.OBJECT || type.getSort() == Type.ARRAY;
 	}
 
 	/**

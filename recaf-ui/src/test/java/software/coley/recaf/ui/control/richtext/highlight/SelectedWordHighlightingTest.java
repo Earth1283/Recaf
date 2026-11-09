@@ -1,6 +1,7 @@
 package software.coley.recaf.ui.control.richtext.highlight;
 
 import jakarta.annotation.Nonnull;
+import org.fxmisc.richtext.model.PlainTextChange;
 import org.fxmisc.richtext.model.StyleSpan;
 import org.fxmisc.richtext.model.StyleSpans;
 import org.junit.jupiter.api.Test;
@@ -94,6 +95,30 @@ class SelectedWordHighlightingTest {
 	}
 
 	@Test
+	void shiftsCachedMatchesAcrossRapidDeletions() {
+		String text = "foo foo blah foo padding padding";
+		SelectedWordHighlighting highlighting = new SelectedWordHighlighting();
+		highlighting.updateMatches(text, "foo", 1);
+
+		// Simulate holding Delete at the beginning of the first match. Between edits, style updates may
+		// apply the cached ranges, so those offsets must move with the text immediately.
+		for (String removed : List.of("f", "o", "o", " ")) {
+			PlainTextChange change = new PlainTextChange(0, removed, "");
+			text = text.substring(change.getRemovalEnd());
+			highlighting.onTextChange(change);
+		}
+
+		assertEquals("foo blah foo padding padding", text);
+		StyleSpans<Collection<String>> spans = StyleSpans.singleton(Collections.emptyList(), text.length());
+		assertEquals(List.of(
+				span(3, MATCH_STYLE),
+				span(6),
+				span(3, MATCH_STYLE),
+				span(text.length() - 12)
+		), describe(highlighting.apply(0, spans)));
+	}
+
+	@Test
 	void appliesStyleToWholeWordMatchesOnly() {
 		// Baseline update with a caret on the first "foo" should report all 3 matches of "foo",
 		SelectedWordHighlighting highlighting = new SelectedWordHighlighting();
@@ -155,6 +180,38 @@ class SelectedWordHighlightingTest {
 
 		// Removing the selected word style should only remove the selected word match style, and preserve other styles.
 		assertEquals(List.of(span(3, "base")), describe(highlighting.removeHighlightStyle(spans)));
+	}
+
+	@Test
+	void skipsHighlightingForOverlongCaretWordsAndSelections() {
+		String overlongWord = "a".repeat(SelectedWordHighlighting.DEFAULT_MAX_TEXT_LENGTH + 1);
+		String text = overlongWord + " " + overlongWord;
+		SelectedWordHighlighting highlighting = new SelectedWordHighlighting();
+
+		// Long caret words and long selections are ignored rather than scanned or validated in full.
+		assertEquals(Collections.emptyList(), highlighting.refreshAndGetAffectedRanges(text, "", overlongWord.length() / 2));
+		assertEquals(Collections.emptyList(), highlighting.refreshAndGetAffectedRanges("a a", overlongWord, 0));
+	}
+
+	@Test
+	void skipsHighlightingWhenDocumentLimitIsExceeded() {
+		String text = "word ".repeat(SelectedWordHighlighting.DEFAULT_MAX_TEXT_LENGTH / 5 + 1);
+		SelectedWordHighlighting highlighting = new SelectedWordHighlighting();
+
+		// The input is over the configured scan cap even though it contains valid matches at the beginning.
+		assertEquals(Collections.emptyList(), highlighting.refreshAndGetAffectedRanges(text, "word", 0));
+	}
+
+	@Test
+	void matchesMaximumLengthWordsAcrossNearMatches() {
+		String word = "a".repeat(SelectedWordHighlighting.DEFAULT_MAX_SELECTED_WORD_LENGTH - 1) + "b";
+		String nearMatch = "a".repeat(SelectedWordHighlighting.DEFAULT_MAX_SELECTED_WORD_LENGTH - 1) + "c ";
+		String text = word + " " + nearMatch.repeat(1_000);
+		SelectedWordHighlighting highlighting = new SelectedWordHighlighting();
+
+		// A valid maximum-sized word is still highlighted, while repeated partial matches are rejected.
+		assertEquals(List.of(new IntRange(0, word.length())),
+			highlighting.refreshAndGetAffectedRanges(text, "", 0));
 	}
 
 	@Test

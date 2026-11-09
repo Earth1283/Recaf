@@ -27,6 +27,7 @@ import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.behavior.Closing;
 import software.coley.recaf.info.AndroidClassInfo;
 import software.coley.recaf.info.ClassInfo;
+import software.coley.recaf.info.InnerClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.info.member.MethodMember;
@@ -71,8 +72,10 @@ import software.coley.recaf.workspace.model.Workspace;
 import software.coley.sourcesolver.Parser;
 import software.coley.sourcesolver.model.ClassModel;
 import software.coley.sourcesolver.model.CompilationUnitModel;
+import software.coley.sourcesolver.model.ErroneousModel;
 import software.coley.sourcesolver.model.ImportModel;
 import software.coley.sourcesolver.model.LambdaExpressionModel;
+import software.coley.sourcesolver.model.LiteralExpressionModel;
 import software.coley.sourcesolver.model.MethodBodyModel;
 import software.coley.sourcesolver.model.MethodModel;
 import software.coley.sourcesolver.model.Model;
@@ -291,6 +294,29 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 						(listener, t) -> logger.error("Exception thrown on select listener '{}'", listener.getClass(), t));
 			} catch (Throwable t) {
 				logger.error("Unhandled exception in Java context support - select '{}'", member.getName(), t);
+			}
+		}
+	}
+
+	/**
+	 * Selects an inner class declaration in the AST.
+	 *
+	 * @param innerClass
+	 * 		Inner class to select.
+	 */
+	public void select(@Nonnull InnerClassInfo innerClass) {
+		CompilationUnitModel localUnit = unit;
+		ResolverAdapter localResolver = resolver;
+		if (localUnit == null || localResolver == null) {
+			queuedSelectionTask = () -> select(innerClass);
+		} else {
+			queuedSelectionTask = null;
+			try {
+				ClassModel classModel = findInnerClassModel(localUnit, localResolver, innerClass);
+				if (classModel != null)
+					selectRange(classModel.getRange());
+			} catch (Throwable t) {
+				logger.error("Unhandled exception in Java context support - select inner '{}'", innerClass.getInnerClassName(), t);
 			}
 		}
 	}
@@ -737,14 +763,19 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 
 			// Create menu
 			int offsetHitIndex = offset(hit.getInsertionIndex());
-			AstResolveResult result = resolvePosition(offsetHitIndex, false);
-			if (result != null) {
-				PathNode<?> path = result.path();
-				logger.debugging(l -> l.info("Path at offset '{}' = {}", offsetHitIndex, path));
+			Object literalValue = findSearchableLiteralValue(unit, offsetHitIndex);
+			if (literalValue != null) {
+				menu = cellConfigurationService.contextMenuOfConstant(literalValue);
+			} else {
+				AstResolveResult result = resolvePosition(offsetHitIndex, false);
+				if (result != null) {
+					PathNode<?> path = result.path();
+					logger.debugging(l -> l.info("Path at offset '{}' = {}", offsetHitIndex, path));
 
-				// Map the result's declaration state to a context-source.
-				ContextSource source = result.isDeclaration() ? ContextSource.DECLARATION : ContextSource.REFERENCE;
-				menu = cellConfigurationService.contextMenuOf(source, path);
+					// Map the result's declaration state to a context-source.
+					ContextSource source = result.isDeclaration() ? ContextSource.DECLARATION : ContextSource.REFERENCE;
+					menu = cellConfigurationService.contextMenuOf(source, path);
+				}
 			}
 
 			// Show menu
@@ -810,6 +841,37 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 			ClassInfo classInfo = classPath.getValue();
 			ThreadUtil.run(() -> initialize(classInfo));
 		}
+	}
+
+	@Nullable
+	protected static Object findSearchableLiteralValue(@Nonnull CompilationUnitModel unit, int position) {
+		Model model = unit;
+		Model child;
+		while ((child = model.getChildAtPosition(position)) != null && !(child instanceof ErroneousModel))
+			model = child;
+
+		if (!(model instanceof LiteralExpressionModel literal))
+			return null;
+
+		Object content = literal.getContent();
+		return switch (literal.getKind()) {
+			case STRING -> content instanceof String ? content : null;
+			case INT, LONG, FLOAT, DOUBLE -> content instanceof Number ? content : null;
+			default -> null;
+		};
+	}
+
+	@Nullable
+	protected static ClassModel findInnerClassModel(@Nonnull CompilationUnitModel unit,
+	                                                @Nonnull ResolverAdapter resolver,
+	                                                @Nonnull InnerClassInfo innerClass) {
+		for (ClassModel classModel : unit.getRecursiveChildrenOfType(ClassModel.class)) {
+			PathNode<?> resolvedPath = getResolvedPath(resolver, classModel);
+			ClassPathNode classPath = resolvedPath == null ? null : resolvedPath.getPathOfType(ClassInfo.class);
+			if (classPath != null && innerClass.getInnerClassName().equals(classPath.getValue().getName()))
+				return classModel;
+		}
+		return null;
 	}
 
 	@Nullable

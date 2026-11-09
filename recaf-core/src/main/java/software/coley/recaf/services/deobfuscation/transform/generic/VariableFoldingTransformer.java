@@ -86,6 +86,9 @@ public class VariableFoldingTransformer implements JvmClassTransformer {
 			// Fold constant locals whose single definition remains hidden behind control flow.
 			dirty |= foldSingleConstantLocals(className, method);
 
+			// Remove stores and increments for typed locals that have no executable variable loads.
+			dirty |= removeUnusedLocals(method);
+
 			// Build successor and predecessor maps modeling control flow.
 			Int2ObjectMap<List<Integer>> successorMap = new Int2ObjectMap<>();
 			Int2ObjectMap<List<Integer>> predecessorMap = new Int2ObjectMap<>();
@@ -231,9 +234,106 @@ public class VariableFoldingTransformer implements JvmClassTransformer {
 					dirty = true;
 				}
 			}
+			dirty |= removeUnusedLocals(method);
 		}
-		if (dirty)
+		if (dirty) {
+			// Removed stores and folded loads change which locals are assigned, which existing frames may still claim.
+			context.setRecomputeFrames(className);
 			context.setNode(bundle, initialClassState, node);
+		}
+	}
+
+	/**
+	 * Removes stores and increments for typed locals that have no executable variable loads.
+	 * <p>
+	 * Repeating the analysis is necessary because removing an unused copy can make its source
+	 * local unread as well.
+	 *
+	 * @param method
+	 * 		Method whose unused locals should be removed.
+	 *
+	 * @return {@code true} when instructions or exception metadata changed.
+	 */
+	private static boolean removeUnusedLocals(@Nonnull MethodNode method) {
+		InsnList instructions = method.instructions;
+		if (instructions == null || instructions.size() == 0)
+			return false;
+
+		boolean dirty = false;
+		while (true) {
+			Int2ObjectMap<LocalAccessState> accessStates = new Int2ObjectMap<>();
+			populateVariableAccessStates(method, accessStates);
+
+			boolean roundDirty = false;
+			for (int stateKey : accessStates.keys()) {
+				LocalAccessState state = accessStates.get(stateKey);
+
+				// IINC is tracked as a read for the other folding algorithms, but does not
+				// keep a local alive when no variable load observes its value.
+				boolean hasLoad = false;
+				for (LocalAccess read : state.getReads()) {
+					if (read.offset >= 0 && read.offset < instructions.size()
+							&& instructions.get(read.offset) == read.instruction
+							&& read.instruction instanceof VarInsnNode variable
+							&& isVarLoad(variable.getOpcode())) {
+						hasLoad = true;
+						break;
+					}
+				}
+				if (hasLoad)
+					continue;
+
+				// Remove all writes to the local, as they are not observed by any load.
+				for (LocalAccess write : state.getWrites()) {
+					if (write.offset < 0 || write.offset >= instructions.size())
+						continue;
+
+					// Sanity check the write instruction is still in the list, as a prior pass may have removed it.
+					AbstractInsnNode writeInsn = write.instruction;
+					if (instructions.get(write.offset) != writeInsn)
+						continue;
+
+					// Remove the write instruction, replacing it with a POP if necessary.
+					if (writeInsn instanceof IincInsnNode) {
+						instructions.set(writeInsn, new InsnNode(NOP));
+						roundDirty = true;
+					} else if (writeInsn instanceof VarInsnNode store && isVarStore(store.getOpcode())) {
+						Type type = getTypeForVarInsn(store);
+
+						// If the store is preceded by a constant or load of the same type, we can remove both instructions.
+						AbstractInsnNode predecessor = store.getPrevious();
+						while (predecessor != null && predecessor.getOpcode() == NOP)
+							predecessor = predecessor.getPrevious();
+						if (predecessor != null && (isConstantForStore(predecessor, store) || isMatchingLoad(type.getSort(), predecessor.getOpcode()))) {
+							instructions.set(predecessor, new InsnNode(NOP));
+							instructions.set(writeInsn, new InsnNode(NOP));
+						} else {
+							instructions.set(writeInsn, new InsnNode(type.getSize() == 2 ? POP2 : POP));
+						}
+
+						roundDirty = true;
+					}
+				}
+			}
+
+			if (!roundDirty)
+				break;
+			dirty = true;
+
+			// Remove any try/catch blocks that are now empty due to removed instructions.
+			List<TryCatchBlockNode> tryCatchBlocks = method.tryCatchBlocks;
+			if (tryCatchBlocks != null && !tryCatchBlocks.isEmpty()) {
+				tryCatchBlocks.removeIf(block -> {
+					for (AbstractInsnNode current = block.start; current != null && current != block.end; current = current.getNext()) {
+						int opcode = current.getOpcode();
+						if (opcode >= 0 && opcode != NOP)
+							return false;
+					}
+					return true;
+				});
+			}
+		}
+		return dirty;
 	}
 
 	/**
@@ -648,12 +748,13 @@ public class VariableFoldingTransformer implements JvmClassTransformer {
 		if (writesX.first().offset >= storeIndexY)
 			return false;
 
-		// Propagate the copy fact from this definition until a later write to Y kills it.
+		// Propagate from method entry so uses reached by a path that bypasses this definition cannot be folded.
 		//
 		// State values are bitmasks:
 		//   0b0000 means unreachable
 		//   0b0010 means the source was changed
 		//   0b0100 means the target was killed
+		//   0b1000 means this path has not executed the copy store
 		//
 		// Multiple bits mean paths with different states merged at a control-flow join,
 		// such as one path reading Y before another path overwrites it. Examples:
@@ -692,29 +793,45 @@ public class VariableFoldingTransformer implements JvmClassTransformer {
 		final int validState = 1;
 		final int sourceChangedState = 1 << 1;
 		final int targetKilledState = 1 << 2;
+		final int bypassedStoreState = 1 << 3;
 		int size = instructions.size();
 		int[] state = new int[size];
 
-		// Add initial successors of store Y to the queue and mark them as unchanged.
+		// Start before the copy definition. A read reached while this state is present has an incoming path that
+		// bypasses the copy, such as an exception handler reached from an instruction before the store.
 		Deque<Integer> unprocessed = new ArrayDeque<>();
-		for (int s : successorMap.getOrDefault(storeIndexY, emptyList())) {
-			state[s] |= validState;
-			unprocessed.add(s);
-		}
+		state[0] = bypassedStoreState;
+		unprocessed.add(0);
 
-		// Follow only the part of the graph where this particular definition still reaches Y.
+		// Track bypass paths alongside the copy definition so joins can reject reads not dominated by the store.
 		while (!unprocessed.isEmpty()) {
 			int i = unprocessed.poll();
 			AbstractInsnNode insn = instructions.get(i);
 			int op = insn.getOpcode();
 			int currentState = state[i];
+
+			// Executing the copy store establishes the fact on every path reaching it, including paths that
+			// previously bypassed the definition.
+			if (i == storeIndexY) {
+				for (int s : successorMap.getOrDefault(i, emptyList())) {
+					int oldState = state[s];
+					int newState = oldState | validState;
+					if (newState != oldState) {
+						state[s] = newState;
+						unprocessed.add(s);
+					}
+				}
+				continue;
+			}
+
 			boolean copyIsValid = (currentState & validState) != 0;
 			boolean sourceChanged = (currentState & sourceChangedState) != 0;
 			boolean targetKilled = (currentState & targetKilledState) != 0;
+			boolean bypassedStore = (currentState & bypassedStoreState) != 0;
 
 			// IINC reads Y before writing it, so it can be remapped when safe, but it kills the copy afterward.
 			if (typeSort == Type.INT && insn instanceof IincInsnNode iinc && iinc.var == slotY) {
-				if (sourceChanged || (copyIsValid && targetKilled))
+				if (bypassedStore || sourceChanged || (copyIsValid && targetKilled))
 					return false;
 				if (copyIsValid)
 					foldableReads.add(i);
@@ -745,7 +862,7 @@ public class VariableFoldingTransformer implements JvmClassTransformer {
 
 			// A matching load from Y consumes the value defined by this copy.
 			if (insn instanceof VarInsnNode variable && variable.var == slotY && isMatchingLoad(typeSort, op)) {
-				if (sourceChanged || (copyIsValid && targetKilled))
+				if (bypassedStore || sourceChanged || (copyIsValid && targetKilled))
 					return false;
 				if (copyIsValid)
 					foldableReads.add(i);
@@ -850,6 +967,30 @@ public class VariableFoldingTransformer implements JvmClassTransformer {
 	@Override
 	public String identifier() {
 		return IDENTIFIER;
+	}
+
+	@Nonnull
+	@Override
+	public String beforeExample() {
+		return """
+				int get(int i) {
+				    int j = i; // Junk intermediate copy
+				    int k = j;
+				    k++; // Junk operations on copies of copies
+				    j = 0 - i;
+				    return i;
+				}
+				""";
+	}
+
+	@Nonnull
+	@Override
+	public String afterExample() {
+		return """
+				int get(int i) {
+				    return i;
+				}
+				""";
 	}
 
 	/**

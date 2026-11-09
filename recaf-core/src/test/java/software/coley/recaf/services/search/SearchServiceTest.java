@@ -51,6 +51,9 @@ import software.coley.recaf.services.search.query.structure.InsnMatcher;
 import software.coley.recaf.services.search.query.structure.ListMatcher;
 import software.coley.recaf.services.search.query.structure.MethodMatcher;
 import software.coley.recaf.services.search.query.structure.MethodMatcherBuilder;
+import software.coley.recaf.services.search.query.structure.android.AnyDexInsnMatcher;
+import software.coley.recaf.services.search.query.structure.android.DexNewInstanceInstructionMatcher;
+import software.coley.recaf.services.search.query.structure.jvm.JvmDebugInfoMatcher;
 import software.coley.recaf.services.search.query.structure.jvm.JvmFieldInsnNodeMatcher;
 import software.coley.recaf.services.search.query.structure.jvm.JvmLdcInsnNodeMatcher;
 import software.coley.recaf.services.search.query.structure.jvm.JvmMethodInsnNodeMatcher;
@@ -167,6 +170,12 @@ public class SearchServiceTest extends TestBase {
 
 			results = searchService.search(classesWorkspace, new StringQuery(strMatchProvider.newPartialRegexPredicate("\\w+\\s\\w+")));
 			assertEquals(1, results.size());
+		}
+
+		@Test
+		void testEmptyInsnSearch() {
+			Results results = searchService.search(classesWorkspace, new InstructionQuery(List.of()));
+			assertTrue(results.isEmpty(), "An instruction query without predicates should not match every instruction");
 		}
 
 		@Test
@@ -473,6 +482,7 @@ public class SearchServiceTest extends TestBase {
 			code.setDebugInfo(new DebugInformation(
 					List.of(),
 					List.of(),
+					List.of(),
 					List.of(new DebugInformation.LocalVariable(0, "local", targetType, null, begin, end))
 			));
 			me.darknet.dex.tree.definitions.MethodMember method = newDexMethod("probe", "()V", ACC_PUBLIC | ACC_STATIC, code);
@@ -612,7 +622,7 @@ public class SearchServiceTest extends TestBase {
 
 		@Test
 		void testStructureInstructionSequence() {
-			// We'll make a query to look for for the 'hello world' print in the HelloWorld.main method.
+			// We'll make a query to look for the 'hello world' print in the HelloWorld.main method.
 			String owner = HelloWorld.class.getName().replace('.', '/');
 			MethodMatcher main = new MethodMatcherBuilder()
 					.name("main")
@@ -641,6 +651,64 @@ public class SearchServiceTest extends TestBase {
 			} else {
 				fail("Expected ClassReferenceResult");
 			}
+		}
+
+		@Test
+		void testAndroidStructureInstructionSearch() {
+			String owner = "demo/AndroidStructure";
+			InstanceType allocatedType = Types.instanceTypeFromInternalName("demo/Allocated");
+			Code code = new Code(0, 0, 1);
+			code.addInstruction(new NewInstanceInstruction(0, allocatedType));
+			code.addInstruction(new ReturnInstruction());
+			Workspace workspace = fromBundle(fromClasses(newAndroidClass(owner,
+					newDexMethod("create", "()V", ACC_PUBLIC | ACC_STATIC, code))));
+
+			// Find the DEX method that allocates the requested type.
+			MethodMatcher create = new MethodMatcherBuilder()
+					.name("create")
+					.instructions(
+							DexNewInstanceInstructionMatcher.exact(0, allocatedType.descriptor()),
+							AnyDexInsnMatcher.INSTANCE)
+					.build();
+			ClassQuery query = new ClassQueryBuilder().name(owner).methods(create).build();
+			Results results = searchService.search(workspace, query);
+			assertEquals(1, results.size());
+			ClassReferenceResult result = assertInstanceOf(ClassReferenceResult.class, results.getFirst());
+			assertEquals(owner, result.getValue().name());
+
+			// A different allocation type should not match.
+			MethodMatcher nearMiss = new MethodMatcherBuilder()
+					.name("create")
+					.instructions(
+							DexNewInstanceInstructionMatcher.exact(0, "demo/Other"),
+							AnyDexInsnMatcher.INSTANCE)
+					.build();
+			ClassQuery nearMissQuery = new ClassQueryBuilder().name(owner).methods(nearMiss).build();
+			assertTrue(searchService.search(workspace, nearMissQuery).isEmpty());
+		}
+
+		@Test
+		void testJvmStructureLocalVariableSearch() {
+			String owner = HelloWorld.class.getName().replace('.', '/');
+			MethodMatcher main = new MethodMatcherBuilder()
+					.name("main")
+					.debugInfo(JvmDebugInfoMatcher.local(0, "args", "[Ljava/lang/String;"))
+					.build();
+			ClassQuery query = new ClassQueryBuilder().name(owner).methods(main).build();
+
+			// Find the JVM method using its local-variable debug table.
+			Results results = searchService.search(classesWorkspace, query);
+			assertEquals(1, results.size());
+			ClassReferenceResult result = assertInstanceOf(ClassReferenceResult.class, results.getFirst());
+			assertEquals(owner, result.getValue().name());
+
+			// A different local descriptor should not match.
+			MethodMatcher nearMiss = new MethodMatcherBuilder()
+					.name("main")
+					.debugInfo(JvmDebugInfoMatcher.local(0, "args", "Ljava/lang/String;"))
+					.build();
+			ClassQuery nearMissQuery = new ClassQueryBuilder().name(owner).methods(nearMiss).build();
+			assertTrue(searchService.search(classesWorkspace, nearMissQuery).isEmpty());
 		}
 	}
 }

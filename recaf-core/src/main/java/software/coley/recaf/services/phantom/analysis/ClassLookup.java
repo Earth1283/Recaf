@@ -5,6 +5,7 @@ import jakarta.annotation.Nullable;
 import org.objectweb.asm.Type;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.member.MethodMember;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.services.phantom.GeneratedPhantomWorkspaceResource;
@@ -15,6 +16,8 @@ import software.coley.recaf.workspace.model.bundle.VersionedJvmClassBundle;
 import software.coley.recaf.workspace.model.resource.RuntimeWorkspaceResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.HashMap;
@@ -22,6 +25,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Shared class/type lookup utility for phantom analysis stages.
@@ -33,6 +37,8 @@ public class ClassLookup {
 	private final Map<String, JvmClassInfo> providedClasses;
 	private final Map<String, ClassInfo> knownClasses = new HashMap<>();
 	private final Set<String> missingClasses = new HashSet<>();
+	private final Map<String, Class<?>> platformTypes = new HashMap<>();
+	private final Set<String> unavailablePlatformTypes = new HashSet<>();
 	private final int targetVersion;
 	private final Map<String, PhantomClassConstraint> constraints;
 
@@ -63,7 +69,7 @@ public class ClassLookup {
 	 * @return {@code true} when the type is already known from the inputs, workspace, or runtime classes.
 	 */
 	public boolean isKnown(@Nullable String internalName) {
-		return isBootstrapType(internalName) || getKnownClassInfo(internalName) != null;
+		return isSystemType(internalName) || getKnownClassInfo(internalName) != null;
 	}
 
 	/**
@@ -123,13 +129,112 @@ public class ClassLookup {
 
 		// No phantom evidence, infer from known class info.
 		ClassInfo info = getKnownClassInfo(internalName);
-		if (info == null)
-			return isBootstrapType(internalName) ? bootstrapKind(internalName) : PhantomTypeKind.UNKNOWN;
+		if (info == null) {
+			if (!isSystemType(internalName))
+				return PhantomTypeKind.UNKNOWN;
+			return platformKind(getPlatformClass(internalName));
+		}
 		if (info.hasEnumModifier())
 			return PhantomTypeKind.ENUM;
 		if (info.hasAnnotationModifier())
 			return PhantomTypeKind.ANNOTATION;
 		return info.hasInterfaceModifier() ? PhantomTypeKind.INTERFACE : PhantomTypeKind.CLASS;
+	}
+
+	/**
+	 * @param internalName
+	 * 		Internal name of a known or platform type.
+	 *
+	 * @return Superclass of the type, or {@code null} when the type is an interface, has no superclass,
+	 * or is neither known nor available from the platform.
+	 */
+	@Nullable
+	public String getKnownSuperName(@Nonnull String internalName) {
+		ClassInfo info = getKnownClassInfo(internalName);
+		if (info != null)
+			return info.hasInterfaceModifier() ? null : info.getSuperName();
+
+		Class<?> type = getPlatformClass(internalName);
+		if (type == null || type.isInterface() || type.getSuperclass() == null)
+			return null;
+
+		return type.getSuperclass().getName().replace('.', '/');
+	}
+
+	/**
+	 * @param internalName
+	 * 		Internal name of a known or platform type.
+	 *
+	 * @return Interfaces the type directly implements or extends.
+	 * Empty when the type is neither known nor available from the platform.
+	 */
+	@Nonnull
+	public Set<String> getKnownInterfaces(@Nonnull String internalName) {
+		Set<String> result = new TreeSet<>();
+		ClassInfo info = getKnownClassInfo(internalName);
+		if (info != null) {
+			result.addAll(info.getInterfaces());
+			return result;
+		}
+
+		Class<?> type = getPlatformClass(internalName);
+		if (type != null)
+			for (Class<?> implemented : type.getInterfaces())
+				result.add(implemented.getName().replace('.', '/'));
+
+		return result;
+	}
+
+	/**
+	 * @param internalName
+	 * 		Internal name of a known or platform type.
+	 *
+	 * @return {@code true} when the type is a {@code final} class, so it cannot be extended.
+	 */
+	public boolean isKnownFinal(@Nonnull String internalName) {
+		ClassInfo info = getKnownClassInfo(internalName);
+		if (info != null)
+			return info.hasFinalModifier();
+
+		Class<?> type = getPlatformClass(internalName);
+		return type != null && !type.isInterface() && Modifier.isFinal(type.getModifiers());
+	}
+
+	/**
+	 * @param internalName
+	 * 		Internal name of a known or platform type.
+	 * @param name
+	 * 		Method name.
+	 * @param descriptor
+	 * 		Method descriptor.
+	 *
+	 * @return {@code true} when the type itself declares the method as a {@code final} instance method. Inherited
+	 * methods are not considered.
+	 */
+	public boolean declaresFinalInstanceMethod(@Nonnull String internalName, @Nonnull String name,
+	                                           @Nonnull String descriptor) {
+		ClassInfo info = getKnownClassInfo(internalName);
+		if (info != null) {
+			for (MethodMember method : info.getMethods())
+				if (method.getName().equals(name) && method.getDescriptor().equals(descriptor)
+						&& method.hasFinalModifier() && !method.hasStaticModifier())
+					return true;
+			return false;
+		}
+
+		Class<?> type = getPlatformClass(internalName);
+		if (type == null)
+			return false;
+
+		try {
+			for (Method method : type.getDeclaredMethods())
+				if (method.getName().equals(name) && Type.getMethodDescriptor(method).equals(descriptor)
+						&& Modifier.isFinal(method.getModifiers()) && !Modifier.isStatic(method.getModifiers()))
+					return true;
+		} catch (LinkageError ignored) {
+			// Platform type with unloadable signature types. Treat the method as not final.
+		}
+		return false;
 	}
 
 	/**
@@ -298,26 +403,52 @@ public class ClassLookup {
 
 	/**
 	 * @param internalName
-	 * 		Name of a bootstrap <i>(Core java)</i> class.
+	 * 		Internal name of a type available from the platform class loader.
 	 *
-	 * @return Class kind for a bootstrap class, or {@link PhantomTypeKind#CLASS} when the type cannot be loaded.
+	 * @return Loaded platform type, or {@code null} if it is unavailable.
 	 */
-	@Nonnull
-	private static PhantomTypeKind bootstrapKind(@Nonnull String internalName) {
+	@Nullable
+	public Class<?> getPlatformClass(@Nonnull String internalName) {
+		Class<?> type = platformTypes.get(internalName);
+		if (type != null)
+			return type;
+		if (unavailablePlatformTypes.contains(internalName))
+			return null;
+
 		try {
-			Class<?> type = Class.forName(internalName.replace('/', '.'), false, null);
-			if (type.isAnnotation())
-				return PhantomTypeKind.ANNOTATION;
-			if (type.isEnum())
-				return PhantomTypeKind.ENUM;
-			return type.isInterface() ? PhantomTypeKind.INTERFACE : PhantomTypeKind.CLASS;
-		} catch (Throwable t) {
-			// Keep bootstrap names known even when the running JDK does not expose an optional module.
-			return PhantomTypeKind.CLASS;
+			type = Class.forName(internalName.replace('/', '.'), false, ClassLoader.getPlatformClassLoader());
+			platformTypes.put(internalName, type);
+			return type;
+		} catch (ClassNotFoundException | LinkageError | SecurityException | IllegalArgumentException ex) {
+			unavailablePlatformTypes.add(internalName);
+			return null;
 		}
 	}
 
-	private static boolean isBootstrapType(@Nullable String internalName) {
-		return internalName != null && internalName.startsWith("java/");
+	/**
+	 * @param type
+	 * 		Platform type.
+	 *
+	 * @return Kind of the platform type.
+	 */
+	@Nonnull
+	private static PhantomTypeKind platformKind(@Nullable Class<?> type) {
+		if (type == null)
+			return PhantomTypeKind.CLASS;
+		if (type.isAnnotation())
+			return PhantomTypeKind.ANNOTATION;
+		if (type.isEnum())
+			return PhantomTypeKind.ENUM;
+		return type.isInterface() ? PhantomTypeKind.INTERFACE : PhantomTypeKind.CLASS;
+	}
+
+	/**
+	 * @param internalName
+	 * 		Internal class name.
+	 *
+	 * @return {@code true} when the type is a system type (from the JDK or platform class loader).
+	 */
+	private boolean isSystemType(@Nullable String internalName) {
+		return internalName != null && (internalName.startsWith("java/") || getPlatformClass(internalName) != null);
 	}
 }

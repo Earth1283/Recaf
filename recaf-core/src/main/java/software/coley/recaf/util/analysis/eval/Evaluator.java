@@ -2,7 +2,7 @@ package software.coley.recaf.util.analysis.eval;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
-import me.darknet.assembler.printer.JvmPrinterUtil;
+import me.darknet.assembler.backend.jvm.printer.JvmPrinterUtil;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.Handle;
@@ -51,6 +51,7 @@ import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.resource.RuntimeWorkspaceResource;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -69,6 +70,7 @@ import java.util.function.Predicate;
  */
 public class Evaluator {
 	private static final String UNKNOWN_VALUE_REASON = "Encountered unknown value while evaluating branch";
+	private static final int MAX_EVALUATION_CALL_DEPTH = 64;
 
 	private static final Logger logger = Logging.get(Evaluator.class);
 	private static final InstanceFactory instanceFactory = new InstanceFactory();
@@ -90,7 +92,7 @@ public class Evaluator {
 	 * @param fieldCacheManager
 	 * 		Support class for tracking instance data.
 	 * @param maxSteps
-	 * 		Maximum number of steps to allow when evaluating a method.
+	 * 		Maximum number of instructions to execute across a top-level evaluation and its nested calls.
 	 * @param evaluateInternals
 	 * 		Flag to allow evaluation of methods defined by classes of internal resources
 	 * 		<i>(Mainly the {@link RuntimeWorkspaceResource} to facilitate emulating core JDK methods)</i>
@@ -412,6 +414,10 @@ public class Evaluator {
 	                                    @Nullable ObjectValue classInstance,
 	                                    @Nonnull List<ReValue> parameters,
 	                                    @Nonnull EvaluationContext context) throws UnknownValueException {
+		// Cannot exceed max call depth.
+		if (context.callStack.size() - context.callStackSeedSize >= MAX_EVALUATION_CALL_DEPTH)
+			return EvaluationResult.cannotEvaluate("Maximum evaluator call depth exceeded");
+
 		// Active method entry is a JVM class-initialization boundary.
 		if (!methodNode.name.equals("<clinit>")) {
 			EvaluationResult initializationResult = initializeClassIfNeeded(classNode.name, context);
@@ -471,6 +477,7 @@ public class Evaluator {
 		try {
 			AbstractInsnNode pc = instructions.getFirst();
 			while (context.stepAllocation > 0) {
+				context.stepAllocation--;
 				try {
 					// Evaluate the instruction and advance the program counter.
 					AbstractInsnNode executedInstruction = pc;
@@ -506,7 +513,6 @@ public class Evaluator {
 					notifyMethodThrow(classNode, methodNode, frame, e.getExceptionValue(), stack);
 					return new EvaluationThrowsResult(e.getExceptionValue());
 				}
-				context.stepAllocation--;
 			}
 			return EvaluationResult.cannotEvaluate("Method did not yield an value in " + maxSteps + " steps");
 		} finally {
@@ -703,6 +709,7 @@ public class Evaluator {
 		// Handle execution
 		AbstractInsnNode pc = instructionBlock.getFirst();
 		while (context.stepAllocation > 0) {
+			context.stepAllocation--;
 			try {
 				// Evaluate the instruction and advance the program counter.
 				AbstractInsnNode executedInstruction = pc;
@@ -736,7 +743,6 @@ public class Evaluator {
 			} catch (ExceptionHandler.ThrownException e) {
 				return new EvaluationThrowsResult(e.getExceptionValue());
 			}
-			context.stepAllocation--;
 		}
 		return EvaluationResult.cannotEvaluate("Block did not yield an value in " + maxSteps + " steps");
 	}
@@ -1046,6 +1052,8 @@ public class Evaluator {
 			return null;
 
 		// We have at least one candidate, but we need to find the most specific one.
+		// When there are multiple candidates we will cache assignable supertypes to avoid repeated graph traversal.
+		Map<String, Set<String>> assignableSupertypesByChild = interfaceMethods.size() > 2 ? new HashMap<>() : null;
 		ClassMethodPair selected = null;
 		for (ClassMethodPair candidate : interfaceMethods) {
 			boolean isMostSpecific = true;
@@ -1054,7 +1062,12 @@ public class Evaluator {
 					continue;
 
 				// If the candidate is not assignable to the other, then it is not the most specific.
-				if (!interpreter.isAssignableFrom(candidate.classNode().name, other.classNode().name)) {
+				String candidateName = candidate.classNode().name;
+				String otherName = other.classNode().name;
+				boolean assignable = assignableSupertypesByChild == null
+						? interpreter.isAssignableFrom(candidateName, otherName)
+						: assignableSupertypesByChild.computeIfAbsent(otherName, interpreter::getAssignableSupertypes).contains(candidateName);
+				if (!assignable) {
 					isMostSpecific = false;
 					break;
 				}

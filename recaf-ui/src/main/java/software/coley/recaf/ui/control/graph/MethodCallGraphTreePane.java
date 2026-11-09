@@ -26,6 +26,7 @@ import software.coley.collections.Unchecked;
 import software.coley.observables.ChangeListener;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
+import software.coley.recaf.info.InnerClassInfo;
 import software.coley.recaf.info.Named;
 import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.info.member.MethodMember;
@@ -129,6 +130,11 @@ public class MethodCallGraphTreePane extends BorderPane implements ClassNavigabl
 	public void disable() {
 		callGraph.isReady().removeChangeListener(graphReadyListener);
 		graphTreeView.setRoot(null);
+	}
+
+	@Override
+	public void requestFocus(@Nonnull InnerClassInfo innerClass) {
+		// no-op, inner classes have no call-graph tree anchor in this representation.
 	}
 
 	@Override

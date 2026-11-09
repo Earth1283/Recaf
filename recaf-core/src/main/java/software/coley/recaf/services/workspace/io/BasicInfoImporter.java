@@ -126,7 +126,6 @@ public class BasicInfoImporter implements InfoImporter {
 	@Nullable
 	private static FileInfo readAsSpecializedFile(@Nonnull String name, byte[] data) {
 		if (ByteHeaderUtil.match(data, ByteHeaderUtil.DEX)) {
-			CodeCodec.readDebug = false; // TODO: Remove this flag when debug parsing is fixed upstream.
 			return new DexFileInfoBuilder()
 					.withRawContent(data)
 					.withName(name)
@@ -201,7 +200,7 @@ public class BasicInfoImporter implements InfoImporter {
 
 		// We're doing a check-then-filter. If ASM reads the class as-is without issue, keep the result.
 		// Otherwise, patch when we encounter parse problems and try again.
-		int readerFlags = patchingMode == InfoImporterConfig.ClassPatchMode.CHECK_ADVANCED_THEN_FILTER ? ClassReader.SKIP_CODE : 0;
+		int readerFlags = patchingMode == InfoImporterConfig.ClassPatchMode.CHECK_BASIC_THEN_FILTER ? ClassReader.SKIP_CODE : 0;
 		try {
 			return new JvmClassInfoBuilder()
 					.skipValidationChecks(false)

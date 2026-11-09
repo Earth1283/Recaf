@@ -16,11 +16,12 @@ import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.ui.control.richtext.source.JavaContextActionSupport;
 import software.coley.recaf.ui.control.richtext.suggest.TabCompletionConfig;
-import software.coley.recaf.ui.control.richtext.suggest.java.typeindex.JavaTypeIndexService;
+import software.coley.recaf.ui.control.richtext.suggest.typeindex.TypeIndexService;
 import software.coley.recaf.ui.pane.editing.AbstractDecompilePane;
 import software.coley.recaf.ui.pane.editing.ToolsContainerComponent;
 import software.coley.recaf.ui.pane.editing.jvm.DecompilerPaneConfig;
 import software.coley.recaf.ui.pane.editing.text.TextConfig;
+import software.coley.recaf.workspace.model.bundle.Bundle;
 
 /**
  * Displays an {@link AndroidClassInfo} via a configured {@link Editor} as decompiled by {@link DecompilerManager}.
@@ -42,16 +43,25 @@ public class AndroidDecompilerPane extends AbstractDecompilePane {
 	                             @Nonnull CellConfigurationService cellConfigurationService,
 	                             @Nonnull FileTypeSyntaxAssociationService languageAssociation,
 	                             @Nonnull DecompilerManager decompilerManager,
-	                             @Nonnull JavaTypeIndexService javaTypeIndexService,
+	                             @Nonnull TypeIndexService typeIndexService,
 	                             @Nonnull TabCompletionConfig tabCompletionConfig,
 	                             @Nonnull TextConfig textConfig,
 	                             @Nonnull Actions actions) {
 		super(decompilerConfig, tutorialConfig, keys, searchBar, astService, contextActionSupport, navigationHistoryService, cellConfigurationService,
-				languageAssociation, decompilerManager, javaTypeIndexService, tabCompletionConfig, textConfig, actions);
+				languageAssociation, decompilerManager, typeIndexService, tabCompletionConfig, textConfig, actions);
 
 		// Install tools container with configurator
 		new AndroidDecompilerPaneConfigurator(toolsContainer, decompilerConfig, decompiler, decompilerManager);
 		new AndroidClassInfoProvider(toolsContainer, this);
 		installToolsContainer(toolsContainer);
+
+		// Setup Android-specific keybindings.
+		setOnKeyPressed(e -> {
+			if (keys.getUndo().match(e)) {
+				Bundle<?> bundle = path.getValueOfType(Bundle.class);
+				if (bundle != null)
+					bundle.decrementHistory(path.getValue().getName());
+			}
+		});
 	}
 }

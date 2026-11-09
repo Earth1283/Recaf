@@ -44,6 +44,7 @@ import software.coley.recaf.ui.control.ActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.pane.ConfigPane;
 import software.coley.recaf.ui.pane.LoggingPane;
+import software.coley.recaf.ui.pane.monitor.ResourceMonitorPane;
 import software.coley.recaf.ui.pane.WelcomePane;
 import software.coley.recaf.ui.pane.WorkspaceExplorerPane;
 import software.coley.recaf.ui.pane.WorkspaceInformationPane;
@@ -95,6 +96,7 @@ public class DockingManager {
 
 	private final Actions actions;
 	private final Instance<LoggingPane> loggingPaneProvider;
+	private final Instance<ResourceMonitorPane> resourceMonitorPaneProvider;
 	private final Instance<WelcomePane> welcomePaneProvider;
 	private final Instance<WorkspaceExplorerPane> workspaceExplorerProvider;
 	private final DockContainerRootBranch root;
@@ -159,6 +161,7 @@ public class DockingManager {
 	                      @Nonnull WindowManager windowManager,
 	                      @Nonnull Actions actions,
 	                      @Nonnull Instance<LoggingPane> loggingPaneProvider,
+	                      @Nonnull Instance<ResourceMonitorPane> resourceMonitorPaneProvider,
 	                      @Nonnull Instance<WelcomePane> welcomePaneProvider,
 	                      @Nonnull Instance<WorkspaceInformationPane> workspaceInfoProvider,
 	                      @Nonnull Instance<WorkspaceExplorerPane> workspaceExplorerProvider,
@@ -166,6 +169,7 @@ public class DockingManager {
 		this.workspaceManager = workspaceManager;
 		this.actions = actions;
 		this.loggingPaneProvider = loggingPaneProvider;
+		this.resourceMonitorPaneProvider = resourceMonitorPaneProvider;
 		this.welcomePaneProvider = welcomePaneProvider;
 		this.workspaceExplorerProvider = workspaceExplorerProvider;
 		this.resourceSummaryConfig = resourceSummaryConfig;
@@ -430,7 +434,9 @@ public class DockingManager {
 		DockContainerLeaf leaf = newLeafContainer(ID_CONTAINER_ROOT_BOTTOM);
 		leaf.setCanSplit(false);
 		leaf.setSide(Side.BOTTOM);
-		leaf.addDockables(newToolDockable("logging.title", CarbonIcons.TERMINAL, loggingPaneProvider.get()));
+		leaf.addDockables(
+				newToolDockable("logging.title", CarbonIcons.TERMINAL, loggingPaneProvider.get()),
+				newToolDockable("monitor.title", CarbonIcons.METER, resourceMonitorPaneProvider.get()));
 		SplitPane.setResizableWithParent(leaf, false);
 		return leaf;
 	}
