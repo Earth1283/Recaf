@@ -51,6 +51,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.JarFile;
+import java.util.Locale;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.jar.Manifest;
 
 /**
  * Manager for handling instrumentation of remote JVMs.
@@ -60,6 +67,7 @@ import java.util.jar.JarFile;
 @ApplicationScoped
 public class BasicAttachManager implements AttachManager {
 	private static final Logger logger = Logging.get(BasicAttachManager.class);
+	private static final long ATTACH_TIMEOUT_MS = 500;
 	private static final long currentPid = ProcessHandle.current().pid();
 	private static final String JMX_AGENT_ADDRESS = "com.sun.management.jmxremote.localConnectorAddress";
 	private static ExtractState extractState = ExtractState.DEFAULT;
@@ -137,64 +145,68 @@ public class BasicAttachManager implements AttachManager {
 	 */
 	@Nonnull
 	private String mapToMainClass(@Nonnull VirtualMachineDescriptor descriptor) {
-		// Get source string to find main class name from
-		String source = descriptor.displayName();
-		if (source == null || source.isBlank() || source.toLowerCase().contains(".jar")) {
-			Properties properties = virtualMachinePropertiesMap.get(descriptor);
-			if (properties != null) {
-				// Check if we can get the main class from the command.
-				// It may start with it, such as "com.example.Main args..."
-				// it may be a file path, such as from "-jar <path> <args...>"
-				String command = properties.getProperty("sun.java.command", "");
+		return resolveMainClass(descriptor.displayName(), virtualMachinePropertiesMap.get(descriptor));
+	}
 
-				// Check if the command is a path.
-				String commandLower = command.toLowerCase();
-				int jarIndex = commandLower.indexOf(".jar");
-				if (jarIndex > 0) {
-					// Depending on the invocation, it may not be the full path.
-					// We may need to pre-pend the current directory
-					String commandJarName = command.substring(0, jarIndex + 4);
-					try {
-						Path jarPath = Paths.get(commandJarName);
-						if (!Files.isRegularFile(jarPath)) {
-							// Prepend remote vm's user directory
-							String commandUserDir = properties.getProperty("user.dir");
-							if (commandUserDir.endsWith("/"))
-								commandUserDir = commandUserDir.substring(0, commandUserDir.length() - 1);
-							if (commandJarName.startsWith("/"))
-								commandJarName = commandJarName.substring(1);
-							jarPath = Paths.get(commandUserDir + "/" + commandJarName);
-						}
-
-						// Read main class attribute from jar manifest
-						if (Files.isRegularFile(jarPath)) {
-							try (JarFile jar = new JarFile(jarPath.toFile())) {
-								source = jar.getManifest().getMainAttributes().getValue("Main-Class");
-							} catch (IOException ignored) {
-								// Can't read from jar, oh well
-							}
-						}
-					} catch (InvalidPathException ignored) {
-						// Expected for cases like 'com.example.Main foo.jar'
-						// In this case we know the substring up to the '.jar' isn't a path in totality.
-						// Only a section of it is, so likely the '.jar' match is part of an argument.
-					}
-				}
-			}
+	/**
+	 * @param displayName
+	 * 		Display name of the VM, usually its main class or jar followed by its arguments.
+	 * @param properties
+	 * 		System properties of the VM, used to read the main class from its jar when the display name is a jar.
+	 *
+	 * @return Main class of the VM, the jar name if the jar cannot be read, or a placeholder if neither is known.
+	 */
+	@Nonnull
+	static String resolveMainClass(@Nullable String displayName, @Nullable Properties properties) {
+		String source = displayName;
+		if (properties != null && (source == null || source.isBlank() || source.toLowerCase(Locale.ROOT).contains(".jar"))) {
+			String jarMainClass = readJarMainClass(properties);
+			if (jarMainClass != null)
+				source = jarMainClass;
 		}
-
-		// Still null/missing? Give up
-		if (source == null || source.isEmpty())
+		if (source == null || source.isBlank())
 			return "<unknown main-class>";
 
-		// Some 'display name' values are '<class> <args...>' so strip out the args
+		// Some display names are '<class> <args...>'
 		String trim = source.trim();
 		int end = trim.indexOf(' ');
-		if (end == -1)
-			end = trim.length();
-		return trim.substring(0, end);
+		return end == -1 ? trim : trim.substring(0, end);
 		// Alternative idea for later: Use 'sun/launcher/LauncherHelper' as mentioned by xxDark
 		//  - reliable source for main-class
+	}
+
+	/**
+	 * @param properties
+	 * 		System properties of a VM launched with {@code -jar}.
+	 *
+	 * @return {@code Main-Class} of the jar, or {@code null} if the jar cannot be found or read.
+	 */
+	@Nullable
+	private static String readJarMainClass(@Nonnull Properties properties) {
+		String command = properties.getProperty("sun.java.command", "");
+		int jarIndex = command.toLowerCase(Locale.ROOT).indexOf(".jar");
+		if (jarIndex <= 0)
+			return null;
+		try {
+			Path jarPath = Paths.get(command.substring(0, jarIndex + 4));
+
+			// A relative jar path is relative to the remote VM's working directory, not ours.
+			if (!jarPath.isAbsolute()) {
+				String userDir = properties.getProperty("user.dir");
+				if (userDir == null || userDir.isBlank())
+					return null;
+				jarPath = Paths.get(userDir).resolve(jarPath);
+			}
+			if (!Files.isRegularFile(jarPath))
+				return null;
+			try (JarFile jar = new JarFile(jarPath.toFile())) {
+				Manifest manifest = jar.getManifest();
+				return manifest == null ? null : manifest.getMainAttributes().getValue("Main-Class");
+			}
+		} catch (InvalidPathException | IOException | SecurityException ex) {
+			// Expected for cases like 'com.example.Main foo.jar', where the text up to '.jar' is not a single path.
+			return null;
+		}
 	}
 
 	/**
@@ -239,7 +251,7 @@ public class BasicAttachManager implements AttachManager {
 		int numDescriptors = virtualMachineDescriptors.size();
 		List<VirtualMachineDescriptor> remoteVmList = VirtualMachine.list();
 		Set<VirtualMachineDescriptor> toRemove = new HashSet<>(virtualMachineDescriptors);
-		Set<VirtualMachineDescriptor> toAdd = new HashSet<>();
+		Set<VirtualMachineDescriptor> toAdd = ConcurrentHashMap.newKeySet();
 		List<CompletableFuture<?>> attachFutures = new ArrayList<>();
 		for (VirtualMachineDescriptor descriptor : remoteVmList) {
 			// Still active in VM list, keep it.
@@ -252,80 +264,18 @@ public class BasicAttachManager implements AttachManager {
 				if (pid == currentPid) // skip self
 					continue;
 
-				// Using futures for attach in case one of the VM's decides to hang on response.
-				// Using 'orTimeout' we can prevent such hangs from affecting us.
-				attachFutures.add(ThreadUtil.supply(() -> {
+				// Each VM is attempted on its own, so one that hangs or fails cannot hold up or cancel the others.
+				attachFutures.add(attemptWithTimeout(() -> attachTo(descriptor, label), ATTACH_TIMEOUT_MS,
+						late -> detachQuietly(late, label)).thenAccept(attempt -> {
+					if (attempt.failure() != null) {
+						Throwable failure = attempt.failure();
+						virtualMachineFailureMap.put(descriptor, failure instanceof Exception ex ? ex : new Exception(failure));
+						logger.debug("Remote JVM descriptor found (attach-failure): {}", label, failure);
+					}
 					try {
-						AttachProvider provider = descriptor.provider();
-						return provider.attachVirtualMachine(descriptor);
-					} catch (IOException ex) {
-						virtualMachineFailureMap.put(descriptor, ex);
-						logger.debug("Remote JVM descriptor found (attach-success, read-failure): " + label);
-					} catch (AttachNotSupportedException ex) {
-						virtualMachineFailureMap.put(descriptor, ex);
-						logger.debug("Remote JVM descriptor found (attach-failure): " + label);
+						onAttachAttempted(descriptor, attempt.value(), pid, label, numDescriptors, toAdd);
 					} catch (Throwable t) {
-						logger.error("Unhandled exception populating remote VM info", t);
-					}
-					return null;
-				}, null).orTimeout(500, TimeUnit.MILLISECONDS).thenAccept(machine -> {
-					// Get information from machine if it is available.
-					if (machine != null) {
-						virtualMachineMap.put(descriptor, machine);
-						logger.debug("Remote JVM descriptor found (attach-success): " + label);
-
-						// Extract additional information
-						try {
-							Properties systemProperties = machine.getSystemProperties();
-							virtualMachinePropertiesMap.put(descriptor, systemProperties);
-							virtualMachinePidMap.put(descriptor, pid);
-							virtualMachineMainClassMap.put(descriptor, mapToMainClass(descriptor));
-
-							// Enable optional JMX agent
-							if (config.getAttachJmxAgent().getValue()) {
-								try {
-									Properties agentProperties = machine.getAgentProperties();
-									String serviceUrl = agentProperties.getProperty(JMX_AGENT_ADDRESS);
-									if (serviceUrl == null) {
-										serviceUrl = machine.startLocalManagementAgent();
-									}
-
-									if (serviceUrl != null) {
-										JMXServiceURL url = new JMXServiceURL(serviceUrl);
-										@SuppressWarnings("resource") // Do NOT wrap this in a try-with-resource. It will close the connection.
-										JMXConnector connector = JMXConnectorFactory.connect(url);
-										MBeanServerConnection connection = connector.getMBeanServerConnection();
-										virtualMachineJmxConnMap.put(descriptor, new JmxBeanServerConnection(connection));
-										virtualMachineJmxConnectorMap.put(descriptor, connector);
-									} else {
-										logger.warn("Could fetch JMX agent address, skipping connection for: {}", label);
-									}
-								} catch (Exception ex) {
-									logger.error("Failed to attach JMX agent to remote JVM: {}", label, ex);
-								}
-							}
-						} catch (IOException ex) {
-							logger.error("Could not read system properties from remote JVM: " + label, ex);
-						}
-					}
-
-					// Add to list for listener call later.
-					toAdd.add(descriptor);
-
-					// Insert descriptor in sorted order.
-					int lastComparison = 1;
-					synchronized (virtualMachineDescriptors) {
-						for (int i = 0; i < numDescriptors; i++) {
-							VirtualMachineDescriptor other = virtualMachineDescriptors.get(i);
-							int comparison = descriptorComparator.compare(descriptor, other);
-							if (comparison < lastComparison) {
-								virtualMachineDescriptors.add(i, descriptor);
-								return;
-							}
-						}
-
-						// Greater than all entries, append to end
-						virtualMachineDescriptors.add(descriptor);
+						logger.error("Unhandled exception populating remote VM info: {}", label, t);
 					}
 				}));
 			}
@@ -372,6 +322,168 @@ public class BasicAttachManager implements AttachManager {
 					(listener, t) -> logger.error("Exception thrown after scan completion", t));
 		});
 	}
+
+	/**
+	 * Records what could be read from a VM after an attach attempt, and adds the VM to the known list.
+	 * VMs that could not be attached to are still listed, so the failure is shown and they are not retried.
+	 *
+	 * @param descriptor
+	 * 		VM descriptor.
+	 * @param machine
+	 * 		Attached VM, or {@code null} when attaching failed.
+	 * @param pid
+	 * 		PID of the VM.
+	 * @param label
+	 * 		Display label for logging.
+	 * @param numDescriptors
+	 * 		Number of known descriptors when the scan began.
+	 * @param toAdd
+	 * 		Descriptors added by the current scan.
+	 */
+	private void onAttachAttempted(@Nonnull VirtualMachineDescriptor descriptor, @Nullable VirtualMachine machine, int pid,
+	                               @Nonnull String label, int numDescriptors, @Nonnull Set<VirtualMachineDescriptor> toAdd) {
+		// Get information from machine if it is available.
+		if (machine != null) {
+			virtualMachineMap.put(descriptor, machine);
+			logger.debug("Remote JVM descriptor found (attach-success): " + label);
+
+			// Extract additional information
+			try {
+				Properties systemProperties = machine.getSystemProperties();
+				virtualMachinePropertiesMap.put(descriptor, systemProperties);
+				virtualMachinePidMap.put(descriptor, pid);
+				virtualMachineMainClassMap.put(descriptor, mapToMainClass(descriptor));
+
+				// Enable optional JMX agent
+				if (config.getAttachJmxAgent().getValue()) {
+					try {
+						Properties agentProperties = machine.getAgentProperties();
+						String serviceUrl = agentProperties.getProperty(JMX_AGENT_ADDRESS);
+						if (serviceUrl == null) {
+							serviceUrl = machine.startLocalManagementAgent();
+						}
+
+						if (serviceUrl != null) {
+							JMXServiceURL url = new JMXServiceURL(serviceUrl);
+							@SuppressWarnings("resource") // Do NOT wrap this in a try-with-resource. It will close the connection.
+							JMXConnector connector = JMXConnectorFactory.connect(url);
+							MBeanServerConnection connection = connector.getMBeanServerConnection();
+							virtualMachineJmxConnMap.put(descriptor, new JmxBeanServerConnection(connection));
+							virtualMachineJmxConnectorMap.put(descriptor, connector);
+						} else {
+							logger.warn("Could fetch JMX agent address, skipping connection for: {}", label);
+						}
+					} catch (Exception ex) {
+						logger.error("Failed to attach JMX agent to remote JVM: {}", label, ex);
+					}
+				}
+			} catch (IOException ex) {
+				logger.error("Could not read system properties from remote JVM: " + label, ex);
+			}
+		}
+
+		// Add to list for listener call later.
+		toAdd.add(descriptor);
+
+		// Insert descriptor in sorted order.
+		int lastComparison = 1;
+		synchronized (virtualMachineDescriptors) {
+			for (int i = 0; i < numDescriptors; i++) {
+				VirtualMachineDescriptor other = virtualMachineDescriptors.get(i);
+				int comparison = descriptorComparator.compare(descriptor, other);
+				if (comparison < lastComparison) {
+					virtualMachineDescriptors.add(i, descriptor);
+					return;
+				}
+			}
+
+			// Greater than all entries, append to end
+			virtualMachineDescriptors.add(descriptor);
+		}
+	}
+
+	/**
+	 * @param descriptor
+	 * 		VM descriptor.
+	 * @param label
+	 * 		Display label for logging.
+	 *
+	 * @return Attached VM, or {@code null} when attaching failed, in which case the failure is recorded.
+	 */
+	@Nullable
+	private VirtualMachine attachTo(@Nonnull VirtualMachineDescriptor descriptor, @Nonnull String label) {
+		try {
+			AttachProvider provider = descriptor.provider();
+			return provider.attachVirtualMachine(descriptor);
+		} catch (IOException ex) {
+			virtualMachineFailureMap.put(descriptor, ex);
+			logger.debug("Remote JVM descriptor found (attach-success, read-failure): {}", label);
+		} catch (AttachNotSupportedException ex) {
+			virtualMachineFailureMap.put(descriptor, ex);
+			logger.debug("Remote JVM descriptor found (attach-failure): {}", label);
+		}
+		return null;
+	}
+
+	private static void detachQuietly(@Nonnull VirtualMachine machine, @Nonnull String label) {
+		try {
+			machine.detach();
+		} catch (IOException ex) {
+			logger.debug("Failed to detach from remote JVM: {}", label, ex);
+		}
+	}
+
+	/**
+	 * Runs a task in the background, giving up on it after a timeout. The returned future never completes
+	 * exceptionally, so it is safe to combine with others where one failure would otherwise cancel the rest.
+	 *
+	 * @param task
+	 * 		Task to run.
+	 * @param timeoutMs
+	 * 		Time to wait for the task.
+	 * @param abandoned
+	 * 		Receives a result that arrives after the timeout, so it can be released. Nothing else will use it.
+	 * @param <T>
+	 * 		Result type.
+	 *
+	 * @return Future of the task's result, or of its failure. A timeout is reported as a {@link TimeoutException}.
+	 */
+	@Nonnull
+	static <T> CompletableFuture<Attempt<T>> attemptWithTimeout(@Nonnull Supplier<T> task, long timeoutMs,
+	                                                            @Nonnull Consumer<T> abandoned) {
+		// Whichever of the task and the timeout claims the slot first decides who owns the result.
+		AtomicReference<Object> slot = new AtomicReference<>();
+		Object timedOut = new Object();
+		CompletableFuture<T> future = CompletableFuture.supplyAsync(() -> {
+			T value = task.get();
+			if (value != null && !slot.compareAndSet(null, value)) {
+				abandoned.accept(value);
+				return null;
+			}
+			return value;
+		}, ThreadUtil.executor());
+		return future.orTimeout(timeoutMs, TimeUnit.MILLISECONDS).handle((value, error) -> {
+			if (error == null)
+				return new Attempt<>(value, null);
+			Throwable cause = error instanceof CompletionException && error.getCause() != null ? error.getCause() : error;
+			if (cause instanceof TimeoutException && !slot.compareAndSet(null, timedOut)) {
+				@SuppressWarnings("unchecked")
+				T lateValue = (T) slot.get();
+				return new Attempt<>(lateValue, null);
+			}
+			return new Attempt<>(null, cause);
+		});
+	}
+
+	/**
+	 * @param value
+	 * 		Result of the attempt, or {@code null}.
+	 * @param failure
+	 * 		Reason the attempt failed, or {@code null}.
+	 * @param <T>
+	 * 		Result type.
+	 */
+	record Attempt<T>(@Nullable T value, @Nullable Throwable failure) {}
 
 	@Nonnull
 	@Override

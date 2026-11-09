@@ -6,6 +6,7 @@ import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.stage.Stage;
 import software.coley.recaf.cdi.UiInitializationEvent;
+import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.navigation.NavigationHistoryService;
 import software.coley.recaf.services.navigation.NavigationManager;
 import software.coley.recaf.services.window.WindowManager;
@@ -80,6 +81,9 @@ public class RecafApplication extends Application {
 				quickNav.requestFocus();
 			} else if (keybindingConfig.getExport().match(event) && workspaceManager.hasCurrentWorkspace()) {
 				recaf.get(PathExportingManager.class).export(workspaceManager.getCurrent());
+			} else if (keybindingConfig.getSettings().match(event)) {
+				recaf.get(Actions.class).openConfig();
+				event.consume();
 			}
 		});
 		stage.setMinWidth(450 / scaleConfig.getScale());

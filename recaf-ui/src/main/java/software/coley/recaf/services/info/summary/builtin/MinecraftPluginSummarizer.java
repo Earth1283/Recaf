@@ -23,6 +23,8 @@ import software.coley.recaf.services.analysis.plugin.MinecraftPluginManifest;
 import software.coley.recaf.services.analysis.plugin.api.MinecraftPluginApiService;
 import software.coley.recaf.services.analysis.plugin.api.PluginApiAttachResult;
 import software.coley.recaf.services.analysis.plugin.api.PluginApiRequest;
+import software.coley.recaf.services.analysis.plugin.security.PluginSecurityService;
+import software.coley.recaf.services.analysis.plugin.security.Severity;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.info.summary.ResourceSummarizer;
 import software.coley.recaf.services.info.summary.SummaryConsumer;
@@ -31,6 +33,7 @@ import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.pane.plugin.PluginNavigation;
+import software.coley.recaf.ui.pane.plugin.SecurityDisplay;
 import software.coley.recaf.util.Animations;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Lang;
@@ -56,6 +59,7 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	private final MinecraftPluginApiService apiService;
 	private final CellConfigurationService cellConfigurationService;
 	private final PluginNavigation pluginNavigation;
+	private final PluginSecurityService securityService;
 	private final Actions actions;
 
 	@Inject
@@ -63,11 +67,13 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	                                 @Nonnull MinecraftPluginApiService apiService,
 	                                 @Nonnull CellConfigurationService cellConfigurationService,
 	                                 @Nonnull PluginNavigation pluginNavigation,
+	                                 @Nonnull PluginSecurityService securityService,
 	                                 @Nonnull Actions actions) {
 		this.analysisService = analysisService;
 		this.apiService = apiService;
 		this.cellConfigurationService = cellConfigurationService;
 		this.pluginNavigation = pluginNavigation;
+		this.securityService = securityService;
 		this.actions = actions;
 	}
 
@@ -110,9 +116,11 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 		for (PluginApiRequest request : apiService.detectRequests(workspace))
 			batch.add(() -> consumer.appendSummary(createAttachControl(workspace, request)));
 
-		// The navigator and name recovery work on the primary resource, where mappings are applied.
-		if (resource == workspace.getPrimaryResource())
+		// The plugin tools work on the primary resource, where mappings are applied.
+		if (resource == workspace.getPrimaryResource()) {
+			batch.add(() -> row(consumer, "mcplugin.security.summary", createSecurityLabel(workspace)));
 			batch.add(() -> consumer.appendSummary(createToolButtons()));
+		}
 
 		batch.execute();
 		return true;
@@ -172,9 +180,39 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 		Button names = new Button(Lang.get("menu.mappings.plugin-names"), new FontIconView(CarbonIcons.MAGIC_WAND));
 		names.setTooltip(new Tooltip(Lang.get("mcplugin.names.tip")));
 		names.setOnAction(e -> pluginNavigation.openNameRecovery());
-		HBox box = new HBox(6, navigator, names);
+		Button security = new Button(Lang.get("menu.analysis.plugin-security"), new FontIconView(CarbonIcons.SECURITY));
+		security.setTooltip(new Tooltip(Lang.get("mcplugin.security.tip")));
+		security.setOnAction(e -> pluginNavigation.openSecurityTriage());
+		Button settings = new Button(null, new FontIconView(CarbonIcons.SETTINGS));
+		settings.setTooltip(new Tooltip(Lang.get("mcplugin.settings.tip")));
+		settings.setOnAction(e -> pluginNavigation.openSettings(null));
+		HBox box = new HBox(6, navigator, names, security, settings);
 		box.setPadding(new Insets(6, 0, 0, 0));
 		return box;
+	}
+
+	/**
+	 * @return Label showing the result of the security triage once the background scan finishes. Opens the triage.
+	 */
+	@Nonnull
+	private Label createSecurityLabel(@Nonnull Workspace workspace) {
+		Label label = new Label(Lang.get("mcplugin.security.summary.pending"));
+		label.setCursor(Cursor.HAND);
+		label.setOnMouseEntered(e -> label.getStyleClass().add(Styles.TEXT_UNDERLINED));
+		label.setOnMouseExited(e -> label.getStyleClass().remove(Styles.TEXT_UNDERLINED));
+		label.setOnMouseClicked(e -> pluginNavigation.openSecurityTriage());
+		label.setTooltip(new Tooltip(Lang.get("mcplugin.security.tip")));
+		securityService.scanAsync(workspace).whenCompleteAsync((report, error) -> {
+			if (error != null) {
+				logger.error("Failed to scan plugin for security triage", error);
+				label.setText(Lang.get("mcplugin.security.failed"));
+				return;
+			}
+			Severity highest = SecurityDisplay.headline(report);
+			label.setText(SecurityDisplay.verdict(report));
+			label.setGraphic(highest == null ? new FontIconView(CarbonIcons.CHECKMARK) : SecurityDisplay.icon(highest));
+		}, FxThreadUtil.executor());
+		return label;
 	}
 
 	@Nonnull

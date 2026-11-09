@@ -67,6 +67,7 @@ public class KeybindingConfig extends BasicConfigContainer {
 	private static final String ID_NAVIGATE_BACK = "navigate.back";
 	private static final String ID_NAVIGATE_FORWARD = "navigate.forward";
 	private static final String ID_EXPORT = "workspace.export";
+	private static final String ID_SETTINGS = "settings";
 
 	private final BindingBundle bundle;
 
@@ -88,7 +89,8 @@ public class KeybindingConfig extends BasicConfigContainer {
 				createBindForPlatform(ID_ASSEMBLER, F2),
 				createBindForPlatform(ID_NAVIGATE_BACK, ALT, LEFT),
 				createBindForPlatform(ID_NAVIGATE_FORWARD, ALT, RIGHT),
-				createBindForPlatform(ID_EXPORT, CONTROL, E)
+				createBindForPlatform(ID_EXPORT, CONTROL, E),
+				createBindForPlatform(ID_SETTINGS, CONTROL, COMMA)
 		));
 		addValue(new BasicMapConfigValue<>("bundle", BindingBundle.class, String.class, Binding.class, bundle));
 
@@ -244,6 +246,14 @@ public class KeybindingConfig extends BasicConfigContainer {
 	@Nonnull
 	public Binding getExport() {
 		return Objects.requireNonNull(bundle.get(ID_EXPORT));
+	}
+
+	/**
+	 * @return Keybinding for opening the settings.
+	 */
+	@Nonnull
+	public Binding getSettings() {
+		return Objects.requireNonNull(bundle.get(ID_SETTINGS));
 	}
 
 	/**

@@ -25,7 +25,7 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * copies of values <i>(through {@code DUP}, local variables, casts and {@code Objects.requireNonNull})</i> back to the
  * instruction that created the value.
  */
-final class MethodFlow implements Opcodes {
+public final class MethodFlow implements Opcodes {
 	private static final int MAX_DEPTH = 24;
 	private final String owner;
 	private final MethodNode method;
@@ -46,7 +46,7 @@ final class MethodFlow implements Opcodes {
 	 * @return Flow of the method, or {@code null} if the method could not be analyzed.
 	 */
 	@Nullable
-	static MethodFlow analyze(@Nonnull String owner, @Nonnull MethodNode method) {
+	public static MethodFlow analyze(@Nonnull String owner, @Nonnull MethodNode method) {
 		if (method.instructions.size() == 0)
 			return null;
 		try {
@@ -62,7 +62,7 @@ final class MethodFlow implements Opcodes {
 	 * @return The analyzed method.
 	 */
 	@Nonnull
-	MethodNode method() {
+	public MethodNode method() {
 		return method;
 	}
 
@@ -75,7 +75,7 @@ final class MethodFlow implements Opcodes {
 	 * @return Instruction that created the argument value, or {@code null} if not known.
 	 */
 	@Nullable
-	AbstractInsnNode argument(@Nonnull MethodInsnNode call, int index) {
+	public AbstractInsnNode argument(@Nonnull MethodInsnNode call, int index) {
 		int count = Type.getArgumentCount(call.desc);
 		if (index < 0 || index >= count)
 			return null;
@@ -89,7 +89,7 @@ final class MethodFlow implements Opcodes {
 	 * @return Instruction that created the receiver value, or {@code null} if not known.
 	 */
 	@Nullable
-	AbstractInsnNode receiver(@Nonnull MethodInsnNode call) {
+	public AbstractInsnNode receiver(@Nonnull MethodInsnNode call) {
 		if (call.getOpcode() == INVOKESTATIC)
 			return null;
 		return stackOrigin(call, Type.getArgumentCount(call.desc));
@@ -104,7 +104,7 @@ final class MethodFlow implements Opcodes {
 	 * @return Instruction that created the value, or {@code null} if not known.
 	 */
 	@Nullable
-	AbstractInsnNode stackOrigin(@Nonnull AbstractInsnNode insn, int depth) {
+	public AbstractInsnNode stackOrigin(@Nonnull AbstractInsnNode insn, int depth) {
 		Frame<SourceValue> frame = frameAt(insn);
 		if (frame == null)
 			return null;
@@ -120,7 +120,7 @@ final class MethodFlow implements Opcodes {
 	 *
 	 * @return {@code true} if the value is {@code this}.
 	 */
-	boolean isThis(@Nullable AbstractInsnNode origin) {
+	public boolean isThis(@Nullable AbstractInsnNode origin) {
 		return origin instanceof VarInsnNode var && var.getOpcode() == ALOAD && var.var == 0 &&
 				(method.access & ACC_STATIC) == 0;
 	}
@@ -133,7 +133,7 @@ final class MethodFlow implements Opcodes {
 	 * Lambdas give {@code null}, see {@link #lambdaImplementation(AbstractInsnNode)}.
 	 */
 	@Nullable
-	String typeOf(@Nullable AbstractInsnNode origin) {
+	public String typeOf(@Nullable AbstractInsnNode origin) {
 		if (origin == null)
 			return null;
 		if (isThis(origin))
@@ -156,7 +156,7 @@ final class MethodFlow implements Opcodes {
 	 * @return Location of the method a lambda value is implemented by, or {@code null} if the value is not a lambda.
 	 */
 	@Nullable
-	static CodeLocation lambdaImplementation(@Nullable AbstractInsnNode origin) {
+	public static CodeLocation lambdaImplementation(@Nullable AbstractInsnNode origin) {
 		if (origin instanceof InvokeDynamicInsnNode indy &&
 				"java/lang/invoke/LambdaMetafactory".equals(indy.bsm.getOwner()) &&
 				indy.bsmArgs.length >= 2 && indy.bsmArgs[1] instanceof Handle impl)

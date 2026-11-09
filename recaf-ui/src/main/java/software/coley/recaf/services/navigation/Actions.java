@@ -728,11 +728,24 @@ public class Actions implements Service {
 	 * Without a workspace there is no primary container to dock into, so the tab is placed in a new window.
 	 */
 	public void openConfig() {
+		openConfig(null);
+	}
+
+	/**
+	 * Display the config editor filtered to matching settings, focusing the existing tab if one is already open.
+	 * Lets features link straight to their own settings.
+	 *
+	 * @param query
+	 * 		Text to filter the settings with, or {@code null} to keep the current filter.
+	 */
+	public void openConfig(@Nullable String query) {
 		for (DockablePath path : dockingManager.getBento().search().allDockables()) {
 			Dockable dockable = path.dockable();
 			Node node = dockable.nodeProperty().get();
-			if (node instanceof ConfigPane) {
+			if (node instanceof ConfigPane configPane) {
 				path.leafContainer().selectDockable(dockable);
+				if (query != null)
+					configPane.setQuery(query);
 				FxThreadUtil.run(() -> {
 					node.requestFocus();
 					Animations.animateNotice(node, 1000);
@@ -742,9 +755,11 @@ public class Actions implements Service {
 		}
 
 		ConfigPane content = configPaneProvider.get();
+		if (query != null)
+			content.setQuery(query);
 		DockContainerPath primaryPath = dockingManager.getBento().search().container(DockingManager.ID_CONTAINER_WORKSPACE_PRIMARY);
 		DockContainerLeaf container = primaryPath != null && primaryPath.tailContainer() instanceof DockContainerLeaf leaf ? leaf : null;
-		Dockable dockable = createDockable(container, getBinding("menu.config"),
+		Dockable dockable = createDockable(container, getBinding("menu.config.edit"),
 				d -> new FontIconView(CarbonIcons.SETTINGS), content);
 		dockable.setDragGroupMask(DockingManager.GROUP_ANYWHERE);
 		dockable.addCloseListener((_, _) -> configPaneProvider.destroy(content));

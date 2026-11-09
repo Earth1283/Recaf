@@ -62,13 +62,9 @@ import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.resource.WorkspaceRemoteVmResource;
 
-import javax.management.MBeanAttributeInfo;
-import javax.management.MBeanFeatureInfo;
 import java.io.IOException;
-import java.lang.reflect.Array;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -76,7 +72,7 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Collectors;
+import java.util.concurrent.CompletionException;
 
 import static software.coley.recaf.util.Lang.getBinding;
 
@@ -303,25 +299,26 @@ public class RemoteVirtualMachinesPane extends BorderPane implements PostScanLis
 			StringBinding bindingProgress = getBinding("attach.connecting");
 			StringBinding dynamicBinding = Bindings.when(working).then(bindingProgress).otherwise(bindingConnect);
 			Button connectButton = new ActionButton(titleGraphic, dynamicBinding, () -> {
+				// The user can decline to close the current workspace, in which case nothing starts.
+				if (!workspaceManager.closeCurrent())
+					return;
 				working.set(true);
-				if (workspaceManager.closeCurrent()) {
-					ThreadUtil.run(() -> {
-						try {
-							WorkspaceRemoteVmResource vmResource = attachManager.createRemoteResource(descriptor);
-							vmResource.connect();
-							workspaceManager.setCurrent(new BasicWorkspace(vmResource));
-							connectedVm.setValue(descriptor);
-						} catch (IOException ex) {
-							logger.error("Failed to connect to remote VM: {}", label, ex);
-							ErrorDialogs.show(getBinding("dialog.error.attach.title"),
-									getBinding("dialog.error.attach.header"),
-									getBinding("dialog.error.attach.content"),
-									ex);
-						} finally {
-							FxThreadUtil.run(() -> working.set(false));
-						}
-					});
-				}
+				ThreadUtil.run(() -> {
+					try {
+						WorkspaceRemoteVmResource vmResource = attachManager.createRemoteResource(descriptor);
+						vmResource.connect();
+						workspaceManager.setCurrent(new BasicWorkspace(vmResource));
+						connectedVm.setValue(descriptor);
+					} catch (IOException | RuntimeException ex) {
+						logger.error("Failed to connect to remote VM: {}", label, ex);
+						ErrorDialogs.show(getBinding("dialog.error.attach.title"),
+								getBinding("dialog.error.attach.header"),
+								getBinding("dialog.error.attach.content"),
+								ex);
+					} finally {
+						FxThreadUtil.run(() -> working.set(false));
+					}
+				});
 			});
 
 
@@ -409,6 +406,8 @@ public class RemoteVirtualMachinesPane extends BorderPane implements PostScanLis
 					void update() {
 						// Update property table if there are changes
 						Properties properties = attachManager.getVirtualMachineProperties(descriptor);
+						if (properties == null)
+							properties = new Properties();
 						if (Objects.equals(lastProperties, properties)) return;
 						lastProperties = properties;
 
@@ -445,7 +444,8 @@ public class RemoteVirtualMachinesPane extends BorderPane implements PostScanLis
 				for (JmxWrapper wrapper : beanSuppliers) {
 					add(new AbstractContentTile() {
 						private final TableView<String> propertyTable = new TableView<>();
-						private Map<String, String> lastAttributeMap;
+						private Map<String, String> lastAttributeMap = Map.of();
+						private boolean refreshing;
 
 						@Override
 						void setup() {
@@ -469,46 +469,29 @@ public class RemoteVirtualMachinesPane extends BorderPane implements PostScanLis
 
 						@Override
 						void update() {
-							try {
-								// Update attribute table if there are changes.
-								//
-								// The bean supplier can block, and if the connection has died this block will go until
-								// a timeout period elapses. So we want to do this in the background.
-								CompletableFuture.supplyAsync(() -> {
-									NamedMBeanInfo beanInfo = wrapper.beanSupplier().get();
-									MBeanAttributeInfo[] attributes = beanInfo.getAttributes();
-									return Arrays.stream(attributes)
-											.collect(Collectors.toMap(MBeanFeatureInfo::getDescription, attribute -> {
-												try {
-													Object value = beanInfo.getAttributeValue(jmxConnection, attribute);
-													if (value != null) {
-														if (value.getClass().isArray()) {
-															value = Arrays.toString(convertToObjectArray(value));
-														}
-													}
-													return Objects.toString(value);
-												} catch (Exception ex) {
-													return "?";
-												}
-											}));
-
-								}).whenCompleteAsync((attributeMap, error) -> {
-									if (Objects.equals(lastAttributeMap, attributeMap)) return;
-									lastAttributeMap = attributeMap;
-
-									// Update table
-									ObservableList<String> items = propertyTable.getItems();
-									List<String> keys = attributeMap.keySet().stream().map(Object::toString).sorted().toList();
-									items.clear();
-									items.addAll(keys);
-
-									// Enable on success
-									setDisable(false);
-								}, FxThreadUtil.executor());
-							} catch (Exception ex) {
-								// Disable on failure
-								setDisable(true);
-							}
+							// Reads block until a timeout when the connection has died, so they are done in the
+							// background, and a new one is not started while the last is still waiting.
+							if (refreshing)
+								return;
+							refreshing = true;
+							CompletableFuture.supplyAsync(() -> {
+								try {
+									return wrapper.beanSupplier().get().readAttributeValues(jmxConnection);
+								} catch (Throwable t) {
+									throw new CompletionException(t);
+								}
+							}, ThreadUtil.executor()).whenCompleteAsync((attributeMap, error) -> {
+								refreshing = false;
+								if (error != null) {
+									logger.debug("Failed to read JMX bean for {}", wrapper.langKey(), error);
+									setDisable(true);
+									return;
+								}
+								setDisable(false);
+								if (Objects.equals(lastAttributeMap, attributeMap)) return;
+								lastAttributeMap = attributeMap;
+								propertyTable.getItems().setAll(attributeMap.keySet());
+							}, FxThreadUtil.executor());
 						}
 
 						@Override
@@ -541,20 +524,6 @@ public class RemoteVirtualMachinesPane extends BorderPane implements PostScanLis
 			public void update() {
 				for (AbstractContentTile block : tiles)
 					block.update();
-			}
-
-			@SuppressWarnings("all")
-			static Object[] convertToObjectArray(Object array) {
-				Class componentType = array.getClass().getComponentType();
-				if (componentType.isPrimitive()) {
-					int length = Array.getLength(array);
-					Object[] boxedArray = new Object[length];
-					for (int i = 0; i < length; i++)
-						boxedArray[i] = Array.get(array, i);
-					return boxedArray;
-				} else {
-					return (Object[]) array;
-				}
 			}
 		}
 

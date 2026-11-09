@@ -9,6 +9,7 @@ loadable.
 - [Renaming classes safely](#renaming-classes-safely)
 - [Navigating a plugin](#navigating-a-plugin)
 - [Recovering names in obfuscated plugins](#recovering-names-in-obfuscated-plugins)
+- [Security triage](#security-triage)
 - [Configuration](#configuration)
 - [Limitations](#limitations)
 - [For developers](#for-developers)
@@ -245,6 +246,63 @@ the reason in words, such as *Value of config path 'settings.max-homes' (getInt)
 Names are chosen so they do not collide with each other or with existing names: a second `HomeCommand` in the same
 package becomes `HomeCommand2`.
 
+## Security triage
+
+**Analysis → Security triage**, or the button in the workspace summary, reads the plugin's bytecode for behavior worth
+checking before you run it on a server. The summary also shows the result in a **Security** row, which opens the
+triage when clicked. Nothing is run: the plugin's classes are only read.
+
+### What is found
+
+Findings have a severity. Single uses of an API are reported at the severity of the API alone, because most have
+legitimate uses:
+
+| Severity | Examples                                                                                                     |
+|----------|--------------------------------------------------------------------------------------------------------------|
+| High     | Runs a program, defines classes from raw bytes, evaluates scripts, loads native code, grants operator, runs a permission command such as `lp user ... permission set` written into the code, grants `*`, a Discord or Telegram webhook, a paste site, a tunnel, or a public IP address in a URL |
+| Medium   | Creates a class loader, listens for connections, reaches the plugins folder itself or jars in it, names a sensitive file such as `server.properties` or `ops.json`, checks for a specific player's name or UUID, stops the server, disables another plugin, uses `Unsafe` |
+| Low      | Network connections, URLs, file writes and deletes, console commands, reflection, Base64 and decryption, classes generated with ASM |
+
+What raises a finding to **critical** is a combination that is rarely legitimate:
+
+| Critical finding                       | Found when                                                                                  |
+|----------------------------------------|---------------------------------------------------------------------------------------------|
+| Runs hidden code                       | A class decodes or decrypts data and defines classes                                        |
+| Runs downloaded code                   | A class connects to the network and defines classes or evaluates scripts. Also when anywhere in the jar classes are defined and a paste site, webhook or public IP is contacted, since loaders often download in one class and define in another |
+| Runs a downloaded program              | A class connects to the network and runs programs                                           |
+| Rewrites jars in the plugins folder    | A class reaches the plugins folder and writes jar or zip files, which is how plugin malware spreads |
+| Chat-triggered backdoor                | A chat or command handler can grant operator, run programs, or load code, directly or through what it calls, schedules, or passes as a lambda |
+| Backdoor for a specific player         | A method checks for a player written into the code and grants permissions or runs commands  |
+
+Some combinations are reported as high or medium instead: downloading and defining classes in different classes with
+no suspicious host (high), downloading files into the plugins folder, as auto-updaters do (high), and downloading jars
+and loading them with a class loader, as many plugins do for database drivers (medium, with the hosts named).
+
+### Reading the results
+
+- Findings are grouped by severity, then by what was found. Hover over a group for why it matters. Combined findings
+  list the findings they are made of as evidence.
+- Double-click a finding, or press Enter, to open the code. Right-click for the usual class or method menu.
+- Search across what was found, class names, URLs and commands, and filter by severity.
+- Jars inside the plugin are scanned too, since some plugins keep their real code in a nested jar and load it at
+  runtime. Their findings are marked with the jar they are in.
+- Findings in libraries that plugins commonly bundle, such as database drivers, are marked **bundled library** and
+  listed after the plugin's own. The headline counts the plugin's own findings, and mentions serious findings in
+  bundled libraries separately. They are not hidden, because malware also hides in packages named after libraries.
+- When an obfuscator encrypts the strings, its decryption routine appears in every class. These are reported once,
+  with a warning that URLs, commands and paths in those classes are not visible. Run string deobfuscation and scan
+  again.
+
+### What it does not see
+
+This is static triage. Code that is downloaded later, behavior behind reflection with encrypted names, and anything in
+native code are not visible, so a report with no findings is not proof that a plugin is safe. Combinations are looked
+for within a class and its nested classes, and for the "runs downloaded code" case within the whole jar.
+
+Not everything reported is malicious. On a corpus of real plugins, the critical findings were a loader that downloads
+its plugin from an address kept on a paste site and defines it in memory, and a world generator that downloads Gradle
+and runs it to build world packs. Both do what the finding says. Whether that is acceptable is your call.
+
 ## Configuration
 
 Settings for the API attachment are under the analysis services as **Minecraft plugin API**.
@@ -262,7 +320,16 @@ Settings for the navigator and name recovery are under the analysis services as 
 |---------------------------|---------|----------------------------------------------------------------------|
 | `skip-shaded-libraries`   | `true`  | Ignore classes of commonly bundled libraries, such as bStats         |
 
-The quick navigation shortcut is `quicknav-plugin` in the keybinding settings.
+Settings for the security triage are under the analysis services as **Minecraft plugin security**.
+
+| Key                       | Default | Meaning                                                              |
+|---------------------------|---------|----------------------------------------------------------------------|
+| `skip-bundled-libraries`  | `false` | Do not scan classes of commonly bundled libraries                    |
+
+The gear button in the workspace summary, the navigator, name recovery, and the security triage opens the settings
+filtered to these pages. **Ctrl+,** (**Cmd+,** on macOS) opens the settings from anywhere.
+
+The quick navigation shortcut is `quicknav-plugin` in the keybinding settings, and the settings shortcut is `settings`.
 
 ## Limitations
 
@@ -315,6 +382,19 @@ The navigator and name recovery live in `software.coley.recaf.services.analysis.
 | `NameHeuristics`                      | Decides whether a name looks obfuscated, and converts text to Java names                     |
 | `PluginNavigation` (UI)               | Resolves index locations to paths, opens the navigator and the name recovery window          |
 | `PluginContextMenuAdapter` (UI)       | Adds the plugin submenu to class, method and field context menus                             |
+
+The security triage lives in `software.coley.recaf.services.analysis.plugin.security`. The UI is `PluginSecurityPane`.
+
+| Class                                 | Role                                                                                         |
+|---------------------------------------|----------------------------------------------------------------------------------------------|
+| `PluginSecurityScanner`               | Reads bytecode into a `PluginSecurityReport`. Add API patterns in `handleCall` and `handleNew`, combinations in `combineWithinClasses`, `combineAcrossClasses` and `findBackdoors` |
+| `SecurityRule`                        | What is reported, with its severity and category. Each rule has a title and a tip in the translations, `mcplugin.security.rule.<id>` |
+| `PluginSecurityService`               | Scans the current workspace off the UI thread, caching the report until the plugin's classes change |
+
+`PluginSecurityScannerTest` compiles small backdoors, loaders and an ordinary plugin with javac, and checks that the
+backdoors are critical and the ordinary plugin stays low. Rules were calibrated against a corpus of real plugins:
+wrappers that only forward `setOp` or `defineClass`, classes generated with ASM, placeholder webhook URLs in default
+configs, and relocated database drivers each have a test that keeps them from being over-reported.
 
 `PluginSemanticServiceTest` compiles a small stand-in for the Bukkit API and an obfuscated plugin with javac
 (`ObfuscatedPluginFixture`), then checks what is indexed, what names are suggested, and that applying them leaves a

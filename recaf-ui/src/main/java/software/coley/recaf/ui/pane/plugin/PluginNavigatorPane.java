@@ -107,7 +107,13 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 		recover.setTooltip(new Tooltip(Lang.get("mcplugin.names.title")));
 		recover.setOnAction(e -> navigation.openNameRecovery());
 		HBox.setHgrow(searchField, Priority.ALWAYS);
-		HBox top = new HBox(6, searchField, refresh, recover);
+		Button security = new Button(null, new FontIconView(CarbonIcons.SECURITY));
+		security.setTooltip(new Tooltip(Lang.get("mcplugin.security.title")));
+		security.setOnAction(e -> navigation.openSecurityTriage());
+		Button settings = new Button(null, new FontIconView(CarbonIcons.SETTINGS));
+		settings.setTooltip(new Tooltip(Lang.get("mcplugin.settings.tip")));
+		settings.setOnAction(e -> navigation.openSettings("semantics"));
+		HBox top = new HBox(6, searchField, refresh, recover, security, settings);
 		top.setAlignment(Pos.CENTER_LEFT);
 		top.setPadding(new Insets(6));
 

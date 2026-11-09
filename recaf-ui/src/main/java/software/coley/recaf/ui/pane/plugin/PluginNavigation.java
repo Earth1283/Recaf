@@ -7,6 +7,7 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
+import org.kordamp.ikonli.Ikon;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.slf4j.Logger;
 import software.coley.bentofx.dockable.Dockable;
@@ -30,6 +31,8 @@ import software.coley.recaf.util.Animations;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.function.Consumer;
+
 import static software.coley.recaf.util.Menus.action;
 
 /**
@@ -37,6 +40,8 @@ import static software.coley.recaf.util.Menus.action;
  */
 @ApplicationScoped
 public class PluginNavigation {
+	/** Matches the translated settings page names of all Minecraft plugin features. */
+	private static final String SETTINGS_QUERY = "minecraft plugin";
 	private static final Logger logger = Logging.get(PluginNavigation.class);
 	private final WorkspaceManager workspaceManager;
 	private final PluginSemanticService semanticService;
@@ -45,6 +50,7 @@ public class PluginNavigation {
 	private final WindowManager windowManager;
 	private final Instance<PluginNavigatorPane> navigatorProvider;
 	private final Instance<PluginNameRecoveryWindow> recoveryWindowProvider;
+	private final Instance<PluginSecurityPane> securityProvider;
 
 	@Inject
 	public PluginNavigation(@Nonnull WorkspaceManager workspaceManager,
@@ -53,7 +59,8 @@ public class PluginNavigation {
 	                        @Nonnull DockingManager dockingManager,
 	                        @Nonnull WindowManager windowManager,
 	                        @Nonnull Instance<PluginNavigatorPane> navigatorProvider,
-	                        @Nonnull Instance<PluginNameRecoveryWindow> recoveryWindowProvider) {
+	                        @Nonnull Instance<PluginNameRecoveryWindow> recoveryWindowProvider,
+	                        @Nonnull Instance<PluginSecurityPane> securityProvider) {
 		this.workspaceManager = workspaceManager;
 		this.semanticService = semanticService;
 		this.actions = actions;
@@ -61,6 +68,7 @@ public class PluginNavigation {
 		this.windowManager = windowManager;
 		this.navigatorProvider = navigatorProvider;
 		this.recoveryWindowProvider = recoveryWindowProvider;
+		this.securityProvider = securityProvider;
 	}
 
 	/**
@@ -158,38 +166,66 @@ public class PluginNavigation {
 	 * 		Search text to show in the navigator, or {@code null} to keep the current search.
 	 */
 	public void openNavigator(@Nullable String query) {
+		openTool(PluginNavigatorPane.class, navigatorProvider, "mcplugin.navigator.title", CarbonIcons.HEADPHONES, navigator -> {
+			if (query != null)
+				navigator.setQuery(query);
+		});
+	}
+
+	/**
+	 * Opens the settings, filtered to those of the Minecraft plugin features.
+	 *
+	 * @param page
+	 * 		Word naming one feature's page, such as {@code security}, or {@code null} to show all of them.
+	 */
+	public void openSettings(@Nullable String page) {
+		String query = page == null ? SETTINGS_QUERY : SETTINGS_QUERY + ' ' + page;
+		FxThreadUtil.run(() -> actions.openConfig(query));
+	}
+
+	/**
+	 * Opens the security triage of the current workspace's plugin, or brings it to the front if it is already open.
+	 */
+	public void openSecurityTriage() {
+		openTool(PluginSecurityPane.class, securityProvider, "mcplugin.security.title", CarbonIcons.SECURITY, pane -> {});
+	}
+
+	/**
+	 * Opens a pane next to the workspace explorer, so it can stay visible beside the code it links to.
+	 * If one is already open it is brought to the front instead.
+	 */
+	private <T extends Node> void openTool(@Nonnull Class<T> type, @Nonnull Instance<T> provider,
+	                                       @Nonnull String titleKey, @Nonnull Ikon icon, @Nonnull Consumer<T> onShow) {
 		if (!workspaceManager.hasCurrentWorkspace())
 			return;
 		FxThreadUtil.run(() -> {
 			for (DockablePath path : dockingManager.getBento().search().allDockables()) {
 				Dockable dockable = path.dockable();
 				Node node = dockable.nodeProperty().get();
-				if (node instanceof PluginNavigatorPane navigator) {
+				if (type.isInstance(node)) {
+					T pane = type.cast(node);
 					path.leafContainer().selectDockable(dockable);
-					if (query != null)
-						navigator.setQuery(query);
-					navigator.requestFocus();
-					Animations.animateNotice(navigator, 1000);
+					onShow.accept(pane);
+					pane.requestFocus();
+					Animations.animateNotice(pane, 1000);
 					return;
 				}
 			}
 
-			// Open next to the workspace explorer so it can stay visible beside the code.
 			DockContainerLeaf container = toolsContainer();
-			PluginNavigatorPane navigator = navigatorProvider.get();
-			Dockable dockable = dockingManager.newToolDockable("mcplugin.navigator.title", CarbonIcons.HEADPHONES, navigator);
+			T pane = provider.get();
+			Dockable dockable = dockingManager.newToolDockable(titleKey, icon, pane);
 			dockable.setClosable(true);
-			dockable.addCloseListener((_, _) -> navigatorProvider.destroy(navigator));
+			dockable.addCloseListener((_, _) -> provider.destroy(pane));
 			dockable.setContextMenuFactory(d -> {
 				ContextMenu menu = new ContextMenu();
 				menu.getItems().add(action("menu.tab.close", CarbonIcons.CLOSE, () -> d.inContainer(c -> c.closeDockable(d))));
 				return menu;
 			});
-			if (query != null)
-				navigator.setQuery(query);
+			onShow.accept(pane);
 			container.addDockable(dockable);
 			container.selectDockable(dockable);
-			navigator.requestFocus();
+			pane.requestFocus();
 		});
 	}
 

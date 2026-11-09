@@ -80,6 +80,11 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 				() -> pluginNavigation.openNavigator(null));
 		itemPluginNavigator.disableProperty().bind(hasWorkspace.not());
 		getItems().add(itemPluginNavigator);
+
+		ActionMenuItem itemPluginSecurity = action("menu.analysis.plugin-security", CarbonIcons.SECURITY,
+				pluginNavigation::openSecurityTriage);
+		itemPluginSecurity.disableProperty().bind(hasWorkspace.not());
+		getItems().add(itemPluginSecurity);
 	}
 
 	/**

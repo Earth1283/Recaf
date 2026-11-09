@@ -129,6 +129,14 @@ public class ConfigPane extends BorderPane implements ManagedConfigListener {
 		persistActiveProfile();
 	}
 
+	/**
+	 * @param query
+	 * 		Text to filter the settings with. The first matching page is shown.
+	 */
+	public void setQuery(@Nonnull String query) {
+		searchField.setText(query);
+	}
+
 	private void initialize() {
 		content.setFitToWidth(true);
 		root.setExpanded(true);

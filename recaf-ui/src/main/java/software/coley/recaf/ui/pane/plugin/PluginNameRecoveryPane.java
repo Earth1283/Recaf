@@ -146,7 +146,10 @@ public class PluginNameRecoveryPane extends BorderPane {
 		obfuscatedOnly.selectedProperty().addListener((ob, old, cur) -> updateFilter());
 		updateFilter();
 
-		HBox bar = new HBox(8, searchField, targetFilter, clueFilter, obfuscatedOnly);
+		Button settings = new Button(null, new FontIconView(CarbonIcons.SETTINGS));
+		settings.setTooltip(new Tooltip(Lang.get("mcplugin.settings.tip")));
+		settings.setOnAction(e -> navigation.openSettings("semantics"));
+		HBox bar = new HBox(8, searchField, targetFilter, clueFilter, obfuscatedOnly, settings);
 		bar.setAlignment(Pos.CENTER_LEFT);
 		bar.setPadding(new Insets(8));
 		return bar;
