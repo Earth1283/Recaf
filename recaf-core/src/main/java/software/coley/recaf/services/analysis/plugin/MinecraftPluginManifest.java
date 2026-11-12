@@ -50,6 +50,18 @@ public record MinecraftPluginManifest(@Nonnull MinecraftPluginPlatform platform,
                                       @Nonnull List<String> commands,
                                       @Nonnull List<String> permissions) {
 	/**
+	 * @param platform
+	 * 		Platform the user says the plugin is for.
+	 *
+	 * @return Manifest that only knows its platform, for plugins without a usable manifest file.
+	 */
+	@Nonnull
+	public static MinecraftPluginManifest forced(@Nonnull MinecraftPluginPlatform platform) {
+		return new MinecraftPluginManifest(platform, null, null, null, null, null, null,
+				List.of(), List.of(), List.of(), List.of(), List.of());
+	}
+
+	/**
 	 * @param className
 	 * 		Internal class name.
 	 *
