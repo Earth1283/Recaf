@@ -299,6 +299,14 @@ public abstract class AbstractContentPane<P extends PathNode<?>> extends BorderP
 	}
 
 	@Override
+	public void requestFocus() {
+		for (Navigable child : children) {
+			child.requestFocus();
+			return;
+		}
+	}
+
+	@Override
 	public void disable() {
 		children.forEach(Navigable::disable);
 		pathUpdateListeners.clear();

@@ -30,6 +30,16 @@ public abstract class ClassPane extends AbstractContentPane<ClassPathNode> imple
 	private static final DebuggingLogger logger = Logging.get(ClassPane.class);
 
 	@Override
+	public void requestFocus() {
+		for (Navigable child : getNavigableChildren()) {
+			if (child instanceof ClassNavigable) {
+				child.requestFocus();
+				return;
+			}
+		}
+	}
+
+	@Override
 	public void requestFocus(@Nonnull ClassMember member) {
 		delegateFocus(navigable -> navigable.requestFocus(member));
 	}

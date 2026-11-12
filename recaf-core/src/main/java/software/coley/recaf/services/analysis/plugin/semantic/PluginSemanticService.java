@@ -198,6 +198,17 @@ public class PluginSemanticService implements Service {
 	 * @param workspace
 	 * 		Some workspace.
 	 *
+	 * @return {@code true} when the workspace is the one plugin analysis is following. Cheap, unlike
+	 * {@link #hasManifest(Workspace)}, so it can be asked for every class that is decompiled.
+	 */
+	public synchronized boolean isTracked(@Nonnull Workspace workspace) {
+		return workspace == trackedWorkspace;
+	}
+
+	/**
+	 * @param workspace
+	 * 		Some workspace.
+	 *
 	 * @return {@code true} when the primary resource has a plugin manifest.
 	 */
 	public boolean hasManifest(@Nonnull Workspace workspace) {

@@ -11,6 +11,8 @@ import software.coley.recaf.services.decompile.AbstractJvmDecompiler;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.function.UnaryOperator;
+
 /**
  * Vineflower decompiler implementation.
  *
@@ -44,9 +46,10 @@ public class VineflowerDecompiler extends AbstractJvmDecompiler {
 		Fernflower fernflower = new Fernflower(dummySaver, config.getFernflowerProperties(), logger);
 
 		try {
-			ClassSource source = new ClassSource(workspace, info);
+			UnaryOperator<JvmClassInfo> nestedView = nested -> nestedClassView(workspace, info.getName(), nested);
+			ClassSource source = new ClassSource(workspace, info, nestedView);
 			fernflower.addSource(source);
-			fernflower.addLibrary(new LibrarySource(workspaceEntriesCache.getCachedEntries(workspace), workspace, info));
+			fernflower.addLibrary(new LibrarySource(workspaceEntriesCache.getCachedEntries(workspace), workspace, info, nestedView));
 			fernflower.decompileContext();
 
 			String decompiled = source.getSink().getDecompiledOutput().get();

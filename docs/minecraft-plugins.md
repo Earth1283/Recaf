@@ -10,6 +10,7 @@ loadable.
 - [Navigating a plugin](#navigating-a-plugin)
 - [Recovering names in obfuscated plugins](#recovering-names-in-obfuscated-plugins)
 - [Security triage](#security-triage)
+- [Decompiler view](#decompiler-view)
 - [Configuration](#configuration)
 - [Limitations](#limitations)
 - [For developers](#for-developers)
@@ -165,8 +166,8 @@ the configuration.
 
 ### The plugin navigator
 
-Open it with **Analysis → Minecraft plugin navigator**, or the button in the workspace summary. It opens as a tab next
-to the workspace explorer, and shows the plugin's structure grouped into sections: plugin entry points, commands,
+Open it with **Analysis → Minecraft plugin navigator**, or the button in the workspace summary. It opens as a tab with the
+editor tabs, as the security triage does, and shows the plugin's structure grouped into sections: plugin entry points, commands,
 events, listeners, tasks, config paths, permissions, and the other keys and types listed above.
 
 - Type in the search field to filter. Every word must match, and matching covers the kind of entry, its key, and where
@@ -303,6 +304,52 @@ Not everything reported is malicious. On a corpus of real plugins, the critical 
 its plugin from an address kept on a paste site and defines it in memory, and a world generator that downloads Gradle
 and runs it to build world packs. Both do what the finding says. Whether that is acceptable is your call.
 
+## Decompiler view
+
+Decompiled plugin code can show what Recaf has learned about the plugin. Everything here only changes what the
+decompiler is given and what it prints. The classes in the workspace are never changed. The switches are in the
+workspace summary under **Decompiler view**, and in the settings under **Minecraft plugin decompiler view**.
+
+| Switch                                            | Default | What it does                                                                                           |
+|---------------------------------------------------|---------|--------------------------------------------------------------------------------------------------------|
+| Comment what the plugin API is used for           | on      | A comment above each class, method or field the navigator found something in, such as `Event handler: PlayerJoinEvent (priority HIGH)` or `Command executor: home` |
+| Comment security findings                         | on      | A `SECURITY HIGH: ...` comment where the security triage found something of medium severity or higher |
+| Name parameters of methods that have no variable names | on | Gives parameters names such as `event`, `sender`, `args` or `player` when the class has no variable table |
+| Decompile a deobfuscated copy of each class       | off     | Decompiles a transformed copy of each class instead of the class itself                                |
+
+Classes nested in the decompiled class, such as inner classes and anonymous classes, get the same treatment, because
+the decompilers print them inside the class that contains them.
+
+Comments for members that print no declaration of their own, such as static initializers and lambda bodies, are moved
+to the class and name the member, for example `<clinit>: Config path: settings.x`.
+
+Parameter names come from what the server calls the method with (`onCommand`, `onTabComplete`, `execute`), `event` for
+event handlers, and otherwise from the type of the parameter. Methods that already have variable names are left alone, and so is a parameter that the method writes to, since
+optimized code sometimes reuses its slot for something else.
+
+The comments use the plugin index and the last security report. Decompiling never waits for either and never starts a
+scan. If a class is decompiled before they are ready, it is decompiled again when they are, and classes that are open
+refresh by themselves. Open the workspace summary or the security triage to make sure a report exists.
+
+### Deobfuscated copy
+
+When strings are encrypted, the security triage offers **Decompile a deobfuscated view**, as a way to try. Turning it on runs a fixed
+set of transformers once over the whole plugin in the background, and then decompiles the transformed copy of each class
+that they changed. The set makes code easier to read without renaming or restructuring: inlining constants and
+call results, folding opaque predicates and constants, removing dead code, and the cleanup transformers for ZKM and
+DashO. Transformers that rename things, or change method signatures, are not included.
+
+- It can take a long time. Measured on real plugins: about 11 seconds for 405 classes, but over a minute for 800
+  classes and nearly a minute for a 108-class plugin whose obfuscator made the evaluator work hard. It runs in the
+  background and stops if you turn the switch off. The summary shows progress and the number of classes changed.
+- It does not decrypt every scheme. It folds constants and inlines the results of calls that the evaluator can work out,
+  which recovered some strings in one encrypted plugin and almost none in another. If strings stay encrypted, the
+  deobfuscation windows with a transformer chosen for that obfuscator work better.
+- A copy is only used for the exact class it was made from. If the class is replaced, for example by renaming, it is
+  decompiled as it is. Turn the switch off and on again to rebuild the copies.
+- The transformers read and rewrite bytecode. A few of them work out values by interpreting the plugin's methods in
+  Recaf's own evaluator, such as decrypting a string. The plugin's classes are never loaded into the JVM or run.
+
 ## Configuration
 
 Settings for the API attachment are under the analysis services as **Minecraft plugin API**.
@@ -325,6 +372,17 @@ Settings for the security triage are under the analysis services as **Minecraft 
 | Key                       | Default | Meaning                                                              |
 |---------------------------|---------|----------------------------------------------------------------------|
 | `skip-bundled-libraries`  | `false` | Do not scan classes of commonly bundled libraries                    |
+
+Settings for the decompiler view are under the analysis services as **Minecraft plugin decompiler view**.
+
+| Key                    | Default | Meaning                                                                  |
+|------------------------|---------|--------------------------------------------------------------------------|
+| `annotate-structure`   | `true`  | Comment what the plugin API is used for                                  |
+| `annotate-security`    | `true`  | Comment security findings                                                |
+| `name-parameters`      | `true`  | Name parameters of methods that have no variable names                   |
+| `deobfuscated-view`    | `false` | Decompile a deobfuscated copy of each class                              |
+| `max-notes-per-member` | `6`     | Most comment lines per class, method or field. Extra lines become a count |
+| `deobfuscation-passes` | `2`     | Times to repeat the transformers when building the deobfuscated copies   |
 
 The gear button in the workspace summary, the navigator, name recovery, and the security triage opens the settings
 filtered to these pages. **Ctrl+,** (**Cmd+,** on macOS) opens the settings from anywhere.
@@ -395,6 +453,24 @@ The security triage lives in `software.coley.recaf.services.analysis.plugin.secu
 backdoors are critical and the ordinary plugin stays low. Rules were calibrated against a corpus of real plugins:
 wrappers that only forward `setOp` or `defineClass`, classes generated with ASM, placeholder webhook URLs in default
 configs, and relocated database drivers each have a test that keeps them from being over-reported.
+
+The decompiler view lives in `software.coley.recaf.services.analysis.plugin.view`. The UI is `PluginViewControls` and
+`PluginViewRefresher`.
+
+| Class                                 | Role                                                                                         |
+|---------------------------------------|----------------------------------------------------------------------------------------------|
+| `PluginViewService`                   | Registers the decompiler filters, drops cached decompilations when an input changes, and builds the deobfuscated copies |
+| `PluginNotes`                         | Comment lines for one class, from the plugin index and the security report                   |
+| `PluginViewVisitor`                   | One ASM pass that adds parameter names and note annotations. Methods it does not touch are copied as they are |
+| `NoteMarker`                          | Carries note text through a decompiler as an annotation, and turns it into a block comment afterwards. Treats the text as hostile, and the annotation name carries a random per-process value so text in the plugin cannot pass as a marker |
+| `DeobfuscatedView`                    | The transformed copies, keyed by the exact class they were made from                         |
+
+The bytecode filter is registered first, with `DecompilerManager.addJvmBytecodeFilterFirst`, so it can swap in a
+deobfuscated copy before the comment filter and others see the class. It is also registered with
+`DecompilerManager.addNestedClassFilter`, which the three decompilers apply to the classes nested in the class they
+decompile. They read other classes the decompiled class refers to as they are, since those are not printed. Filters only read results that are already
+cached (`getCachedIndex`, `getCachedReport`) and never wait on one. The parameter names reuse the tables of
+`SemanticNameSuggester` through `parameterNames`.
 
 `PluginSemanticServiceTest` compiles a small stand-in for the Bukkit API and an obfuscated plugin with javac
 (`ObfuscatedPluginFixture`), then checks what is indexed, what names are suggested, and that applying them leaves a

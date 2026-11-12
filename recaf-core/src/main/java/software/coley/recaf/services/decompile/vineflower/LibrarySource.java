@@ -7,6 +7,7 @@ import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.function.UnaryOperator;
 
 /**
  * Full library source for Vineflower.
@@ -25,8 +26,9 @@ public class LibrarySource extends BaseSource {
 	 * @param targetInfo
 	 * 		Target class to decompile.
 	 */
-	protected LibrarySource(@Nonnull List<IContextSource.Entry> entries, @Nonnull Workspace workspace, @Nonnull JvmClassInfo targetInfo) {
-		super(workspace, targetInfo);
+	protected LibrarySource(@Nonnull List<IContextSource.Entry> entries, @Nonnull Workspace workspace, @Nonnull JvmClassInfo targetInfo,
+	                        @Nonnull UnaryOperator<JvmClassInfo> nestedClassView) {
+		super(workspace, targetInfo, nestedClassView);
 		this.entries = entries;
 	}
 

@@ -93,6 +93,11 @@ public class DecodingXmlPane extends BorderPane implements FileNavigable, Updata
 	}
 
 	@Override
+	public void requestFocus() {
+		editor.getCodeArea().requestFocus();
+	}
+
+	@Override
 	public void disable() {
 		loadGeneration.incrementAndGet();
 		setDisable(true);

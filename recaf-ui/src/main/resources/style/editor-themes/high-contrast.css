@@ -1,0 +1,46 @@
+/* Editor color scheme. The leading '.root' makes each rule more specific than the language stylesheets, which are
+   attached closer to the editor, so the scheme wins without depending on stylesheet order. */
+.root .code-area {
+    -fx-background-color: #000000;
+}
+.root .code-area .text {
+    -fx-fill: #ffffff;
+}
+.root .code-area .paragraph-box:has-caret {
+    -fx-background-color: #1c1c1c;
+}
+.root .code-area .caret {
+    -fx-stroke: #ffffff;
+}
+.root .code-area .main-selection {
+    -fx-fill: #0050a0;
+}
+.root .code-area .selected-word-match {
+    -rtfx-background-color: #004a2e;
+}
+.root .code-area .lineno,
+.root .code-area .lineno .bg {
+    -fx-background-color: #000000;
+}
+.root .code-area .lineno .text {
+    -fx-fill: #c0c0c0;
+}
+.root .code-area .matched-brace-line .line {
+    -fx-border-color: transparent transparent transparent #ffe066;
+}
+
+.root .code-area .keyword { -fx-fill: #4fd7ff; }
+.root .code-area .string { -fx-fill: #ffe066; }
+.root .code-area .constant { -fx-fill: #ff9e3b; }
+.root .code-area .annotation { -fx-fill: #7dff6b; }
+.root .code-area .operator { -fx-fill: #ffffff; }
+.root .code-area .comment,
+.root .code-area .comment-line,
+.root .code-area .comment-multi { -fx-fill: #b0b0b0; }
+.root .code-area .comment-javadoc { -fx-fill: #c8d0ff; }
+.root .code-area .comment-javadoc-link { -fx-fill: #6ad7ff; }
+.root .code-area .comment-javadoc-name { -fx-fill: #9ae8ff; }
+.root .code-area .tag-name { -fx-fill: #4fd7ff; }
+.root .code-area .tag-param { -fx-fill: #7dff6b; }
+.root .code-area .key { -fx-fill: #4fd7ff; }
+.root .code-area .section { -fx-fill: #ff9e3b; }

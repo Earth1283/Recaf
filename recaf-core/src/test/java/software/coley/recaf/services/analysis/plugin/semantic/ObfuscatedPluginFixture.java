@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * meaningless name, while everything belonging to the server API keeps its name. A minimal stand-in for the Bukkit API
  * is compiled alongside it.
  */
-final class ObfuscatedPluginFixture {
+public final class ObfuscatedPluginFixture {
 	static final String PLUGIN_YML = """
 			name: Homes
 			version: 1.0
@@ -200,7 +200,7 @@ final class ObfuscatedPluginFixture {
 	 * @return Workspace with the plugin as the primary resource.
 	 */
 	@Nonnull
-	static Workspace create(@Nonnull JavacCompiler javac, boolean withApi) {
+	public static Workspace create(@Nonnull JavacCompiler javac, boolean withApi) {
 		Map<String, String> sources = new LinkedHashMap<>(API);
 		sources.putAll(PLUGIN);
 		CompilerResult result = javac.compile(new JavacArgumentsBuilder()

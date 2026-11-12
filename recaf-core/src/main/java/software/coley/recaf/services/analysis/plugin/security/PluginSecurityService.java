@@ -12,8 +12,11 @@ import software.coley.recaf.services.analysis.plugin.semantic.PluginSemanticServ
 import software.coley.recaf.util.threading.ThreadPoolFactory;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
 
 /**
  * Security triage of the plugin in the current workspace. See {@link PluginSecurityScanner}.
@@ -22,6 +25,7 @@ import java.util.concurrent.ExecutorService;
 public class PluginSecurityService implements Service {
 	public static final String SERVICE_ID = "minecraft-plugin-security";
 	private static final Logger logger = Logging.get(PluginSecurityService.class);
+	private final List<Consumer<Workspace>> reportListeners = new CopyOnWriteArrayList<>();
 	private final ExecutorService scanPool = ThreadPoolFactory.newSingleThreadExecutor("plugin-security");
 	private final PluginSecurityConfig config;
 	private final PluginSemanticService semanticService;
@@ -64,6 +68,23 @@ public class PluginSecurityService implements Service {
 		return current != null && current == cachedIndex ? cachedReport : null;
 	}
 
+	/**
+	 * @param listener
+	 * 		Listener told when a scan finishes with a report that differs from the one cached before it. Called on the
+	 * 		scanning thread.
+	 */
+	public void addReportListener(@Nonnull Consumer<Workspace> listener) {
+		reportListeners.add(listener);
+	}
+
+	/**
+	 * @param listener
+	 * 		Listener to remove.
+	 */
+	public void removeReportListener(@Nonnull Consumer<Workspace> listener) {
+		reportListeners.remove(listener);
+	}
+
 	@Nonnull
 	private PluginSecurityReport reportFor(@Nonnull Workspace workspace, @Nonnull PluginIndex index) {
 		boolean skipLibraries = skipLibraries();
@@ -80,6 +101,13 @@ public class PluginSecurityService implements Service {
 			cachedIndex = index;
 			cachedSkipLibraries = skipLibraries;
 			cachedReport = report;
+		}
+		for (Consumer<Workspace> listener : reportListeners) {
+			try {
+				listener.accept(workspace);
+			} catch (Throwable t) {
+				logger.error("Security report listener failed", t);
+			}
 		}
 		return report;
 	}

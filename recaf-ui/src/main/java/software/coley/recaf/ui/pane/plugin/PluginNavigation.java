@@ -191,11 +191,12 @@ public class PluginNavigation {
 	}
 
 	/**
-	 * Opens a pane next to the workspace explorer, so it can stay visible beside the code it links to.
+	 * Opens a pane as a tab in the editor area, with the code tabs, which keeps the workspace explorer's panel free.
 	 * If one is already open it is brought to the front instead.
 	 */
 	private <T extends Node> void openTool(@Nonnull Class<T> type, @Nonnull Instance<T> provider,
-	                                       @Nonnull String titleKey, @Nonnull Ikon icon, @Nonnull Consumer<T> onShow) {
+	                                       @Nonnull String titleKey, @Nonnull Ikon icon,
+	                                       @Nonnull Consumer<T> onShow) {
 		if (!workspaceManager.hasCurrentWorkspace())
 			return;
 		FxThreadUtil.run(() -> {
@@ -212,9 +213,9 @@ public class PluginNavigation {
 				}
 			}
 
-			DockContainerLeaf container = toolsContainer();
+			DockContainerLeaf container = dockingManager.getPrimaryDockingContainer();
 			T pane = provider.get();
-			Dockable dockable = dockingManager.newToolDockable(titleKey, icon, pane);
+			Dockable dockable = dockingManager.newTranslatableDockable(titleKey, icon, pane);
 			dockable.setClosable(true);
 			dockable.addCloseListener((_, _) -> provider.destroy(pane));
 			dockable.setContextMenuFactory(d -> {
@@ -242,13 +243,5 @@ public class PluginNavigation {
 			window.requestFocus();
 			windowManager.registerAnonymous(window);
 		});
-	}
-
-	@Nonnull
-	private DockContainerLeaf toolsContainer() {
-		var path = dockingManager.getBento().search().container(DockingManager.ID_CONTAINER_WORKSPACE_TOOLS);
-		if (path != null && path.tailContainer() instanceof DockContainerLeaf leaf)
-			return leaf;
-		return dockingManager.getPrimaryDockingContainer();
 	}
 }

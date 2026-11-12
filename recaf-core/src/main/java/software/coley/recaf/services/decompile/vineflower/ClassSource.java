@@ -9,6 +9,7 @@ import software.coley.recaf.workspace.model.Workspace;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.UnaryOperator;
 
 /**
  * Single class source for Vineflower.
@@ -25,8 +26,9 @@ public class ClassSource extends BaseSource {
 	 * @param targetInfo
 	 * 		Target class to decompile.
 	 */
-	protected ClassSource(@Nonnull Workspace workspace, @Nonnull JvmClassInfo targetInfo) {
-		super(workspace, targetInfo);
+	protected ClassSource(@Nonnull Workspace workspace, @Nonnull JvmClassInfo targetInfo,
+	                      @Nonnull UnaryOperator<JvmClassInfo> nestedClassView) {
+		super(workspace, targetInfo, nestedClassView);
 		sink = new DecompiledOutputSink(targetInfo);
 	}
 

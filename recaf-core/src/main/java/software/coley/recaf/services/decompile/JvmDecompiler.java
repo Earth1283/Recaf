@@ -34,6 +34,29 @@ public interface JvmDecompiler extends Decompiler {
 	boolean removeJvmBytecodeFilter(@Nonnull JvmBytecodeFilter filter);
 
 	/**
+	 * Adds a filter for classes that are only loaded because the class being decompiled refers to them, such as its
+	 * inner classes. Those are not passed through the filters added with {@link #addJvmBytecodeFilter(JvmBytecodeFilter)}.
+	 *
+	 * @param filter
+	 * 		Filter to add.
+	 *
+	 * @return {@code true} when the filter was added. Implementations that load no other classes return {@code false}.
+	 */
+	default boolean addNestedClassFilter(@Nonnull JvmBytecodeFilter filter) {
+		return false;
+	}
+
+	/**
+	 * @param filter
+	 * 		Filter to remove.
+	 *
+	 * @return {@code true} when the filter was removed.
+	 */
+	default boolean removeNestedClassFilter(@Nonnull JvmBytecodeFilter filter) {
+		return false;
+	}
+
+	/**
 	 * @param workspace
 	 * 		Workspace to pull data from.
 	 * @param classInfo

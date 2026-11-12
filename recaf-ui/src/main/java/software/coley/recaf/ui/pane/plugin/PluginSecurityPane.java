@@ -37,6 +37,7 @@ import software.coley.recaf.services.analysis.plugin.security.SecurityFinding;
 import software.coley.recaf.services.analysis.plugin.security.SecurityRule;
 import software.coley.recaf.services.analysis.plugin.security.Severity;
 import software.coley.recaf.services.analysis.plugin.semantic.PluginSemanticService;
+import software.coley.recaf.services.analysis.plugin.view.PluginViewService;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.cell.context.ContextSource;
 import software.coley.recaf.services.navigation.Navigable;
@@ -70,10 +71,12 @@ public class PluginSecurityPane extends BorderPane implements Navigable {
 	private final Label verdict = new Label();
 	private final Label scanned = new Label();
 	private final Label encrypted = new Label();
+	private final Button offerDeobfuscation = new Button(Lang.get("mcplugin.view.deobfuscate-offer"));
 	private final Label status = new Label();
 	private final PauseTransition refreshDelay = new PauseTransition(Duration.millis(750));
 	private final Consumer<Workspace> indexListener = workspace -> scheduleRefresh();
 	private final PluginSecurityService securityService;
+	private final PluginViewService viewService;
 	private final PluginSemanticService semanticService;
 	private final PluginNavigation navigation;
 	private final CellConfigurationService cellConfigurationService;
@@ -84,11 +87,13 @@ public class PluginSecurityPane extends BorderPane implements Navigable {
 
 	@Inject
 	public PluginSecurityPane(@Nonnull PluginSecurityService securityService,
+	                          @Nonnull PluginViewService viewService,
 	                          @Nonnull PluginSemanticService semanticService,
 	                          @Nonnull PluginNavigation navigation,
 	                          @Nonnull CellConfigurationService cellConfigurationService,
 	                          @Nonnull WorkspaceManager workspaceManager) {
 		this.securityService = securityService;
+		this.viewService = viewService;
 		this.semanticService = semanticService;
 		this.navigation = navigation;
 		this.cellConfigurationService = cellConfigurationService;
@@ -134,7 +139,15 @@ public class PluginSecurityPane extends BorderPane implements Navigable {
 		Label disclaimer = new Label(Lang.get("mcplugin.security.disclaimer"));
 		disclaimer.getStyleClass().addAll(Styles.TEXT_SUBTLE, Styles.TEXT_SMALL);
 		disclaimer.setWrapText(true);
-		VBox top = new VBox(6, toolbar, verdict, scanned, encrypted, disclaimer);
+		offerDeobfuscation.setGraphic(new FontIconView(CarbonIcons.MAGIC_WAND));
+		offerDeobfuscation.setTooltip(new Tooltip(Lang.get("mcplugin.view.deobfuscated.tip")));
+		offerDeobfuscation.managedProperty().bind(offerDeobfuscation.visibleProperty());
+		offerDeobfuscation.setVisible(false);
+		offerDeobfuscation.setOnAction(e -> {
+			viewService.getServiceConfig().getDeobfuscatedView().setValue(true);
+			offerDeobfuscation.setVisible(false);
+		});
+		VBox top = new VBox(6, toolbar, verdict, scanned, encrypted, offerDeobfuscation, disclaimer);
 		top.setPadding(new Insets(6));
 
 		tree.setShowRoot(false);
@@ -200,6 +213,7 @@ public class PluginSecurityPane extends BorderPane implements Navigable {
 		scanned.setTooltip(report.embeddedJars().isEmpty() ? null : new Tooltip(String.join("\n", report.embeddedJars())));
 		List<SecurityFinding> encryption = report.ofRule(SecurityRule.STRING_ENCRYPTION);
 		encrypted.setVisible(!encryption.isEmpty());
+		offerDeobfuscation.setVisible(!encryption.isEmpty() && !viewService.getServiceConfig().getDeobfuscatedView().getValue());
 		if (!encryption.isEmpty())
 			encrypted.setText(String.format(Lang.get("mcplugin.security.encrypted-strings"),
 					encryption.stream().map(PluginSecurityPane::describeEncryption).reduce((a, b) -> a + ", " + b).orElse("")));

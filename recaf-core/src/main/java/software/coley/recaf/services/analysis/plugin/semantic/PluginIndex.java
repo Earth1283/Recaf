@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
@@ -158,6 +159,14 @@ public final class PluginIndex {
 	@Nonnull
 	public List<PluginElement> inClass(@Nonnull String className) {
 		return byClass.getOrDefault(className, List.of());
+	}
+
+	/**
+	 * @return Internal names of the classes that have elements located in, or related to, them.
+	 */
+	@Nonnull
+	public Set<String> classNames() {
+		return Collections.unmodifiableSet(byClass.keySet());
 	}
 
 	/**

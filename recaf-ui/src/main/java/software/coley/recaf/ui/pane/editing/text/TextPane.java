@@ -118,6 +118,11 @@ public class TextPane extends BorderPane implements FileNavigable, UpdatableNavi
 	}
 
 	@Override
+	public void requestFocus() {
+		editor.getCodeArea().requestFocus();
+	}
+
+	@Override
 	public void disable() {
 		setDisable(true);
 		setOnKeyPressed(null);

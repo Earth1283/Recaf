@@ -119,16 +119,18 @@ public final class SemanticNameSuggester {
 
 	private final Workspace workspace;
 	private final PluginIndex index;
+	@Nullable
 	private final InheritanceGraph graph;
 	private final Map<String, JvmClassInfo> classes = new TreeMap<>();
 	private final Set<String> mainClasses = new HashSet<>();
+	private final Set<CodeLocation> eventHandlers = new HashSet<>();
 	private final Map<String, Proposal> classProposals = new LinkedHashMap<>();
 	private final Map<String, String> finalClassNames = new HashMap<>();
 	private final Map<NameTarget, Proposal> memberProposals = new LinkedHashMap<>();
 	private final Map<CodeLocation, String> finalFieldNames = new HashMap<>();
 
 	private SemanticNameSuggester(@Nonnull Workspace workspace, @Nonnull PluginIndex index,
-	                              @Nonnull InheritanceGraph graph, boolean skipShadedLibraries) {
+	                              @Nullable InheritanceGraph graph, boolean skipShadedLibraries) {
 		this.workspace = workspace;
 		this.index = index;
 		this.graph = graph;
@@ -137,6 +139,67 @@ public final class SemanticNameSuggester {
 				classes.put(cls.getName(), cls);
 		for (PluginElement element : index.ofKind(PluginElementKind.MAIN_CLASS))
 			mainClasses.add(element.location().className());
+		for (PluginElement element : index.ofKind(PluginElementKind.EVENT_HANDLER))
+			eventHandlers.add(element.location());
+	}
+
+	/**
+	 * Creates a suggester that only answers {@link #parameterNames(String, MethodMember)}, for naming parameters of
+	 * classes as they are decompiled. Construction reads every class name in the plugin once, so keep the instance for
+	 * as long as the index is current.
+	 *
+	 * @param workspace
+	 * 		Workspace containing the plugin as its primary resource.
+	 * @param index
+	 * 		Index of the plugin.
+	 * @param skipShadedLibraries
+	 * 		{@code true} to treat classes of libraries plugins commonly shade as having no readable names.
+	 *
+	 * @return Suggester for parameter names. Safe to share between threads.
+	 */
+	@Nonnull
+	public static SemanticNameSuggester forParameters(@Nonnull Workspace workspace, @Nonnull PluginIndex index,
+	                                                  boolean skipShadedLibraries) {
+		return new SemanticNameSuggester(workspace, index, null, skipShadedLibraries);
+	}
+
+	/**
+	 * Names the parameters of a method from what the server calls it with, or from the types of the parameters.
+	 * Meant for methods without a variable table.
+	 *
+	 * @param className
+	 * 		Internal name of the declaring class.
+	 * @param method
+	 * 		Method to name the parameters of.
+	 *
+	 * @return One entry per parameter in declaration order, {@code null} where nothing better than the decompiler's own
+	 * name can be offered. Names are valid identifiers and distinct from each other.
+	 */
+	@Nonnull
+	public String[] parameterNames(@Nonnull String className, @Nonnull MethodMember method) {
+		Type[] arguments = Type.getArgumentTypes(method.getDescriptor());
+		String[] names = new String[arguments.length];
+		List<String> callbackNames = CALLBACK_PARAMETERS.get(method.getName() + method.getDescriptor());
+		boolean handler = eventHandlers.contains(CodeLocation.ofMember(className, method.getName(), method.getDescriptor()));
+		Set<String> used = new HashSet<>();
+		for (int i = 0; i < arguments.length; i++) {
+			String name = null;
+			if (callbackNames != null && i < callbackNames.size()) {
+				name = callbackNames.get(i);
+			} else if (i == 0 && handler) {
+				name = "event";
+			} else {
+				TypeName typeName = typeName(arguments[i], null);
+				if (typeName != null)
+					name = NameHeuristics.toCamelCase(typeName.name());
+			}
+			if (name != null && NameHeuristics.isValidIdentifier(name)) {
+				name = deconflict(name, used, "");
+				used.add(name);
+				names[i] = name;
+			}
+		}
+		return names;
 	}
 
 	/**

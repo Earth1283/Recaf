@@ -1,6 +1,11 @@
 package software.coley.recaf.ui.docking;
 
 import jakarta.annotation.Nonnull;
+import software.coley.recaf.ui.control.richtext.Editor;
+import software.coley.recaf.ui.config.KeybindingConfig;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.control.TextInputControl;
+import javafx.event.Event;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
@@ -40,6 +45,7 @@ import software.coley.recaf.services.window.WindowManager;
 import software.coley.recaf.services.workspace.WorkspaceCloseListener;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.services.workspace.WorkspaceOpenListener;
+import software.coley.recaf.services.navigation.Navigable;
 import software.coley.recaf.ui.control.ActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.pane.ConfigPane;
@@ -50,6 +56,7 @@ import software.coley.recaf.ui.pane.WorkspaceExplorerPane;
 import software.coley.recaf.ui.pane.WorkspaceInformationPane;
 import software.coley.recaf.ui.window.RecafScene;
 import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.util.NodeEvents;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.workspace.model.Workspace;
 
@@ -101,6 +108,8 @@ public class DockingManager {
 	private final Instance<WorkspaceExplorerPane> workspaceExplorerProvider;
 	private final DockContainerRootBranch root;
 	private final ResourceSummaryServiceConfig resourceSummaryConfig;
+	private final KeybindingConfig keys;
+	private Side sideBeforeCollapse;
 	private final WorkspaceManager workspaceManager;
 
 	// The primary bento instance
@@ -165,7 +174,8 @@ public class DockingManager {
 	                      @Nonnull Instance<WelcomePane> welcomePaneProvider,
 	                      @Nonnull Instance<WorkspaceInformationPane> workspaceInfoProvider,
 	                      @Nonnull Instance<WorkspaceExplorerPane> workspaceExplorerProvider,
-	                      @Nonnull ResourceSummaryServiceConfig resourceSummaryConfig) {
+	                      @Nonnull ResourceSummaryServiceConfig resourceSummaryConfig,
+	                      @Nonnull KeybindingConfig keys) {
 		this.workspaceManager = workspaceManager;
 		this.actions = actions;
 		this.loggingPaneProvider = loggingPaneProvider;
@@ -173,6 +183,7 @@ public class DockingManager {
 		this.welcomePaneProvider = welcomePaneProvider;
 		this.workspaceExplorerProvider = workspaceExplorerProvider;
 		this.resourceSummaryConfig = resourceSummaryConfig;
+		this.keys = keys;
 
 		// Stages created via our docking framework need to be tracked in the window manager.
 		bento.stageBuilding().setStageFactory(originScene -> {
@@ -182,7 +193,9 @@ public class DockingManager {
 		});
 		bento.stageBuilding().setSceneFactory((sourceScene, content, width, height) -> {
 			content.getStyleClass().add("bg-inset");
-			return new RecafScene(content, width, height);
+			RecafScene scene = new RecafScene(content, width, height);
+			installShortcuts(scene);
+			return scene;
 		});
 
 		// Due to how we style the headers, we want the drawing to be clipped.
@@ -387,6 +400,88 @@ public class DockingManager {
 		return bento.dockBuilding().leaf(id);
 	}
 
+	/**
+	 * Collapses the workspace explorer panel to give the editor the full width, or expands it again.
+	 * <p>
+	 * A panel only collapses when its tab strip is on the side of the split it is next to, so the strip is moved to the
+	 * left while it is collapsed. A collapsed panel leaves just that strip, and clicking its tab expands it again.
+	 */
+	public void toggleWorkspacePanel() {
+		var path = bento.search().container(ID_CONTAINER_WORKSPACE_TOOLS);
+		if (path == null || !(path.tailContainer() instanceof DockContainerLeaf leaf) || leaf.getParentContainer() == null)
+			return;
+		if (leaf.getDockables().isEmpty())
+			return;
+		Dockable first = leaf.getDockables().getFirst();
+		if (leaf.isCollapsed()) {
+			leaf.toggleCollapse(first);
+			if (sideBeforeCollapse != null) {
+				leaf.sideProperty().set(sideBeforeCollapse);
+				sideBeforeCollapse = null;
+			}
+			return;
+		}
+		Side side = leaf.sideProperty().get();
+		if (side == Side.TOP || side == Side.BOTTOM) {
+			sideBeforeCollapse = side;
+			leaf.sideProperty().set(Side.LEFT);
+		}
+		if (!leaf.toggleCollapse(first) && sideBeforeCollapse != null) {
+			leaf.sideProperty().set(sideBeforeCollapse);
+			sideBeforeCollapse = null;
+		}
+	}
+
+	/**
+	 * Keys go to the focused node, and after a tab is opened or clicked that is the tab header rather than the editor
+	 * inside the tab. Without this the find and replace shortcuts do nothing until the user clicks into the code.
+	 * When the key arrives anywhere in a tab that is not already inside an editor, focus moves to that tab's editor and
+	 * the key is replayed there for the search bar. Also handles the shortcut for collapsing the workspace panel, which
+	 * should work wherever the focus is.
+	 *
+	 * @param scene
+	 * 		Scene of a window that holds docked content.
+	 */
+	private void installShortcuts(@Nonnull Scene scene) {
+		scene.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+			if (keys.getToggleSidebar().match(e)) {
+				e.consume();
+				toggleWorkspacePanel();
+				return;
+			}
+			if (!(keys.getFind().match(e) || keys.getReplace().match(e)) || !(e.getTarget() instanceof Node target) || isInsideEditor(target))
+				return;
+			for (DockablePath path : bento.search().allDockables()) {
+				DockContainerLeaf leaf = path.leafContainer();
+				if (leaf.getSelectedDockable() != path.dockable() || !isAncestor(leaf.asRegion(), target))
+					continue;
+				if (path.dockable().getNode() instanceof Navigable navigable) {
+					navigable.requestFocus();
+					Node owner = scene.getFocusOwner();
+					if (owner != null && owner != target && isInsideEditor(owner)) {
+						e.consume();
+						Event.fireEvent(owner, e.copyFor(owner, owner));
+					}
+				}
+				return;
+			}
+		});
+	}
+
+	private static boolean isInsideEditor(@Nonnull Node node) {
+		for (Node n = node; n != null; n = n.getParent())
+			if (n instanceof Editor || n instanceof TextInputControl)
+				return true;
+		return false;
+	}
+
+	private static boolean isAncestor(@Nonnull Node ancestor, @Nonnull Node node) {
+		for (Node n = node; n != null; n = n.getParent())
+			if (n == ancestor)
+				return true;
+		return false;
+	}
+
 	@Nonnull
 	private DockContainerLeaf newWelcomeContainer() {
 		Dockable welcome = newTranslatableDockable("welcome.title", CarbonIcons.EARTH_FILLED, welcomePaneProvider.get());
@@ -420,6 +515,7 @@ public class DockingManager {
 		DockContainerBranch branch = bento.dockBuilding().branch(ID_CONTAINER_ROOT_TOP);
 		branch.addContainers(explorer, primary);
 		branch.setContainerSizePercent(explorer, TOP_WORKSPACE_EXPLORER_SIZE);
+		NodeEvents.runOnceIfPresentOrOnChange(branch.sceneProperty(), this::installShortcuts);
 
 		// We don't prune when empty because it breaks the 'replace top' container logic we have when
 		// new workspaces get opened or existing ones get closed. As long as the top exists we can always

@@ -25,6 +25,7 @@ import software.coley.recaf.services.analysis.plugin.api.PluginApiAttachResult;
 import software.coley.recaf.services.analysis.plugin.api.PluginApiRequest;
 import software.coley.recaf.services.analysis.plugin.security.PluginSecurityService;
 import software.coley.recaf.services.analysis.plugin.security.Severity;
+import software.coley.recaf.services.analysis.plugin.view.PluginViewService;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.info.summary.ResourceSummarizer;
 import software.coley.recaf.services.info.summary.SummaryConsumer;
@@ -33,6 +34,7 @@ import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.pane.plugin.PluginNavigation;
+import software.coley.recaf.ui.pane.plugin.PluginViewControls;
 import software.coley.recaf.ui.pane.plugin.SecurityDisplay;
 import software.coley.recaf.util.Animations;
 import software.coley.recaf.util.FxThreadUtil;
@@ -60,6 +62,7 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	private final CellConfigurationService cellConfigurationService;
 	private final PluginNavigation pluginNavigation;
 	private final PluginSecurityService securityService;
+	private final PluginViewService viewService;
 	private final Actions actions;
 
 	@Inject
@@ -68,12 +71,14 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	                                 @Nonnull CellConfigurationService cellConfigurationService,
 	                                 @Nonnull PluginNavigation pluginNavigation,
 	                                 @Nonnull PluginSecurityService securityService,
+	                                 @Nonnull PluginViewService viewService,
 	                                 @Nonnull Actions actions) {
 		this.analysisService = analysisService;
 		this.apiService = apiService;
 		this.cellConfigurationService = cellConfigurationService;
 		this.pluginNavigation = pluginNavigation;
 		this.securityService = securityService;
+		this.viewService = viewService;
 		this.actions = actions;
 	}
 
@@ -120,6 +125,13 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 		if (resource == workspace.getPrimaryResource()) {
 			batch.add(() -> row(consumer, "mcplugin.security.summary", createSecurityLabel(workspace)));
 			batch.add(() -> consumer.appendSummary(createToolButtons()));
+			batch.add(() -> {
+				Label title = new BoundLabel(Lang.getBinding("mcplugin.view.title"));
+				title.getStyleClass().add(Styles.TEXT_BOLD);
+				title.setTooltip(new Tooltip(Lang.get("mcplugin.view.tip")));
+				consumer.appendSummary(title);
+				consumer.appendSummary(new PluginViewControls(viewService, workspace));
+			});
 		}
 
 		batch.execute();

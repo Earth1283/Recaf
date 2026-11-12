@@ -55,6 +55,7 @@ public class DecompilerManager implements Service {
 	private final ExecutorService decompileThreadPool = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID);
 	private final List<JvmBytecodeFilter> bytecodeFilters = new CopyOnWriteArrayList<>();
 	private final List<OutputTextFilter> outputTextFilters = new CopyOnWriteArrayList<>();
+	private final List<JvmBytecodeFilter> nestedClassFilters = new CopyOnWriteArrayList<>();
 	private final Map<String, JvmDecompiler> jvmDecompilers = new TreeMap<>();
 	private final Map<String, AndroidDecompiler> androidDecompilers = new TreeMap<>();
 	private final DecompilerManagerConfig config;
@@ -210,6 +211,30 @@ public class DecompilerManager implements Service {
 	}
 
 	/**
+	 * Adds a filter that also applies to the classes a decompiler loads because the class it is decompiling refers to
+	 * them, such as inner classes. Only this filter is applied to those, not the other bytecode filters.
+	 *
+	 * @param filter
+	 * 		Filter to add to all {@link JvmDecompiler} instances.
+	 */
+	public void addNestedClassFilter(@Nonnull JvmBytecodeFilter filter) {
+		nestedClassFilters.add(filter);
+		for (JvmDecompiler decompiler : jvmDecompilers.values())
+			decompiler.addNestedClassFilter(filter);
+	}
+
+	/**
+	 * Adds an input bytecode filter that runs before every filter added with {@link #addJvmBytecodeFilter(JvmBytecodeFilter)}.
+	 * Meant for filters that replace the bytecode wholesale, since filters after them then see the replacement.
+	 *
+	 * @param filter
+	 * 		Filter to add.
+	 */
+	public void addJvmBytecodeFilterFirst(@Nonnull JvmBytecodeFilter filter) {
+		bytecodeFilters.addFirst(filter);
+	}
+
+	/**
 	 * Removes an input bytecode filter from all {@link JvmDecompiler} instances.
 	 *
 	 * @param filter
@@ -261,6 +286,8 @@ public class DecompilerManager implements Service {
 	 */
 	public void register(@Nonnull JvmDecompiler decompiler) {
 		jvmDecompilers.put(decompiler.getName(), decompiler);
+		for (JvmBytecodeFilter filter : nestedClassFilters)
+			decompiler.addNestedClassFilter(filter);
 	}
 
 	/**

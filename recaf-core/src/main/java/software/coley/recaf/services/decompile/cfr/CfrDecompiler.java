@@ -51,7 +51,7 @@ public class CfrDecompiler extends AbstractJvmDecompiler {
 	protected DecompileResult decompileInternal(@Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
 		String name = classInfo.getName();
 		byte[] bytecode = classInfo.getBytecode();
-		ClassSource source = new ClassSource(workspace, name, bytecode);
+		ClassSource source = new ClassSource(workspace, name, bytecode, info -> nestedClassView(workspace, name, info));
 		SinkFactoryImpl sink = new SinkFactoryImpl();
 		CfrDriver driver = new CfrDriver.Builder()
 				.withClassFileSource(source)

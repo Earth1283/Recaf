@@ -8,6 +8,7 @@ import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Basic setup for {@link JvmDecompiler}.
@@ -16,6 +17,7 @@ import java.util.List;
  */
 public abstract class AbstractJvmDecompiler extends AbstractDecompiler implements JvmDecompiler {
 	private final List<JvmBytecodeFilter> bytecodeFilters = new ArrayList<>();
+	private final List<JvmBytecodeFilter> nestedClassFilters = new CopyOnWriteArrayList<>();
 
 	/**
 	 * @param name
@@ -37,6 +39,49 @@ public abstract class AbstractJvmDecompiler extends AbstractDecompiler implement
 	@Override
 	public boolean removeJvmBytecodeFilter(@Nonnull JvmBytecodeFilter filter) {
 		return bytecodeFilters.remove(filter);
+	}
+
+	/**
+	 * Adds a filter for classes that are only loaded because the class being decompiled refers to them, such as its
+	 * inner classes. Those are not passed through the other bytecode filters.
+	 *
+	 * @param filter
+	 * 		Filter to add.
+	 *
+	 * @return {@code true} when the filter was added.
+	 */
+	@Override
+	public boolean addNestedClassFilter(@Nonnull JvmBytecodeFilter filter) {
+		return nestedClassFilters.add(filter);
+	}
+
+	/**
+	 * @param filter
+	 * 		Filter to remove.
+	 *
+	 * @return {@code true} when the filter was removed.
+	 */
+	@Override
+	public boolean removeNestedClassFilter(@Nonnull JvmBytecodeFilter filter) {
+		return nestedClassFilters.remove(filter);
+	}
+
+	/**
+	 * @param workspace
+	 * 		Workspace the class is from.
+	 * @param targetName
+	 * 		Name of the class being decompiled.
+	 * @param info
+	 * 		Class the decompiler needs to load because the class it is decompiling refers to it.
+	 *
+	 * @return The class to give the decompiler. The same instance unless the class is nested in the target and a nested
+	 * class filter changes it. Other classes the target refers to are only read, never printed.
+	 */
+	@Nonnull
+	protected JvmClassInfo nestedClassView(@Nonnull Workspace workspace, @Nonnull String targetName, @Nonnull JvmClassInfo info) {
+		if (nestedClassFilters.isEmpty() || !info.getName().startsWith(targetName + '$'))
+			return info;
+		return JvmBytecodeFilter.applyFilters(workspace, info, nestedClassFilters);
 	}
 
 	@Nonnull
