@@ -103,6 +103,18 @@ public class PluginSemanticService implements Service {
 					untrack();
 			}
 		});
+
+		// Marking a workspace as a plugin (or not) changes what its index should hold.
+		analysisService.addPlatformOverrideListener((workspace, platform) -> {
+			boolean tracked;
+			synchronized (this) {
+				tracked = workspace == trackedWorkspace;
+			}
+			if (tracked)
+				onChange(workspace);
+			else if (platform != null && workspace == workspaceManager.getCurrent())
+				getIndexAsync(workspace);
+		});
 	}
 
 	/**
@@ -209,7 +221,7 @@ public class PluginSemanticService implements Service {
 	 * @param workspace
 	 * 		Some workspace.
 	 *
-	 * @return {@code true} when the primary resource has a plugin manifest.
+	 * @return {@code true} when the primary resource has a plugin manifest, or the user marked the workspace as a plugin.
 	 */
 	public boolean hasManifest(@Nonnull Workspace workspace) {
 		return !analysisService.findManifests(workspace, workspace.getPrimaryResource()).isEmpty();

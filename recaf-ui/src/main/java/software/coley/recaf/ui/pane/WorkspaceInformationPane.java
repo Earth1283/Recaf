@@ -3,6 +3,7 @@ package software.coley.recaf.ui.pane;
 import atlantafx.base.controls.RingProgressIndicator;
 import atlantafx.base.theme.Styles;
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import javafx.geometry.Insets;
@@ -19,6 +20,8 @@ import javafx.scene.layout.VBox;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.path.WorkspacePathNode;
+import software.coley.recaf.services.analysis.plugin.MinecraftPluginAnalysisService;
+import software.coley.recaf.services.analysis.plugin.MinecraftPluginPlatform;
 import software.coley.recaf.services.cell.icon.IconProviderService;
 import software.coley.recaf.services.cell.text.TextProviderService;
 import software.coley.recaf.services.info.summary.ResourceSummaryService;
@@ -39,6 +42,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BiConsumer;
 
 /**
  * Pane to display summary data about the loaded {@link Workspace} when opened.
@@ -50,17 +54,28 @@ import java.util.concurrent.CompletableFuture;
 @Dependent
 public class WorkspaceInformationPane extends StackPane implements Navigable {
 	private final WorkspacePathNode path;
+	private final Workspace workspace;
+	private final Grid content = new Grid();
+	private final TextProviderService textService;
+	private final IconProviderService iconService;
+	private final ResourceSummaryService summaryService;
+	private final MinecraftPluginAnalysisService pluginAnalysisService;
+	private final BiConsumer<Workspace, MinecraftPluginPlatform> overrideListener;
 
 	@Inject
 	public WorkspaceInformationPane(@Nonnull TextProviderService textService,
 	                                @Nonnull IconProviderService iconService,
 	                                @Nonnull ResourceSummaryService summaryService,
+	                                @Nonnull MinecraftPluginAnalysisService pluginAnalysisService,
 	                                @Nonnull WorkspaceManager workspaceManager) {
-		Workspace workspace = workspaceManager.getCurrent();
+		this.textService = textService;
+		this.iconService = iconService;
+		this.summaryService = summaryService;
+		this.pluginAnalysisService = pluginAnalysisService;
+		workspace = workspaceManager.getCurrent();
 		path = PathNodes.workspacePath(workspace);
 
 		// Adding content
-		Grid content = new Grid();
 		content.setPadding(new Insets(10));
 		content.prefWidthProperty().bind(widthProperty().subtract(10));
 		ScrollPane scroll = new AutoScrollPane(content);
@@ -80,6 +95,45 @@ public class WorkspaceInformationPane extends StackPane implements Navigable {
 		StackPane.setAlignment(box, Pos.CENTER);
 
 		// Populate summary data for each resource.
+		List<CompletableFuture<Void>> summaryFutures = populate();
+
+		// When the summary is done, clear the "loading..." overlay.
+		CompletableFuture.allOf(summaryFutures.toArray(CompletableFuture[]::new))
+				.whenCompleteAsync((ignored, error) -> FxThreadUtil.delayedRun(100, () -> {
+					loadingOverlay.setVisible(false);
+					loadingOverlay.setManaged(false);
+
+					// AtlantaFX's ring progress in the 'indeterminate' state uses the JavaFX 'RotateTransition' animation
+					// which leaks memory if not explicitly stopped. This results in any workspace content never being GC'd.
+					//
+ 					// See: https://bsky.app/profile/mattcoley.bsky.social/post/3mbvlnisiys2z
+					ring.setProgress(0);
+					box.getChildren().clear();
+				}));
+
+		// Marking the workspace as a plugin (or not) changes the summaries, so redo them.
+		overrideListener = (changed, platform) -> {
+			if (changed == workspace)
+				FxThreadUtil.run(this::refresh);
+		};
+		pluginAnalysisService.addPlatformOverrideListener(overrideListener);
+	}
+
+	@PreDestroy
+	private void cleanup() {
+		pluginAnalysisService.removePlatformOverrideListener(overrideListener);
+	}
+
+	/**
+	 * Replaces the displayed summaries with new ones.
+	 */
+	private void refresh() {
+		content.getChildren().clear();
+		populate();
+	}
+
+	@Nonnull
+	private List<CompletableFuture<Void>> populate() {
 		List<CompletableFuture<Void>> summaryFutures = new ArrayList<>();
 		List<WorkspaceResource> resources = workspace.getAllResources(false);
 		for (WorkspaceResource resource : resources) {
@@ -110,19 +164,7 @@ public class WorkspaceInformationPane extends StackPane implements Navigable {
 			}
 		}
 
-		// When the summary is done, clear the "loading..." overlay.
-		CompletableFuture.allOf(summaryFutures.toArray(CompletableFuture[]::new))
-				.whenCompleteAsync((ignored, error) -> FxThreadUtil.delayedRun(100, () -> {
-					loadingOverlay.setVisible(false);
-					loadingOverlay.setManaged(false);
-
-					// AtlantaFX's ring progress in the 'indeterminate' state uses the JavaFX 'RotateTransition' animation
-					// which leaks memory if not explicitly stopped. This results in any workspace content never being GC'd.
-					//
- 					// See: https://bsky.app/profile/mattcoley.bsky.social/post/3mbvlnisiys2z
-					ring.setProgress(0);
-					box.getChildren().clear();
-				}));
+		return summaryFutures;
 	}
 
 	@Nonnull

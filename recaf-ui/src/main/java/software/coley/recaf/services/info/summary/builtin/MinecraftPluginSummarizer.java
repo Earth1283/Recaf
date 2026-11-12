@@ -102,6 +102,14 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 			WorkspaceResource manifestResource = located.resource();
 			batch.add(() -> {
 				row(consumer, "service.analysis.minecraft-plugin.platform", new Label(manifest.platform().displayName()));
+				if (located.forced()) {
+					Button clear = new Button();
+					clear.textProperty().bind(Lang.getBinding("service.analysis.minecraft-plugin.forced.clear"));
+					clear.setOnAction(e -> analysisService.setPlatformOverride(workspace, null));
+					row(consumer, "service.analysis.minecraft-plugin.forced",
+							new Label(Lang.get("service.analysis.minecraft-plugin.forced.value")));
+					consumer.appendSummary(clear);
+				}
 				if (manifest.name() != null)
 					row(consumer, "service.analysis.minecraft-plugin.name", new Label(manifest.name()));
 				if (manifest.version() != null)

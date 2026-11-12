@@ -1,6 +1,7 @@
 package software.coley.recaf.ui.menubar;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -8,7 +9,11 @@ import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.RadioMenuItem;
+import javafx.scene.control.ToggleGroup;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
+import software.coley.recaf.services.analysis.plugin.MinecraftPluginAnalysisService;
+import software.coley.recaf.services.analysis.plugin.MinecraftPluginPlatform;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.transform.TransformationPreset;
 import software.coley.recaf.services.transform.TransformationPresetManager;
@@ -20,6 +25,10 @@ import software.coley.recaf.ui.docking.DockingManager;
 import software.coley.recaf.ui.pane.plugin.PluginNavigation;
 import software.coley.recaf.ui.window.DeobfuscationWindow;
 import software.coley.recaf.util.FxThreadUtil;
+import software.coley.recaf.workspace.model.Workspace;
+
+import java.util.EnumMap;
+import java.util.Map;
 
 import static software.coley.recaf.util.Lang.getBinding;
 import static software.coley.recaf.util.Menus.*;
@@ -34,6 +43,11 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 	private final WindowManager windowManager;
 	private final Instance<DeobfuscationWindow> deobfuscationWindowProvider;
 	private final TransformationPresetManager presetManager;
+	private final MinecraftPluginAnalysisService pluginAnalysisService;
+	private final WorkspaceManager workspaceManager;
+	private final ToggleGroup pluginOverrideGroup = new ToggleGroup();
+	private final RadioMenuItem pluginOverrideAuto = new RadioMenuItem();
+	private final Map<MinecraftPluginPlatform, RadioMenuItem> pluginOverrideItems = new EnumMap<>(MinecraftPluginPlatform.class);
 	private final BooleanProperty hasPresets = new SimpleBooleanProperty();
 
 	@Inject
@@ -43,8 +57,12 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 	                    @Nonnull Instance<DeobfuscationWindow> deobfuscationWindowProvider,
 	                    @Nonnull TransformationPresetManager presetManager,
 	                    @Nonnull PluginNavigation pluginNavigation,
+	                    @Nonnull MinecraftPluginAnalysisService pluginAnalysisService,
 	                    @Nonnull Actions actions) {
 		super(workspaceManager);
+
+		this.workspaceManager = workspaceManager;
+		this.pluginAnalysisService = pluginAnalysisService;
 
 		this.windowManager = windowManager;
 		this.deobfuscationWindowProvider = deobfuscationWindowProvider;
@@ -85,6 +103,54 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 				pluginNavigation::openSecurityTriage);
 		itemPluginSecurity.disableProperty().bind(hasWorkspace.not());
 		getItems().add(itemPluginSecurity);
+
+		getItems().add(createPluginOverrideMenu());
+	}
+
+	/**
+	 * @return Menu for marking the workspace as a Minecraft plugin, for when its manifest is missing or obfuscated.
+	 */
+	@Nonnull
+	private Menu createPluginOverrideMenu() {
+		Menu menu = menu("menu.analysis.plugin-override", CarbonIcons.CATEGORIES);
+		menu.disableProperty().bind(hasWorkspace.not());
+
+		pluginOverrideAuto.textProperty().bind(getBinding("menu.analysis.plugin-override.auto"));
+		pluginOverrideAuto.setToggleGroup(pluginOverrideGroup);
+		pluginOverrideAuto.setOnAction(e -> setPluginOverride(null));
+		menu.getItems().add(pluginOverrideAuto);
+		menu.getItems().add(separator());
+		for (MinecraftPluginPlatform platform : MinecraftPluginPlatform.values()) {
+			RadioMenuItem item = new RadioMenuItem(platform.displayName());
+			item.setToggleGroup(pluginOverrideGroup);
+			item.setOnAction(e -> setPluginOverride(platform));
+			pluginOverrideItems.put(platform, item);
+			menu.getItems().add(item);
+		}
+
+		// Keep the selection in sync with the workspace, including changes made outside of this menu.
+		menu.setOnShowing(e -> syncPluginOverrideSelection());
+		pluginAnalysisService.addPlatformOverrideListener((workspace, platform) -> FxThreadUtil.run(this::syncPluginOverrideSelection));
+		syncPluginOverrideSelection();
+		return menu;
+	}
+
+	private void setPluginOverride(@Nullable MinecraftPluginPlatform platform) {
+		Workspace workspace = workspaceManager.getCurrent();
+		if (workspace != null)
+			pluginAnalysisService.setPlatformOverride(workspace, platform);
+	}
+
+	private void syncPluginOverrideSelection() {
+		Workspace workspace = workspaceManager.getCurrent();
+		MinecraftPluginPlatform override = workspace == null ? null : pluginAnalysisService.getPlatformOverride(workspace);
+		RadioMenuItem selected = override == null ? pluginOverrideAuto : pluginOverrideItems.get(override);
+		selected.setSelected(true);
+	}
+
+	@Override
+	protected void workspaceStateChanged() {
+		syncPluginOverrideSelection();
 	}
 
 	/**
