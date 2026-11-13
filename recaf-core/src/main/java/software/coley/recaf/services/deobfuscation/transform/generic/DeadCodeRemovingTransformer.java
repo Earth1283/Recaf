@@ -86,10 +86,11 @@ public class DeadCodeRemovingTransformer implements JvmClassTransformer {
 			// Compute a prefix sum of kept instructions so we can determine if
 			// a try-catch block has any executable instructions left after pruning.
 			int end = instructions.size() - 1;
+			AbstractInsnNode[] instructionArray = instructions.toArray();
 			int[] keptPrefix = new int[end + 2];
 			Map<LabelNode, Integer> labelIndices = new IdentityHashMap<>();
 			for (int i = 0; i <= end; i++) {
-				AbstractInsnNode insn = instructions.get(i);
+				AbstractInsnNode insn = instructionArray[i];
 				if (insn instanceof LabelNode label)
 					labelIndices.put(label, i);
 
@@ -111,12 +112,10 @@ public class DeadCodeRemovingTransformer implements JvmClassTransformer {
 			}
 
 			// Prune any instructions not visited.
+			// Removing an instruction invalidates InsnList's index cache. Walk the snapshot so each
+			// removal stays constant-time instead of rebuilding that cache for every dead instruction.
 			for (int i = end; i >= 0; i--) {
-				if (i >= instructions.size())
-					continue;
-				AbstractInsnNode insn = instructions.get(i);
-				if (insn == null)
-					continue;
+				AbstractInsnNode insn = instructionArray[i];
 				if (!visited.contains(insn) || insn.getOpcode() == NOP) {
 					// Don't prune the tail label even if it's "dead" because the last method instruction
 					// is terminal like 'return' or 'athrow'. The label will just get added back automatically
@@ -129,6 +128,8 @@ public class DeadCodeRemovingTransformer implements JvmClassTransformer {
 						continue;
 
 					instructions.remove(insn);
+					if (insn instanceof LabelNode label)
+						labelIndices.remove(label);
 					dirty = true;
 				}
 			}
@@ -147,7 +148,8 @@ public class DeadCodeRemovingTransformer implements JvmClassTransformer {
 			// Ensure that after dead code removal (or any other transformers not cleaning up)
 			// that all variables have labels that reside in the method code list.
 			List<LocalVariableNode> variables = method.localVariables;
-			if (variables != null && variables.stream().anyMatch(l -> !instructions.contains(l.start) || !instructions.contains(l.end))) {
+			// The label index already tracks membership, with pruned labels removed above.
+			if (variables != null && variables.stream().anyMatch(l -> !labelIndices.containsKey(l.start) || !labelIndices.containsKey(l.end))) {
 				fixMissingVariableLabels(method);
 				dirty = true;
 			}

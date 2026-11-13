@@ -132,8 +132,16 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 				//
 				// Any time either pass makes changes, it will generally replace instructions with NOP.
 				// This is generally done over immediately removing them to reduce the risk of indexing errors.
-				dirty |= pass1StackManipulation(context, node, method, instructions);
-				dirty |= pass2SequenceFolding(context, node, method, instructions);
+				Frame<ReValue>[] frames = null;
+				try {
+					frames = context.analyze(inheritanceGraph, node, method);
+				} catch (Throwable ignored) {
+					// The second pass can retry analysis, as it did before.
+				}
+				boolean stackDirty = frames != null && pass1StackManipulation(instructions, frames);
+				dirty |= stackDirty;
+				// Unchanged instructions have the same frames. Re-analyze only after stack rewrites.
+				dirty |= pass2SequenceFolding(context, node, method, instructions, stackDirty ? null : frames);
 
 				// Now that we are done, we'll prune any NOP instructions if we made changes.
 				if (dirty) {
@@ -157,29 +165,17 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 	 * or placing copies of existing instructions in specific locations to achieve desired effects for operations
 	 * like {@code dup_x} instructions.
 	 *
-	 * @param context
-	 * 		Transformation context used to analyze methods for stack values.
-	 * @param node
-	 * 		Class defining the method.
-	 * @param method
-	 * 		The method to transform.
 	 * @param instructions
 	 * 		The instructions of the method.
+	 * @param frames
+	 * 		Frames computed before any stack rewrites.
 	 *
 	 * @return {@code true} when any stack operation was transformed.
 	 *
 	 */
-	private boolean pass1StackManipulation(@Nonnull JvmTransformerContext context, @Nonnull ClassNode node,
-	                                       @Nonnull MethodNode method, @Nonnull InsnList instructions) {
+	private boolean pass1StackManipulation(@Nonnull InsnList instructions, @Nonnull Frame<ReValue>[] frames) {
 		boolean dirty = false;
 		int insertions = 0;
-		Frame<ReValue>[] frames;
-		try {
-			frames = context.analyze(inheritanceGraph, node, method);
-		} catch (Throwable t) {
-			// Can't analyze the method, so we can't do any stack manipulation.
-			return false;
-		}
 		for (int i = 1; i < instructions.size() - 1; i++) {
 			Frame<ReValue> frame = frames[i - insertions];
 			if (frame == null || frame.getStackSize() == 0)
@@ -367,17 +363,20 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 	 * 		The method to transform.
 	 * @param instructions
 	 * 		The instructions of the method.
+	 * @param frames
+	 * 		Frames from the first pass if it made no changes, otherwise {@code null} to re-analyze.
 	 *
 	 * @return {@code true} when any stack operation was transformed.
 	 *
 	 */
 	private boolean pass2SequenceFolding(@Nonnull JvmTransformerContext context, @Nonnull ClassNode node,
-	                                     @Nonnull MethodNode method, @Nonnull InsnList instructions) {
+	                                     @Nonnull MethodNode method, @Nonnull InsnList instructions,
+	                                     @Nullable Frame<ReValue>[] frames) {
 		boolean dirty = false;
 		List<AbstractInsnNode> sequence = new ArrayList<>();
-		Frame<ReValue>[] frames;
 		try {
-			frames = context.analyze(inheritanceGraph, node, method);
+			if (frames == null)
+				frames = context.analyze(inheritanceGraph, node, method);
 		} catch (Throwable t) {
 			// Can't analyze the method, so we can't do any stack manipulation.
 			return false;
