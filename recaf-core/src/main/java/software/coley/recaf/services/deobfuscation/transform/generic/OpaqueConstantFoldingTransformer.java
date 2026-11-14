@@ -132,6 +132,11 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 			InsnList instructions = method.instructions;
 			if (instructions == null)
 				continue;
+			if (bitwiseOnly && !hasBitwiseOperation(instructions)) {
+				if (dirty)
+					removeNops(instructions);
+				continue;
+			}
 			try {
 				// This transformer runs in two passes.
 				//
@@ -156,12 +161,8 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 				dirty |= pass2SequenceFolding(context, node, method, instructions, stackDirty ? null : frames);
 
 				// Now that we are done, we'll prune any NOP instructions if we made changes.
-				if (dirty) {
-					for (AbstractInsnNode insn : instructions.toArray()) {
-						if (insn.getOpcode() == NOP)
-							instructions.remove(insn);
-					}
-				}
+				if (dirty)
+					removeNops(instructions);
 			} catch (Throwable t) {
 				throw new TransformationException("Error encountered when folding constants", t);
 			}
@@ -891,6 +892,22 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 		return below.getSize() == 1
 				&& isKnownDiscardedValue(top)
 				&& isKnownDiscardedValue(below);
+	}
+
+	private static void removeNops(@Nonnull InsnList instructions) {
+		for (AbstractInsnNode insn = instructions.getFirst(); insn != null; ) {
+			AbstractInsnNode next = insn.getNext();
+			if (insn.getOpcode() == NOP)
+				instructions.remove(insn);
+			insn = next;
+		}
+	}
+
+	private static boolean hasBitwiseOperation(@Nonnull InsnList instructions) {
+		for (AbstractInsnNode insn = instructions.getFirst(); insn != null; insn = insn.getNext())
+			if (isBitwiseOperation(insn))
+				return true;
+		return false;
 	}
 
 	/**

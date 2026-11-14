@@ -9,6 +9,7 @@ import org.objectweb.asm.tree.analysis.Frame;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.transform.JvmTransformerContext;
@@ -30,6 +31,23 @@ import static org.mockito.Mockito.when;
 import static org.objectweb.asm.Opcodes.*;
 
 class ConstantFoldingAnalysisTest {
+	@Test
+	void bitwisePassSkipsAnalysisForMethodsWithoutBitwiseOperations() throws Exception {
+		check(method -> {
+			method.visitVarInsn(ILOAD, 0);
+			method.visitInsn(ICONST_2);
+			method.visitInsn(IADD);
+		}, 0, 9, true);
+	}
+
+	@Test
+	void bitwisePassStillAnalyzesMethodsWithShifts() throws Exception {
+		check(method -> {
+			method.visitVarInsn(ILOAD, 0);
+			method.visitInsn(ICONST_1);
+			method.visitInsn(ISHL);
+		}, 1, 14, true);
+	}
 	@Test
 	void reusesFramesWhenStackPassDoesNotChangeInstructions() throws Exception {
 		check(method -> {
@@ -60,6 +78,10 @@ class ConstantFoldingAnalysisTest {
 	}
 
 	private static void check(Consumer<MethodVisitor> body, int expectedAnalyses, int expectedValue) throws Exception {
+		check(body, expectedAnalyses, expectedValue, false);
+	}
+
+	private static void check(Consumer<MethodVisitor> body, int expectedAnalyses, int expectedValue, boolean bitwise) throws Exception {
 		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
 		writer.visit(V17, ACC_PUBLIC, "Example", null, "java/lang/Object", null);
 		MethodVisitor method = writer.visitMethod(ACC_PUBLIC | ACC_STATIC, "run", "(I)I", null, null);
@@ -77,7 +99,7 @@ class ConstantFoldingAnalysisTest {
 		InheritanceGraph graph = new InheritanceGraph(workspace);
 		InheritanceGraphService graphs = mock(InheritanceGraphService.class);
 		when(graphs.getOrCreateInheritanceGraph(workspace)).thenReturn(graph);
-		OpaqueConstantFoldingTransformer transformer = new OpaqueConstantFoldingTransformer(graphs);
+		OpaqueConstantFoldingTransformer transformer = bitwise ? new BitwiseFoldingTransformer(graphs) : new OpaqueConstantFoldingTransformer(graphs);
 		CountingContext context = new CountingContext(workspace, resource, transformer);
 		transformer.setup(context, workspace);
 		transformer.transform(context, workspace, resource, bundle, info);

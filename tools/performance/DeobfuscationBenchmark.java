@@ -8,6 +8,7 @@ import org.objectweb.asm.tree.analysis.Frame;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer;
 import software.coley.recaf.services.inheritance.*;
 import software.coley.recaf.services.mapping.*;
@@ -55,7 +56,8 @@ public class DeobfuscationBenchmark implements Opcodes {
         List<Trial> trials = new ArrayList<>();
         String expected = null;
         for (int i = -warmup; i < samples; i++) {
-            Trial trial = mode.equals("dead-code") ? prune(templates) : fold(workspace, resource, bundle, infos, graphs);
+            Trial trial = mode.equals("dead-code") ? prune(templates) : fold(workspace, resource, bundle, infos, graphs,
+                    mode.equals("bitwise-folding"));
             if (expected != null && !expected.equals(trial.digest()))
                 throw new AssertionError("Non-deterministic transformation output");
             expected = trial.digest();
@@ -103,8 +105,8 @@ public class DeobfuscationBenchmark implements Opcodes {
     }
 
     private static Trial fold(Workspace workspace, WorkspaceResource resource, BasicJvmClassBundle bundle,
-                              List<JvmClassInfo> infos, InheritanceGraphService graphs) throws Exception {
-        OpaqueConstantFoldingTransformer transformer = new OpaqueConstantFoldingTransformer(graphs);
+                              List<JvmClassInfo> infos, InheritanceGraphService graphs, boolean bitwise) throws Exception {
+        OpaqueConstantFoldingTransformer transformer = bitwise ? new BitwiseFoldingTransformer(graphs) : new OpaqueConstantFoldingTransformer(graphs);
         CountingContext context = new CountingContext(workspace, resource, transformer);
         transformer.setup(context, workspace);
         List<String> errors = new ArrayList<>();

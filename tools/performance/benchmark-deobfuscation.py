@@ -31,6 +31,10 @@ CASES = [
     ("constant-folding", "real-jars/BreweryX-3.6.3.jar"),
     ("constant-folding", "real-jars/Vulcan-2.9.7.12.jar"),
     ("constant-folding", "recaf-core/src/testFixtures/resources/samples/obf-sample-zkm-26.jar"),
+    ("bitwise-folding", "real-jars/AltarSMP-v1.jar"),
+    ("bitwise-folding", "real-jars/BreweryX-3.6.3.jar"),
+    ("bitwise-folding", "real-jars/Vulcan-2.9.7.12.jar"),
+    ("bitwise-folding", "recaf-core/src/testFixtures/resources/samples/obf-sample-zkm-26.jar"),
 ]
 
 
@@ -52,6 +56,9 @@ def main():
     output = ROOT / args.output
     output.parent.mkdir(parents=True, exist_ok=True)
     revision = run(["git", "rev-parse", args.baseline], capture_output=True).stdout.strip()
+    bitwise_supported = subprocess.run(
+        ["git", "cat-file", "-e", revision + ":" + PACKAGE + "BitwiseFoldingTransformer.java"],
+        cwd=ROOT, capture_output=True).returncode == 0
     report = {"baseline": revision, "java": run(["java", "-version"], capture_output=True).stderr.strip(),
               "platform": platform.platform(), "cpu": platform.processor(),
               "jvm": ["-Xms512m", "-Xmx2g"], "forks": args.forks, "warmup": args.warmup,
@@ -98,6 +105,9 @@ allprojects {
              "tools/performance/DeobfuscationBenchmark.java"])
         for mode, fixture in CASES:
             if args.case not in mode + ":" + fixture:
+                continue
+            if mode == "bitwise-folding" and not bitwise_supported:
+                print("Baseline predates the bitwise transformer, skipping: " + fixture, flush=True)
                 continue
             if not fixture.startswith("synthetic:") and not (ROOT / fixture).is_file():
                 print("Missing fixture, skipping: " + fixture, flush=True)

@@ -82,3 +82,15 @@ Thus, lines [2-4] will be matched lines, and 1, 5+ will be unmatched.
     -fx-border-width: 0 0 0 2px;
     -fx-pref-width: 1;
 }
+
+.code-area .preview-diff-add {
+    -fx-fill: -color-success-fg;
+    -rtfx-background-color: -color-success-subtle;
+}
+.code-area .preview-diff-remove {
+    -fx-fill: -color-danger-fg;
+    -rtfx-background-color: -color-danger-subtle;
+}
+.code-area .preview-diff-header {
+    -fx-fill: -color-accent-fg;
+}

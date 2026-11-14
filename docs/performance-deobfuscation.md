@@ -60,3 +60,43 @@ TARGET_VERSION=25 ./gradlew :recaf-core:test --tests 'software.coley.recaf.servi
 The 327-case run completed with 325 passed, one skipped, and one timeout in the existing 10-second backtracking check. An isolated retry of that check passed in 1.331 seconds, giving 326 passing checks in total. The five new regression tests cover frame reuse, fresh analysis after stack replacement/insertion, large dead-block removal with local-variable repair, and preserved catch boundaries.
 
 Validation logs: [suite](../build/performance/deobfuscation-tests.log), [isolated timeout retry](../build/performance/deobfuscation-timeout-retry.log).
+
+## Bitwise folding and preview refreshes
+
+Measured on 2026-11-14 against `1003f39e7eb52bebd05e558dcb89945430d9c958` with OpenJDK 25.0.5.0.3,
+`-Xms512m -Xmx2g`. Each variant has three independent JVM processes, three warmup passes per process,
+and five measured passes per process. The table reports medians over 15 samples. Tests did not run alongside the benchmark.
+
+The bitwise pass now skips frame analysis when a method contains no supported bitwise opcode or JDK bit helper.
+NOP cleanup uses a linked instruction walk, preserving the previous cleanup behavior without allocating an instruction array.
+
+| Input | Before (ms) | After (ms) | Time reduction | Allocation reduction | Analyses before / after |
+|---|---:|---:|---:|---:|---:|
+| AltarSMP-v1.jar | 157.696 | 81.511 | 48.3% | 48.3% | 1,187 / 103 |
+| BreweryX-3.6.3.jar | 299.280 | 104.554 | 65.1% | 69.3% | 19,467 / 119 |
+| Vulcan-2.9.7.12.jar | 1,570.647 | 1,472.259 | 6.3% | 9.4% | 10,866 / 2,875 |
+| obf-sample-zkm-26.jar | 135.338 | 53.261 | 60.6% | 50.6% | 542 / 64 |
+
+All four cases produce identical transformed bytecode hashes across both variants and every measured pass.
+These measurements cover one bitwise transformer pass, not the entire profile or application. Allocation counts
+cover the transforming thread. Results depend on how many methods contain bitwise operations; the smaller Vulcan
+gain should not be generalized to other obfuscated inputs.
+
+Reproduce with:
+
+```sh
+TARGET_VERSION=25 python3 tools/performance/benchmark-deobfuscation.py --baseline 1003f39e7 --case bitwise-folding --forks 3 --warmup 3 --samples 5 --output build/performance/bitwise-preview-diff.json
+```
+
+Raw samples: [bitwise-preview-diff.json](../build/performance/bitwise-preview-diff.json).
+
+Preview improvements are verified with JavaFX integration tests rather than wall-clock speed claims:
+
+- Switching source → bytecode → source uses one transformation instead of three, and two source-render requests
+  instead of four. The bytecode view and diff share the same transformed class.
+- Pass-setting changes refresh only the transformed view. Package-prefix typing waits 250 ms before starting a new run.
+- Each pane waits for its current decompilation before starting another. Obsolete transformations receive cancellation,
+  and stale render callbacks cannot replace newer previews.
+- Cached results are invalidated when the profile, selected class, workspace class contents, or decompiler settings change.
+- The Diff tab compares matching preview versions, computes differences off the UI thread only when opened,
+  and shows additions/removals with three context lines. Preview runs never commit transformation results.

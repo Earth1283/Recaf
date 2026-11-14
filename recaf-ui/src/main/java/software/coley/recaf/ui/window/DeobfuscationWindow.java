@@ -9,6 +9,8 @@ import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import javafx.animation.PauseTransition;
+import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.IntegerProperty;
@@ -49,7 +51,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.WindowEvent;
-import me.darknet.assembler.error.Diagnostic;
+import javafx.util.Duration;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import software.coley.observables.ObservableObject;
 import software.coley.recaf.analytics.logging.DebuggingLogger;
@@ -69,6 +71,7 @@ import software.coley.recaf.services.config.ConfigComponentFactory;
 import software.coley.recaf.services.config.ConfigComponentManager;
 import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
 import software.coley.recaf.services.decompile.DecompilerManager;
+import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.info.association.FileTypeSyntaxAssociationService;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.transform.ClassTransformer;
@@ -124,8 +127,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 import static software.coley.recaf.util.StringUtil.startsWithAny;
@@ -170,6 +175,11 @@ public class DeobfuscationWindow extends RecafStage {
 	private final VBox bitwiseOptions = new VBox(8);
 	private final TransformPreview beforePreview;
 	private final TransformPreview afterPreview;
+	private final DeobfuscationDiffPane diffPreview;
+	private final PauseTransition prefixRefresh = new PauseTransition(Duration.millis(250));
+	private PreviewText beforeText;
+	private PreviewText afterText;
+	private boolean updatingProfile;
 	private Popover activeTransformerInfoPopover;
 	private TreeView<TransformerTreeNode> availableTree;
 
@@ -209,11 +219,14 @@ public class DeobfuscationWindow extends RecafStage {
 						.thenComparing(d -> d.type().getName()))
 				.toList();
 
+		diffPreview = new DeobfuscationDiffPane(searchBarProvider);
 		beforePreview = new TransformPreview(languageAssociation, textConfig, searchBarProvider, false);
 		afterPreview = new TransformPreview(languageAssociation, textConfig, searchBarProvider, true);
 		addEventHandler(WindowEvent.WINDOW_HIDDEN, event -> {
 			beforePreview.close();
 			afterPreview.close();
+			diffPreview.close();
+			prefixRefresh.stop();
 		});
 
 		setupStage1();
@@ -446,19 +459,22 @@ public class DeobfuscationWindow extends RecafStage {
 		title.getStyleClass().add(Styles.TITLE_4);
 		title.setPadding(new Insets(0, 0, 5, 5));
 
-		// TODO: We have a before/after tab you click between.
-		//  Later it would be nice to have a split view where you can see both at the same time.
 		Tab beforeTab = new Tab();
 		Tab afterTab = new Tab();
+		Tab diffTab = new Tab();
 		beforeTab.setClosable(false);
 		afterTab.setClosable(false);
+		diffTab.setClosable(false);
 		beforeTab.setContent(beforePreview);
 		afterTab.setContent(afterPreview);
+		diffTab.setContent(diffPreview);
+		diffTab.textProperty().bind(Lang.getBinding("deobf.diff"));
+		diffTab.setOnSelectionChanged(_ -> diffPreview.setActive(diffTab.isSelected()));
 		beforeTab.textProperty().bind(Lang.getBinding("misc.before"));
 		afterTab.textProperty().bind(Lang.getBinding("misc.after"));
 		beforeTab.setGraphic(new FontIconView(CarbonIcons.LICENSE));
 		afterTab.setGraphic(new FontIconView(CarbonIcons.LICENSE_MAINTENANCE));
-		TabPane tabs = new TabPane(beforeTab, afterTab);
+		TabPane tabs = new TabPane(beforeTab, afterTab, diffTab);
 		tabs.getSelectionModel().select(afterTab);
 
 		// Preview tools:
@@ -469,7 +485,9 @@ public class DeobfuscationWindow extends RecafStage {
 			beforePreview.togglePreviewMode();
 			afterPreview.togglePreviewMode();
 		});
-		HBox previewTools = new HBox(8, pickClass, new Spacer(), togglePreview);
+		pickClass.setMaxWidth(Double.MAX_VALUE);
+		togglePreview.setMaxWidth(Double.MAX_VALUE);
+		VBox previewTools = new VBox(8, pickClass, togglePreview);
 		previewTools.setAlignment(Pos.CENTER_LEFT);
 		previewTools.setPadding(new Insets(0, 4, 4, 4));
 
@@ -571,30 +589,53 @@ public class DeobfuscationWindow extends RecafStage {
 		// Refresh previews whenever the execution profile changes.
 		ListChangeListener<SelectedTransformer> selectionListener = change -> {
 			refreshBitwiseOptions();
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
+			refreshTransformedPreview();
 		};
 		selectedTransformers.addListener(selectionListener);
-		maxPasses.addListener((ob, old, cur) -> {
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
-		});
-		dropFaultyClasses.addListener((ob, old, cur) -> {
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
-		});
-		scopeMode.addListener((ob, old, cur) -> {
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
-		});
+		maxPasses.addListener((ob, old, cur) -> refreshTransformedPreview());
+		dropFaultyClasses.addListener((ob, old, cur) -> refreshTransformedPreview());
+		scopeMode.addListener((ob, old, cur) -> refreshTransformedPreview());
+		prefixRefresh.setOnFinished(_ -> refreshTransformedPreview());
 		packagePrefixes.addListener((ob, old, cur) -> {
-			// TODO: While typing in the package prefix textfield, lot of refreshes get triggered...
-			//  Should throttle the refreshes to only happen after a pause in typing.
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
+			if (!updatingProfile) {
+				afterPreview.invalidate();
+				prefixRefresh.playFromStart();
+			}
 		});
 		refreshBitwiseOptions();
 	}
+
+	private void refreshTransformedPreview() {
+		if (!updatingProfile) {
+			prefixRefresh.stop();
+			afterPreview.updatePreview();
+		}
+	}
+
+	private void clearDiff(boolean after) {
+		if (after) afterText = null;
+		else beforeText = null;
+		diffPreview.clear(previewClass.get() == null ? "deobf.preview.noselection" : "deobf.diff.waiting");
+	}
+
+	private void publishPreview(boolean after, PreviewText text) {
+		if (after) afterText = text;
+		else beforeText = text;
+		if (beforeText != null && afterText != null && beforeText.original() == afterText.original()
+				&& beforeText.decompile() == afterText.decompile()) {
+			if (beforeText.workspace() == afterText.workspace() && beforeText.classState().equals(afterText.classState())
+					&& (!text.decompile() || (beforeText.decompiler() == afterText.decompiler()
+					&& beforeText.decompilerHash() == afterText.decompilerHash())))
+				diffPreview.setInputs(beforeText.text(), afterText.text());
+			else if (after)
+				beforePreview.queuePreview();
+			else
+				afterPreview.queuePreview();
+		}
+	}
+
+	private record PreviewText(Workspace workspace, JvmClassInfo original, List<JvmClassInfo> classState,
+	                           boolean decompile, JvmDecompiler decompiler, int decompilerHash, String text) {}
 
 	/**
 	 * Shows the optional follow-up steps beside the preview when the bitwise pass is selected.
@@ -621,11 +662,11 @@ public class DeobfuscationWindow extends RecafStage {
 
 		constantFolding.setOnAction(_ -> {
 			selected.parameterValues.put(BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING, constantFolding.isSelected());
-			afterPreview.updatePreview();
+			refreshTransformedPreview();
 		});
 		repeatBitwise.setOnAction(_ -> {
 			selected.parameterValues.put(BitwiseFoldingTransformer.KEY_REPEAT_BITWISE, repeatBitwise.isSelected());
-			afterPreview.updatePreview();
+			refreshTransformedPreview();
 		});
 		bitwiseOptions.getChildren().addAll(constantFolding, repeatBitwise);
 	}
@@ -1010,8 +1051,7 @@ public class DeobfuscationWindow extends RecafStage {
 			refreshBitwiseOptions();
 
 			// Resetting bypasses the editor's observable values, so refresh explicitly.
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
+			refreshTransformedPreview();
 			showParameterEditor(selected.descriptor(), anchor);
 		});
 		HBox resetRow = new HBox(reset);
@@ -1057,8 +1097,7 @@ public class DeobfuscationWindow extends RecafStage {
 			refreshBitwiseOptions();
 
 			// Parameter changes affect the transformed preview just like scope changes do.
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
+			refreshTransformedPreview();
 		});
 		return new BasicConfigValue<>(parameter.key(), (Class<T>) parameter.type(), observable);
 	}
@@ -1202,12 +1241,16 @@ public class DeobfuscationWindow extends RecafStage {
 	 * @return {@code true} if the class is within the configured package scope.
 	 */
 	private boolean isClassInScope(@Nonnull ClassInfo cls) {
+		return isClassInScope(cls, scopeMode.get(), parsePrefixes(packagePrefixes.get()));
+	}
+
+	private static boolean isClassInScope(@Nonnull ClassInfo cls, @Nonnull TransformationPreset.ScopeMode mode,
+	                                      @Nonnull List<String> prefixes) {
 		// Treat the default package as empty so prefix checks still apply.
 		String pkg = cls.getPackageName();
 		if (pkg == null)
 			pkg = "";
-		List<String> prefixes = parsePrefixes(packagePrefixes.get());
-		return switch (scopeMode.get()) {
+		return switch (mode) {
 			case NONE -> true;
 			case BLACKLIST -> !startsWithAny(pkg, prefixes);
 			case WHITELIST -> prefixes.isEmpty() || startsWithAny(pkg, prefixes);
@@ -1229,11 +1272,13 @@ public class DeobfuscationWindow extends RecafStage {
 	 * @return Scope predicate including collection transformers, the target class, and its inner classes.
 	 */
 	@Nonnull
-	private BiPredicate<ClassTransformer, ClassInfo> previewScope(@Nonnull ClassInfo target) {
+	private static BiPredicate<ClassTransformer, ClassInfo> previewScope(@Nonnull ClassInfo target,
+	                                                                  @Nonnull TransformationPreset.ScopeMode mode,
+	                                                                  @Nonnull List<String> prefixes) {
 		// We include the inner classes because those will show up in the decompilation output,
 		// and having random parts of the output not transformed looks bad.
 		return (transformer, cls) -> transformer instanceof CollectionTransformer
-				|| (isClassInScope(cls)
+				|| (isClassInScope(cls, mode, prefixes)
 				&& (cls.getName().equals(target.getName()) || cls.isInnerClassOf(target.getName())));
 	}
 
@@ -1314,12 +1359,18 @@ public class DeobfuscationWindow extends RecafStage {
 		}
 
 		// Apply the profile and jump to the preview stage.
-		selectedTransformers.setAll(resolved);
-		maxPasses.set(preset.maxPasses());
-		dropFaultyClasses.set(preset.dropFaultyClasses());
-		previewOnly.set(preset.previewOnly());
-		scopeMode.set(preset.scopeMode());
-		packagePrefixes.set(String.join(", ", preset.packagePrefixes()));
+		updatingProfile = true;
+		try {
+			selectedTransformers.setAll(resolved);
+			maxPasses.set(preset.maxPasses());
+			dropFaultyClasses.set(preset.dropFaultyClasses());
+			previewOnly.set(preset.previewOnly());
+			scopeMode.set(preset.scopeMode());
+			packagePrefixes.set(String.join(", ", preset.packagePrefixes()));
+		} finally {
+			updatingProfile = false;
+		}
+		refreshTransformedPreview();
 		showStage2();
 	}
 
@@ -1447,29 +1498,29 @@ public class DeobfuscationWindow extends RecafStage {
 		private final ExecutorService deobfuscationExecutor = ThreadPoolFactory.newSingleThreadExecutor("deobfuscation-preview");
 		private final Batch deobfuscationBatch = ThreadUtil.batch(deobfuscationExecutor);
 		private final AtomicInteger previewGeneration = new AtomicInteger();
-		private boolean closed;
+		private final AtomicInteger profileVersion = new AtomicInteger();
+		private volatile boolean closed;
 		private final boolean andApply;
 		private final Editor editorDecompile;
 		private final Editor editorAssembly;
 		private ClassInfo classInfo;
 
-		/**
-		 * @param languageAssociation
-		 * 		Service configuring editor syntax highlighting.
-		 * @param textConfig
-		 * 		Editor text configuration.
-		 * @param searchBarProvider
-		 * 		Provider of search bars for the editors.
-		 * @param andApply
-		 * 		Whether the preview transforms the class before rendering.
-		 */
+		// Accessed only by this pane's serial worker. Retain one profile and at most two rendered texts.
+		private int cachedVersion = -1;
+		private Workspace cachedWorkspace;
+		private JvmClassInfo cachedOriginal;
+		private List<JvmClassInfo> cachedClassState;
+		private JvmClassInfo cachedProcessed;
+		private String cachedSource;
+		private String cachedAssembly;
+		private JvmDecompiler cachedDecompiler;
+		private int cachedDecompilerHash;
+
 		private TransformPreview(@Nonnull FileTypeSyntaxAssociationService languageAssociation,
 		                         @Nonnull TextConfig textConfig,
 		                         @Nonnull Instance<SearchBar> searchBarProvider,
 		                         boolean andApply) {
 			this.andApply = andApply;
-
-			// Configure the decompile editor with Java syntax.
 			editorDecompile = new Editor();
 			if (textConfig.doHighlightWord())
 				editorDecompile.setSelectedWordHighlighting(new SelectedWordHighlighting());
@@ -1479,7 +1530,6 @@ public class DeobfuscationWindow extends RecafStage {
 			editorDecompile.getCodeArea().setEditable(false);
 			languageAssociation.configureEditorSyntax("java", editorDecompile);
 
-			// Configure the assembly editor with jasm syntax.
 			editorAssembly = new Editor();
 			editorAssembly.getCodeArea().getStylesheets().add(LanguageStylesheets.getJasmStylesheet());
 			editorAssembly.getRootLineGraphicFactory().addDefaultCodeGraphicFactories();
@@ -1489,218 +1539,210 @@ public class DeobfuscationWindow extends RecafStage {
 				editorAssembly.setSelectedBracketTracking(new SelectedBracketTracking());
 			editorAssembly.getCodeArea().setEditable(false);
 			languageAssociation.configureEditorSyntax("jasm", editorAssembly);
-
-			// Install search bars over both editors.
-			SearchBar searchBar1 = searchBarProvider.get();
-			SearchBar searchBar2 = searchBarProvider.get();
-			searchBar1.install(editorDecompile);
-			searchBar2.install(editorAssembly);
-
-			// TODO: Make it a preference which is shown first
+			searchBarProvider.get().install(editorDecompile);
+			searchBarProvider.get().install(editorAssembly);
 			setCenter(editorDecompile);
 			updatePreview();
 		}
 
-		/**
-		 * @param classInfo
-		 * 		Class to preview.
-		 */
 		public void setClassInfo(@Nonnull ClassInfo classInfo) {
 			this.classInfo = classInfo;
 		}
 
-		/**
-		 * Switches between decompile and assembly preview modes.
-		 */
 		public void togglePreviewMode() {
 			setCenter(isDecompilePreview() ? editorAssembly : editorDecompile);
-			updatePreview();
+			queuePreview();
 		}
 
-		/**
-		 * @return {@code true} if the decompile editor is the active preview.
-		 */
 		public boolean isDecompilePreview() {
 			return getCenter() == editorDecompile;
 		}
 
-		/**
-		 * Queues a preview refresh, coalescing rapid profile changes into the latest build.
-		 */
-		private synchronized void updatePreview() {
-			if (closed)
-				return;
-
-			// TODO: We can't really stop expensive decompilations, they don't check for interrupts on the current thread
-			//  and we have no good way of force killing them (rip Thread.stop) so the best we can really do is only
-			//  allow one of these tasks to run at a time, with one next 'pending' task.
-			//  While a task is executing we update what is the next 'pending' task when we call this method.
-			//  Once the current task is done, or there is nothing running we make the 'pending' task the current task and run it.
-			int generation = previewGeneration.incrementAndGet();
-			deobfuscationBatch.add(() -> {
-				deobfuscationBatch.clear();
-				if (isDecompilePreview())
-					decompile(generation);
-				else
-					disassemble(generation);
-			});
-			deobfuscationBatch.executeNewest();
+		/** Invalidate immediately, including while waiting for the package-field debounce. */
+		private void invalidate() {
+			profileVersion.incrementAndGet();
+			previewGeneration.incrementAndGet();
+			clearDiff(andApply);
 		}
 
-		/**
-		 * Stops preview work and releases resources after closing.
-		 */
-		private synchronized void close() {
+		private void updatePreview() {
 			if (closed)
 				return;
+			invalidate();
+			queuePreview();
+		}
 
+		/** Capture UI state before submitting work; workers never read JavaFX profile properties. */
+		private synchronized void queuePreview() {
+			if (closed)
+				return;
+			int generation = previewGeneration.incrementAndGet();
+			clearDiff(andApply);
+			if (classInfo == null) {
+				activeEditor().setText("// " + Lang.get("deobf.preview.noselection"));
+				return;
+			}
+			try {
+				Workspace workspace = workspaceManager.getCurrent();
+				if (workspace == null)
+					throw new TransformationException("No workspace is open");
+				ClassPathNode current = workspace.findClass(classInfo.getName());
+				JvmClassInfo original = (current == null ? classInfo : current.getValue()).asJvmClass();
+				// Supporting and embedded classes can affect field collection and decompilation too.
+				List<JvmClassInfo> classState = workspace.getAllResources(false).stream()
+						.flatMap(resource -> resource.jvmAllClassBundleStreamRecursive())
+						.flatMap(bundle -> bundle.values().stream()).toList();
+				JvmDecompiler decompiler = decompilerManager.getTargetJvmDecompiler();
+				PreviewRequest request = new PreviewRequest(workspace, original, classState, generation,
+						profileVersion.get(), isDecompilePreview(),
+						andApply ? List.copyOf(transformerTypes()) : List.of(),
+						andApply ? buildParameters() : TransformationParameters.empty(), maxPasses.get(),
+						dropFaultyClasses.get(), scopeMode.get(), parsePrefixes(packagePrefixes.get()), decompiler,
+						decompiler == null ? 0 : decompiler.getConfig().getHash());
+				deobfuscationBatch.add(() -> {
+					synchronized (TransformPreview.this) {
+						if (closed || generation != previewGeneration.get())
+							return;
+						deobfuscationBatch.clear();
+					}
+					render(request);
+				});
+				deobfuscationBatch.executeNewest();
+			} catch (Exception error) {
+				showPreviewFailure(error);
+			}
+		}
+
+		private Editor activeEditor() {
+			return isDecompilePreview() ? editorDecompile : editorAssembly;
+		}
+
+		private void render(PreviewRequest request) {
+			if (obsoleteProfile(request))
+				return;
+			try {
+				if (request.version() != cachedVersion || request.workspace() != cachedWorkspace
+						|| request.original() != cachedOriginal || !request.classState().equals(cachedClassState)) {
+					cachedProcessed = null;
+					cachedSource = null;
+					cachedAssembly = null;
+					cachedVersion = request.version();
+					cachedWorkspace = request.workspace();
+					cachedOriginal = request.original();
+					cachedClassState = request.classState();
+				}
+				if (cachedProcessed == null) {
+					JvmClassInfo processed = request.original();
+					if (andApply) {
+						TransformationApplier applier = transformationApplierService.newApplier(request.workspace());
+						applier.setMaxPasses(request.maxPasses());
+						applier.setDropFaultyClasses(request.dropFaulty());
+						TransformationFeedback feedback = new PreviewFeedback(request.original(), request.scopeMode(),
+								request.prefixes(), () -> obsoleteProfile(request));
+						JvmTransformResult result = applier.transformJvm(request.types(), request.parameters(), feedback);
+						if (obsoleteProfile(request))
+							return;
+						result.getTransformerFailures().forEach((_, map) -> map.forEach((transformer, error) ->
+								logger.debugging(l -> l.warn("Transformer '{}' failure: ", transformer.getSimpleName(), error))));
+						for (JvmClassInfo resultClass : result.getTransformedClasses().values()) {
+							if (resultClass.getName().equals(request.original().getName())) {
+								processed = resultClass;
+								break;
+							}
+						}
+					}
+					cachedProcessed = processed;
+				}
+				if (obsoleteRender(request))
+					return;
+				String text = request.decompile() ? cachedSource : cachedAssembly;
+				if (request.decompile() && (request.decompiler() != cachedDecompiler || request.decompilerHash() != cachedDecompilerHash))
+					text = null;
+				if (text == null) {
+					if (request.decompile()) {
+						// Wait on our own worker so rapidly changing settings cannot flood the decompiler pool.
+						var result = (request.decompiler() == null ?
+								decompilerManager.decompile(request.workspace(), cachedProcessed) :
+								decompilerManager.decompile(request.decompiler(), request.workspace(), cachedProcessed)).get();
+						text = result.getText();
+						if (text == null || result.getException() != null)
+							throw new IllegalStateException("Could not decompile preview", result.getException());
+						cachedSource = text;
+						cachedDecompiler = request.decompiler();
+						cachedDecompilerHash = request.decompilerHash();
+					} else {
+						text = disassemble(request, cachedProcessed);
+						cachedAssembly = text;
+					}
+				}
+				String rendered = text;
+				Platform.runLater(() -> {
+					if (obsoleteRender(request))
+						return;
+					activeEditor().setText(rendered);
+					publishPreview(andApply, new PreviewText(request.workspace(), request.original(), request.classState(),
+							request.decompile(), request.decompiler(), request.decompilerHash(), rendered));
+				});
+			} catch (InterruptedException interrupted) {
+				Thread.currentThread().interrupt();
+			} catch (Exception error) {
+				Throwable cause = error instanceof ExecutionException && error.getCause() != null ? error.getCause() : error;
+				Platform.runLater(() -> {
+					if (!obsoleteRender(request))
+						showPreviewFailure(cause);
+				});
+			}
+		}
+
+		private String disassemble(PreviewRequest request, JvmClassInfo processed) {
+			ClassPathNode path = request.workspace().findClass(request.original().getName());
+			if (path == null)
+				throw new IllegalStateException("Preview class is no longer in the workspace");
+			path = Objects.requireNonNull(path.getParent()).child(processed);
+			JvmAssemblerPipeline pipeline = assemblerPipelineManager.newJvmAssemblerPipeline(request.workspace());
+			String[] text = new String[1];
+			pipeline.disassemble(path)
+					.onSuccess(value -> text[0] = value)
+					.onPartial(partial -> { throw new IllegalStateException(partial.diagnostics().toString()); })
+					.onFailure(failure -> { throw new IllegalStateException(failure.diagnostics().toString()); });
+			return Objects.requireNonNull(text[0], "No preview disassembly was generated");
+		}
+
+		private boolean obsoleteProfile(PreviewRequest request) {
+			return closed || request.version() != profileVersion.get() || workspaceManager.getCurrent() != request.workspace();
+		}
+
+		private boolean obsoleteRender(PreviewRequest request) {
+			return obsoleteProfile(request) || request.generation() != previewGeneration.get();
+		}
+
+		private void showPreviewFailure(@Nonnull Throwable error) {
+			logger.warn("Could not generate deobfuscation preview", error);
+			String text = "// Failed to transform: " + error.getMessage() + "\n"
+					+ "// " + StringUtil.traceToString(error).replace("\n", "\n// ");
+			editorAssembly.setText(text);
+			editorDecompile.setText("/*\n" + text + "\n*/");
+			clearDiff(andApply);
+			diffPreview.clear("deobf.diff.unavailable");
+		}
+
+		private void close() {
 			closed = true;
+			profileVersion.incrementAndGet();
 			previewGeneration.incrementAndGet();
 			deobfuscationBatch.clear();
 			deobfuscationExecutor.shutdownNow();
 			editorDecompile.close();
 			editorAssembly.close();
 		}
-
-		/**
-		 * Displays the transformed class as jasm disassembly.
-		 */
-		private void disassemble(int generation) {
-			// Show the placeholder hint until a class is selected.
-			if (classInfo == null) {
-				FxThreadUtil.run(() -> {
-					if (generation == previewGeneration.get())
-						editorAssembly.setText("// Preview: Disassembly\n" + Lang.get("deobf.preview.noselection"));
-				});
-				return;
-			}
-
-			JvmClassInfo jvmClass = getProcessedClass(generation);
-			if (jvmClass == null || generation != previewGeneration.get())
-				return;
-
-			// Resolve the transformed class path within the workspace, rebuild with our updated class, and disassemble.
-			Workspace workspace = workspaceManager.getCurrent();
-			String className = jvmClass.getName();
-			ClassPathNode path = workspace.findClass(className);
-			if (path == null) {
-				logger.error("Couldn't find class {} in workspace for deobfuscation preview", className);
-				return;
-			}
-			path = Objects.requireNonNull(path.getParent()).child(jvmClass);
-			JvmAssemblerPipeline pipeline = assemblerPipelineManager.newJvmAssemblerPipeline(workspace);
-			pipeline.disassemble(path)
-					.onSuccess(disassembly -> FxThreadUtil.run(() -> {
-						if (generation == previewGeneration.get())
-							editorAssembly.setText(disassembly);
-					}))
-					.onPartial(partial -> showDisassemblyFailure(generation, className, partial.diagnostics()))
-					.onFailure(failure -> showDisassemblyFailure(generation, className, failure.diagnostics()));
-		}
-
-		/**
-		 * Displays the transformed class as decompiled source.
-		 */
-		private void decompile(int generation) {
-			// Show the placeholder hint until a class is selected.
-			if (classInfo == null) {
-				FxThreadUtil.run(() -> {
-					if (generation == previewGeneration.get())
-						editorDecompile.setText("// Preview: Decompile\n" + Lang.get("deobf.preview.noselection"));
-				});
-				return;
-			}
-
-			// TODO: There are cases where the target class was not transformed, but an inner class was.
-			//  In these cases we should still be able to show the decompilation of the target class while
-			//  reflecting the inner class changes. However, our current decompiler API just pulls from the
-			//  workspace, which won't have the transformed inner class until after we apply.
-			//  - Will need to create a lightweight view of the workspace that overlays transformed classes for decompilation.
-			JvmClassInfo jvmClass = getProcessedClass(generation);
-			if (jvmClass == null || generation != previewGeneration.get())
-				return;
-
-			// TODO: Pull out common decompile code with "AbstractDecompilePane" to do this more aesthetically
-			//  - And by that I mean include the animation
-			//  - And the error handling for decompilation failures
-			//  - But not the rest of the unrelated "editing" capabilities of the "AbstractDecompilePane"
-			decompilerManager.decompile(workspaceManager.getCurrent(), jvmClass).whenCompleteAsync((result, error) -> {
-				if (generation != previewGeneration.get())
-					return;
-				if (result != null) {
-					editorDecompile.setText(result.getText());
-				} else if (error != null) {
-					String trace = StringUtil.traceToString(error);
-					editorDecompile.setText("/*\nDecompilation failure\n" + trace + "\n*/");
-				}
-			}, FxThreadUtil.executor());
-		}
-
-		/**
-		 * @param generation
-		 * 		Preview generation the failure occurred in.
-		 * @param className
-		 * 		Class that failed to disassemble.
-		 * @param diagnostics
-		 * 		Diagnostics describing the failure.
-		 */
-		private void showDisassemblyFailure(int generation, String className, List<Diagnostic> diagnostics) {
-			String errorListStr = diagnostics.stream().map(Diagnostic::toString).collect(Collectors.joining("\n - "));
-			logger.warn("Errors processing {} for deobfuscation preview:\n - {}", className, errorListStr);
-			FxThreadUtil.run(() -> {
-				if (generation == previewGeneration.get())
-					showPreviewFailure(new IllegalStateException(errorListStr));
-			});
-		}
-
-		/**
-		 * @param error
-		 * 		Failure to display in both editors.
-		 */
-		private void showPreviewFailure(@Nonnull Throwable error) {
-			String text = "// Failed to transform: " + error.getMessage() + "\n"
-					+ "// " + StringUtil.traceToString(error).replace("\n", "\n// ");
-			editorAssembly.setText(text);
-			editorDecompile.setText("/*\n" + text + "\n*/");
-		}
-
-		/**
-		 * @return The previewed class, transformed when in apply mode, or {@code null} if transformation failed.
-		 */
-		@Nullable
-		private JvmClassInfo getProcessedClass(int generation) {
-			JvmClassInfo jvmClass = classInfo.asJvmClass();
-
-			// Apply mode transforms the class without committing anything to the workspace.
-			if (andApply) {
-				try {
-					TransformationApplier applier = transformationApplierService.newApplierForCurrentWorkspace();
-					if (applier == null)
-						throw new TransformationException("No workspace is open");
-					applier.setMaxPasses(maxPasses.get());
-					applier.setDropFaultyClasses(dropFaultyClasses.get());
-					JvmTransformResult result = applier.transformJvm(transformerTypes(), buildParameters(),
-							new PreviewFeedback(classInfo));
-					result.getTransformerFailures().forEach((_, map) -> map.forEach((transformer, error) ->
-							logger.debugging(l -> l.warn("Transformer '{}' failure: ", transformer.getSimpleName(), error))));
-					for (JvmClassInfo resultClass : result.getTransformedClasses().values()) {
-						if (resultClass.getName().equals(classInfo.getName())) {
-							jvmClass = resultClass;
-							break;
-						}
-					}
-				} catch (TransformationException e) {
-					FxThreadUtil.run(() -> {
-						if (generation == previewGeneration.get())
-							showPreviewFailure(e);
-					});
-					return null;
-				}
-			}
-
-			return jvmClass;
-		}
 	}
+
+	/** Immutable input for one background preview build. */
+	private record PreviewRequest(Workspace workspace, JvmClassInfo original, List<JvmClassInfo> classState,
+	                              int generation, int version, boolean decompile,
+	                              List<Class<? extends JvmClassTransformer>> types, TransformationParameters parameters,
+	                              int maxPasses, boolean dropFaulty, TransformationPreset.ScopeMode scopeMode,
+	                              List<String> prefixes, JvmDecompiler decompiler, int decompilerHash) {}
 
 	/**
 	 * Transformation feedback that tracks all classes transformed for progress reporting.
@@ -1784,13 +1826,21 @@ public class DeobfuscationWindow extends RecafStage {
 	 */
 	private class PreviewFeedback implements TransformationFeedback {
 		private final BiPredicate<ClassTransformer, ClassInfo> scope;
+		private final BooleanSupplier cancelled;
 
 		/**
 		 * @param targetClass
 		 * 		Class to preview.
 		 */
-		public PreviewFeedback(@Nonnull ClassInfo targetClass) {
-			this.scope = previewScope(targetClass);
+		public PreviewFeedback(@Nonnull ClassInfo targetClass, @Nonnull TransformationPreset.ScopeMode mode,
+		                       @Nonnull List<String> prefixes, @Nonnull BooleanSupplier cancelled) {
+			this.scope = previewScope(targetClass, mode, prefixes);
+			this.cancelled = cancelled;
+		}
+
+		@Override
+		public boolean hasRequestedCancellation() {
+			return cancelled.getAsBoolean();
 		}
 
 		@Override
