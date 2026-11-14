@@ -66,6 +66,8 @@ import java.util.function.Function;
 @Dependent
 public class PluginNavigatorPane extends BorderPane implements Navigable {
 	private static final Logger logger = Logging.get(PluginNavigatorPane.class);
+	/** Sections with more groups than this start with their groups collapsed, so long outlines stay readable. */
+	private static final int MAX_GROUPS_EXPANDED = 12;
 	private final TextField searchField = new TextField();
 	private final TreeView<NavItem> tree = new TreeView<>();
 	private final Label status = new Label();
@@ -77,6 +79,7 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 	private final Workspace workspace;
 	private final WorkspacePathNode workspacePath;
 	private PluginIndex index = PluginIndex.EMPTY;
+	private String builtQuery;
 	private boolean disabled;
 
 	@Inject
@@ -104,16 +107,18 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 		refresh.setTooltip(new Tooltip(Lang.get("mcplugin.navigator.refresh")));
 		refresh.setOnAction(e -> refresh());
 		Button recover = new Button(null, new FontIconView(CarbonIcons.MAGIC_WAND));
+		recover.textProperty().bind(Lang.getBinding("menu.mappings.plugin-names"));
 		recover.setTooltip(new Tooltip(Lang.get("mcplugin.names.title")));
 		recover.setOnAction(e -> navigation.openNameRecovery());
 		HBox.setHgrow(searchField, Priority.ALWAYS);
 		Button security = new Button(null, new FontIconView(CarbonIcons.SECURITY));
+		security.textProperty().bind(Lang.getBinding("menu.analysis.plugin-security"));
 		security.setTooltip(new Tooltip(Lang.get("mcplugin.security.title")));
 		security.setOnAction(e -> navigation.openSecurityTriage());
 		Button settings = new Button(null, new FontIconView(CarbonIcons.SETTINGS));
 		settings.setTooltip(new Tooltip(Lang.get("mcplugin.settings.tip")));
 		settings.setOnAction(e -> navigation.openSettings("semantics"));
-		HBox top = new HBox(6, searchField, refresh, recover, security, settings);
+		HBox top = new HBox(6, searchField, recover, security, refresh, settings);
 		top.setAlignment(Pos.CENTER_LEFT);
 		top.setPadding(new Insets(6));
 
@@ -181,30 +186,64 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 	private void rebuildTree() {
 		String query = searchField.getText() == null ? "" : searchField.getText().trim().toLowerCase(Locale.ROOT);
 		String[] words = query.isEmpty() ? new String[0] : query.split("\\s+");
+
+		// An automatic rebuild keeps what the user did to the outline. A different search starts over.
+		boolean keepState = query.equals(builtQuery);
+		Map<String, Boolean> previousExpansion = new HashMap<>();
+		String previousSelection = null;
+		if (keepState && tree.getRoot() != null) {
+			collectExpansion(tree.getRoot(), previousExpansion);
+			if (tree.getSelectionModel().getSelectedItem() instanceof NavNode node)
+				previousSelection = node.id;
+		}
+		builtQuery = query;
+
 		TreeItem<NavItem> root = new TreeItem<>();
+		Map<String, NavNode> nodesById = new HashMap<>();
 		int matches = 0;
 		for (Section section : buildSections()) {
-			TreeItem<NavItem> sectionItem = new TreeItem<>(NavItem.group(Lang.get(section.titleKey()), null, section.icon()));
+			String sectionId = section.titleKey();
+			List<NavNode> groupNodes = new ArrayList<>();
+			int sectionLeaves = 0;
+			boolean groupsExpandedByDefault = words.length > 0 || section.groups().size() <= MAX_GROUPS_EXPANDED;
 			for (Group group : section.groups()) {
+				String groupId = sectionId + '\0' + group.key();
 				String groupText = section.titleKey() + ' ' + Lang.get(section.titleKey()) + ' ' + group.label().text();
-				TreeItem<NavItem> groupItem = new TreeItem<>(group.label());
+				NavNode groupNode = new NavNode(groupId, group.label());
 				for (NavItem leaf : group.leaves()) {
 					if (matchesAll(words, (groupText + ' ' + leaf.searchText()).toLowerCase(Locale.ROOT))) {
-						groupItem.getChildren().add(new TreeItem<>(leaf));
-						matches++;
+						NavNode leafNode = new NavNode(groupId + '\0' + leaf.text() + '\0' + leaf.location(), leaf);
+						groupNode.getChildren().add(leafNode);
+						nodesById.put(leafNode.id, leafNode);
+						sectionLeaves++;
 					}
 				}
-				if (!groupItem.getChildren().isEmpty()) {
-					groupItem.setExpanded(words.length > 0 || group.leaves().size() == 1);
-					sectionItem.getChildren().add(groupItem);
+				if (!groupNode.getChildren().isEmpty()) {
+					groupNode.setExpanded(previousExpansion.getOrDefault(groupId, groupsExpandedByDefault));
+					nodesById.put(groupId, groupNode);
+					groupNodes.add(groupNode);
 				}
 			}
-			if (!sectionItem.getChildren().isEmpty()) {
-				sectionItem.setExpanded(true);
-				root.getChildren().add(sectionItem);
+			if (!groupNodes.isEmpty()) {
+				NavItem sectionLabel = NavItem.group(Lang.get(section.titleKey()), String.valueOf(sectionLeaves), section.icon());
+				NavNode sectionNode = new NavNode(sectionId, sectionLabel);
+				sectionNode.getChildren().addAll(groupNodes);
+				sectionNode.setExpanded(previousExpansion.getOrDefault(sectionId, true));
+				root.getChildren().add(sectionNode);
+				nodesById.put(sectionId, sectionNode);
+				matches += sectionLeaves;
 			}
 		}
 		tree.setRoot(root);
+
+		NavNode restored = previousSelection == null ? null : nodesById.get(previousSelection);
+		if (restored != null) {
+			int row = tree.getRow(restored);
+			if (row >= 0) {
+				tree.getSelectionModel().select(row);
+				tree.scrollTo(Math.max(0, row - 3));
+			}
+		}
 
 		if (index.isEmpty())
 			status.setText(Lang.get("mcplugin.navigator.empty"));
@@ -212,6 +251,15 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 			status.setText(String.format(Lang.get("mcplugin.navigator.count"), index.elements().size()));
 		else
 			status.setText(String.format(Lang.get("mcplugin.navigator.matches"), matches));
+	}
+
+	private static void collectExpansion(@Nonnull TreeItem<NavItem> parent, @Nonnull Map<String, Boolean> states) {
+		for (TreeItem<NavItem> child : parent.getChildren()) {
+			if (child instanceof NavNode node && !node.isLeaf()) {
+				states.put(node.id, node.isExpanded());
+				collectExpansion(node, states);
+			}
+		}
 	}
 
 	private static boolean matchesAll(@Nonnull String[] words, @Nonnull String text) {
@@ -237,7 +285,7 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 					if (lifecycle.location().className().equals(className))
 						leaves.add(NavItem.code(lifecycle.location().display(), null, lifecycle));
 				entries.add(new Group(NavItem.group(PluginElementDisplay.kindName(kind), entry.key(),
-						PluginElementDisplay.icon(kind)), leaves));
+						PluginElementDisplay.icon(kind)), leaves, kind.name() + '\0' + entry.location()));
 			}
 		}
 		if (manifest != null)
@@ -248,6 +296,7 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 
 		// Commands, grouped by name. Declared commands with no code found are listed too.
 		Map<String, List<NavItem>> commands = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+		List<NavItem> unnamedCommands = new ArrayList<>();
 		for (PluginElementKind kind : List.of(PluginElementKind.COMMAND, PluginElementKind.COMMAND_EXECUTOR, PluginElementKind.TAB_COMPLETER)) {
 			for (PluginElement element : index.ofKind(kind)) {
 				String label = switch (kind) {
@@ -255,16 +304,21 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 					case TAB_COMPLETER -> Lang.get("mcplugin.kind.tab_completer");
 					default -> Lang.get("mcplugin.kind.command_executor");
 				};
-				commands.computeIfAbsent(PluginElementDisplay.keyText(element), k -> new ArrayList<>())
-						.add(NavItem.code(label + ": " + element.location().display(), element.detail(), element));
+				List<NavItem> leaves = element.key().isEmpty() ? unnamedCommands :
+						commands.computeIfAbsent(PluginElementDisplay.keyText(element), k -> new ArrayList<>());
+				leaves.add(NavItem.code(label + ": " + element.location().display(), element.detail(), element));
 			}
 		}
 		if (manifest != null)
 			for (String command : manifest.commands())
 				commands.computeIfAbsent('/' + command, k -> new ArrayList<>(List.of(NavItem.action(
 						Lang.get("mcplugin.navigator.manifest-only"), null, CarbonIcons.DOCUMENT, navigation::openManifest))));
-		addSection(sections, "mcplugin.navigator.section.commands", CarbonIcons.TERMINAL,
-				groups(commands, CarbonIcons.TERMINAL));
+		List<Group> commandGroups = groups(commands, CarbonIcons.TERMINAL);
+		if (!unnamedCommands.isEmpty())
+			commandGroups.add(new Group(NavItem.group(Lang.get("mcplugin.navigator.command-unnamed"),
+					String.valueOf(unnamedCommands.size()), CarbonIcons.HELP, Lang.get("mcplugin.navigator.command-unnamed.tip")),
+					unnamedCommands, "unnamed"));
+		addSection(sections, "mcplugin.navigator.section.commands", CarbonIcons.TERMINAL, commandGroups);
 
 		// Events, grouped by event class.
 		Map<String, List<NavItem>> events = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
@@ -426,8 +480,27 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 	 * 		Item shown for the group.
 	 * @param leaves
 	 * 		Items in the group.
+	 * @param key
+	 * 		Identity of the group within its section.
 	 */
-	private record Group(@Nonnull NavItem label, @Nonnull List<NavItem> leaves) {}
+	private record Group(@Nonnull NavItem label, @Nonnull List<NavItem> leaves, @Nonnull String key) {
+		private Group(@Nonnull NavItem label, @Nonnull List<NavItem> leaves) {
+			this(label, leaves, label.text());
+		}
+	}
+
+	/**
+	 * Tree item that remembers a stable identity, made of its section and group, so that its expansion and selection
+	 * survive the outline being rebuilt.
+	 */
+	private static final class NavNode extends TreeItem<NavItem> {
+		private final String id;
+
+		private NavNode(@Nonnull String id, @Nonnull NavItem item) {
+			super(item);
+			this.id = id;
+		}
+	}
 
 	/**
 	 * An entry in the outline.
@@ -444,28 +517,35 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 	 * 		Action to run instead of jumping to code.
 	 * @param element
 	 * 		Element the entry is for, used for searching.
+	 * @param tooltip
+	 * 		Explanation shown when hovering the entry, or {@code null} to describe its location instead.
 	 */
 	private record NavItem(@Nonnull String text, @Nullable String detail, @Nullable Ikon icon,
 	                       @Nullable CodeLocation location, @Nullable Runnable action,
-	                       @Nullable PluginElement element) {
+	                       @Nullable PluginElement element, @Nullable String tooltip) {
 		@Nonnull
 		static NavItem group(@Nonnull String text, @Nullable String detail, @Nonnull Ikon icon) {
-			return new NavItem(text, detail, icon, null, null, null);
+			return new NavItem(text, detail, icon, null, null, null, null);
+		}
+
+		@Nonnull
+		static NavItem group(@Nonnull String text, @Nullable String detail, @Nonnull Ikon icon, @Nonnull String tooltip) {
+			return new NavItem(text, detail, icon, null, null, null, tooltip);
 		}
 
 		@Nonnull
 		static NavItem code(@Nonnull String text, @Nullable String detail, @Nonnull PluginElement element) {
-			return new NavItem(text, detail, null, element.location(), null, element);
+			return new NavItem(text, detail, null, element.location(), null, element, null);
 		}
 
 		@Nonnull
 		static NavItem related(@Nonnull String text, @Nullable String detail, @Nonnull PluginElement element) {
-			return new NavItem(text, detail, CarbonIcons.JUMP_LINK, element.related(), null, element);
+			return new NavItem(text, detail, CarbonIcons.JUMP_LINK, element.related(), null, element, null);
 		}
 
 		@Nonnull
 		static NavItem action(@Nonnull String text, @Nullable String detail, @Nonnull Ikon icon, @Nonnull Runnable action) {
-			return new NavItem(text, detail, icon, null, action, null);
+			return new NavItem(text, detail, icon, null, action, null, null);
 		}
 
 		@Nonnull
@@ -520,7 +600,12 @@ public class PluginNavigatorPane extends BorderPane implements Navigable {
 				detail.getStyleClass().add(Styles.TEXT_SUBTLE);
 				box.getChildren().add(detail);
 			}
-			if (item.location() != null)
+			if (item.tooltip() != null) {
+				Tooltip explanation = new Tooltip(item.tooltip());
+				explanation.setWrapText(true);
+				explanation.setMaxWidth(450);
+				setTooltip(explanation);
+			} else if (item.location() != null)
 				setTooltip(new Tooltip(item.location().toString()));
 			else
 				setTooltip(null);

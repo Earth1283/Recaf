@@ -187,6 +187,17 @@ public final class ObfuscatedPluginFixture {
 					public org.bukkit.event.HandlerList getHandlers() { return a; }
 					public static org.bukkit.event.HandlerList getHandlerList() { return a; }
 				}""");
+		// Fields of one class sharing a type, which can only be told apart by a number.
+		plugin("a/g", """
+				public class g {
+					private org.bukkit.entity.Player a;
+					private org.bukkit.entity.Player b;
+					private org.bukkit.Server c;
+				}""");
+		plugin("a/h", """
+				public class h {
+					private org.bukkit.Server a;
+				}""");
 	}
 
 	private ObfuscatedPluginFixture() {}

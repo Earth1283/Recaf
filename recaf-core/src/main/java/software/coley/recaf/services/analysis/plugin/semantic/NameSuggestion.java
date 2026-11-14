@@ -26,6 +26,9 @@ public record NameSuggestion(@Nonnull NameTarget target,
                              @Nonnull String reason,
                              int confidence,
                              boolean currentLooksObfuscated) {
+	/** Confidence from which a suggestion for an obfuscated-looking name is applied unless the user says otherwise. */
+	public static final int RECOMMENDED_CONFIDENCE = 50;
+
 	/**
 	 * @param name
 	 * 		New name to use.
@@ -41,7 +44,7 @@ public record NameSuggestion(@Nonnull NameTarget target,
 	 * @return {@code true} when the suggestion should be applied unless the user says otherwise.
 	 */
 	public boolean isRecommended() {
-		return currentLooksObfuscated && confidence >= 50;
+		return currentLooksObfuscated && confidence >= RECOMMENDED_CONFIDENCE;
 	}
 
 	/**

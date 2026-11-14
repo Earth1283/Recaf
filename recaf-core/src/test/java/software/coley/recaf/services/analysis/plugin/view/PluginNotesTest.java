@@ -3,8 +3,10 @@ package software.coley.recaf.services.analysis.plugin.view;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.analysis.plugin.security.PluginSecurityReport;
 import software.coley.recaf.services.analysis.plugin.security.SecurityFinding;
 import software.coley.recaf.services.analysis.plugin.security.SecurityRule;
+import software.coley.recaf.services.analysis.plugin.security.Severity;
 import software.coley.recaf.services.analysis.plugin.semantic.CodeLocation;
 import software.coley.recaf.services.analysis.plugin.semantic.NamingFacts;
 import software.coley.recaf.services.analysis.plugin.semantic.ObfuscatedPluginFixture;
@@ -61,7 +63,7 @@ class PluginNotesTest extends TestBase {
 	@Test
 	void securityComesFirstAndExtraLinesAreCounted() {
 		CodeLocation location = CodeLocation.ofClass("a/f");
-		SecurityFinding finding = new SecurityFinding(SecurityRule.STRING_ENCRYPTION, location, "12 classes", List.of(), false, null);
+		SecurityFinding finding = new SecurityFinding(SecurityRule.STRING_ENCRYPTION, location, "12 classes", List.of(), false, null, null);
 		PluginElement[] elements = new PluginElement[8];
 		for (int i = 0; i < elements.length; i++)
 			elements[i] = new PluginElement(PluginElementKind.PERMISSION, "perm." + i, location, null, null);
@@ -71,6 +73,19 @@ class PluginNotesTest extends TestBase {
 		assertEquals(4, notes.classLines().size());
 		assertTrue(notes.classLines().getFirst().startsWith("SECURITY LOW: string encryption (12 classes)"));
 		assertEquals("+6 more", notes.classLines().getLast());
+	}
+
+	@Test
+	void fileFindingsAreCommentedOnlyWhereCodeRefersToTheFile() {
+		CodeLocation reader = CodeLocation.ofClass("a/f");
+		SecurityFinding referenced = new SecurityFinding(SecurityRule.DISGUISED_CLASS, reader, "class file, Java 17", List.of(), false, null, "data/x.dat");
+		SecurityFinding unreferenced = new SecurityFinding(SecurityRule.DISGUISED_BINARY, null, "ELF shared object", List.of(), false, null, "data/y.dat");
+
+		PluginNotes notes = PluginNotes.of(eventClass, null, Map.of("a/f", List.of(referenced, unreferenced)), 6);
+
+		assertEquals(List.of("SECURITY HIGH: disguised class 'data/x.dat' (class file, Java 17)"), notes.classLines());
+		PluginSecurityReport report = new PluginSecurityReport(List.of(referenced, unreferenced), 1, 2, List.of());
+		assertEquals(Map.of("a/f", List.of(referenced)), PluginNotes.groupSecurity(report, Severity.MEDIUM));
 	}
 
 	@Test

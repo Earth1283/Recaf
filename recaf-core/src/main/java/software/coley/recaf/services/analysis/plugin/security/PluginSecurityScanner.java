@@ -19,7 +19,9 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
+import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.analysis.plugin.security.ResourcePayloadScanner.Match;
 import software.coley.recaf.services.analysis.plugin.semantic.CodeLocation;
 import software.coley.recaf.services.analysis.plugin.semantic.MethodFlow;
 import software.coley.recaf.services.analysis.plugin.semantic.PluginIndexer;
@@ -44,6 +46,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -110,7 +113,11 @@ public final class PluginSecurityScanner implements Opcodes {
 			"wallet.dat");
 	/** Package parts that plugins commonly relocate bundled libraries under, in addition to those the indexer knows. */
 	private static final List<String> LIBRARY_MARKERS = List.of("/depend/", "/dependencies/", "/relocated/",
-			"/mongodb/", "/sqlite/", "/mysql/", "/mariadb/", "/postgresql/");
+			"/mongodb/", "/sqlite/", "/mysql/", "/mariadb/", "/postgresql/", "com/sun/jna/", "META-INF/native/", "org/jline/",
+			"org/fusesource/", "net/jpountz/", "io/netty/");
+	/** What bytes become when loaded, by the kind of file they were found in. */
+	private static final Set<SecurityRule> CODE_LOADING = EnumSet.of(DEFINE_CLASS, CLASS_LOADER, INSTRUMENTATION);
+	private static final Set<SecurityRule> NATIVE_LOADING = EnumSet.of(NATIVE_LIBRARY, INSTRUMENTATION);
 	private static final List<Pattern> SUSPICIOUS_URLS = List.of(
 			Pattern.compile("discord(?:app)?\\.com/api/webhooks/\\d{5,}/[\\w-]{10,}"),
 			Pattern.compile("api\\.telegram\\.org/bot\\d+:[\\w-]+"),
@@ -122,7 +129,8 @@ public final class PluginSecurityScanner implements Opcodes {
 			.comparing(SecurityFinding::severity)
 			.thenComparing(SecurityFinding::library)
 			.thenComparing(SecurityFinding::rule)
-			.thenComparing(SecurityFinding::location)
+			.thenComparing(SecurityFinding::location, Comparator.nullsFirst(Comparator.naturalOrder()))
+			.thenComparing(f -> Objects.requireNonNullElse(f.file(), ""))
 			.thenComparing(f -> Objects.requireNonNullElse(f.detail(), ""));
 
 	private final Map<String, ClassNode> classes = new TreeMap<>();
@@ -133,6 +141,10 @@ public final class PluginSecurityScanner implements Opcodes {
 	private final Map<CodeLocation, Set<SecurityFinding>> direct = new LinkedHashMap<>();
 	private final Map<CodeLocation, Set<CodeLocation>> calls = new HashMap<>();
 	private final List<CodeLocation> chatHandlers = new ArrayList<>();
+	private final List<FlaggedFile> flaggedFiles = new ArrayList<>();
+	private final Map<String, List<FlaggedFile>> flaggedFilesByName = new HashMap<>();
+	private final Map<FlaggedFile, Set<CodeLocation>> fileReferences = new HashMap<>();
+	private int filesScanned;
 
 	private PluginSecurityScanner() {}
 
@@ -162,9 +174,13 @@ public final class PluginSecurityScanner implements Opcodes {
 			if (!path.isEmpty())
 				embeddedPaths.add(path);
 			readClasses(resource.getJvmClassBundle().values(), path.isEmpty() ? null : path, skipLibraries);
+			readFiles(resource, path.isEmpty() ? null : path, skipLibraries);
 			resource.getEmbeddedResources().forEach((name, embedded) ->
 					resources.add(Map.entry(path.isEmpty() ? name : path + " > " + name, embedded)));
 		}
+		for (FlaggedFile file : flaggedFiles)
+			for (String name : file.referenceNames())
+				flaggedFilesByName.computeIfAbsent(name, k -> new ArrayList<>()).add(file);
 		for (ClassNode node : classes.values())
 			collectConstants(node);
 		for (ClassNode node : classes.values()) {
@@ -193,10 +209,11 @@ public final class PluginSecurityScanner implements Opcodes {
 		all.addAll(classCombinations);
 		all.addAll(combineAcrossClasses(classCombinations));
 		all.addAll(findBackdoors());
+		all.addAll(fileFindings());
 		collapseStringEncryption(all);
 		List<SecurityFinding> sorted = new ArrayList<>(all);
 		sorted.sort(ORDER);
-		return new PluginSecurityReport(List.copyOf(sorted), classes.size(), List.copyOf(embeddedPaths));
+		return new PluginSecurityReport(List.copyOf(sorted), classes.size(), filesScanned, List.copyOf(embeddedPaths));
 	}
 
 	private void readClasses(@Nonnull Collection<JvmClassInfo> infos, @Nullable String embeddedPath, boolean skipLibraries) {
@@ -213,6 +230,44 @@ public final class PluginSecurityScanner implements Opcodes {
 				logger.debug("Skipping unreadable class '{}' in security scan", info.getName(), t);
 			}
 		}
+	}
+
+	/**
+	 * Checks the content of the files in a resource that are not classes, and the classes and archives the importer
+	 * found under names that do not say what they are.
+	 */
+	private void readFiles(@Nonnull WorkspaceResource resource, @Nullable String embeddedPath, boolean skipLibraries) {
+		for (JvmClassInfo info : resource.getJvmClassBundle().values()) {
+			String path = ResourcePayloadScanner.originalPath(info);
+			if (!path.endsWith(".class"))
+				flag(path, embeddedPath, skipLibraries, ResourcePayloadScanner.inspect(path, info.getBytecode()));
+		}
+		for (FileInfo file : resource.getFileBundle().values()) {
+			String path = file.getName();
+			if (skipLibraries && isLibrary(path))
+				continue;
+			try {
+				byte[] content = file.getRawContent();
+				filesScanned++;
+				flag(path, embeddedPath, skipLibraries, ResourcePayloadScanner.inspect(path, content));
+			} catch (Throwable t) {
+				logger.debug("Skipping unreadable file '{}' in security scan", path, t);
+			}
+		}
+		for (String path : resource.getEmbeddedResources().keySet()) {
+			if (skipLibraries && isLibrary(path))
+				continue;
+			filesScanned++;
+			flag(path, embeddedPath, skipLibraries, ResourcePayloadScanner.inspectArchive(path));
+		}
+	}
+
+	private void flag(@Nonnull String path, @Nullable String embeddedPath, boolean skipLibraries, @Nullable Match match) {
+		if (match == null)
+			return;
+		boolean library = isLibrary(path);
+		if (!(skipLibraries && library))
+			flaggedFiles.add(new FlaggedFile(path, embeddedPath, match, library));
 	}
 
 	private void collectConstants(@Nonnull ClassNode node) {
@@ -484,6 +539,10 @@ public final class PluginSecurityScanner implements Opcodes {
 	private void scanString(@Nonnull String text, @Nonnull CodeLocation here) {
 		if (text.isEmpty())
 			return;
+		List<FlaggedFile> named = flaggedFilesByName.get(text);
+		if (named != null)
+			for (FlaggedFile file : named)
+				fileReferences.computeIfAbsent(file, k -> new TreeSet<>()).add(here);
 		Matcher matcher = URL_PATTERN.matcher(text);
 		while (matcher.find()) {
 			String url = matcher.group();
@@ -571,7 +630,7 @@ public final class PluginSecurityScanner implements Opcodes {
 			findings.forEach(all::remove);
 			SecurityFinding first = findings.getFirst();
 			all.add(new SecurityFinding(STRING_ENCRYPTION, first.location().classLocation(), classCount + " classes",
-					cap(findings), false, source.isEmpty() ? null : source));
+					cap(findings), false, source.isEmpty() ? null : source, null));
 		});
 	}
 
@@ -602,7 +661,7 @@ public final class PluginSecurityScanner implements Opcodes {
 				SecurityFinding remote = combine(REMOTE_CODE, location, rules, DEFINE_CLASS, SUSPICIOUS_URL, SecurityRule.NETWORK);
 				String hosts = rules.get(SUSPICIOUS_URL).stream().map(SecurityFinding::detail).filter(Objects::nonNull)
 						.map(PluginSecurityScanner::host).distinct().limit(5).reduce((a, b) -> a + ", " + b).orElse(null);
-				combined.add(new SecurityFinding(REMOTE_CODE, location, hosts, remote.evidence(), false, remote.embeddedIn()));
+				combined.add(new SecurityFinding(REMOTE_CODE, location, hosts, remote.evidence(), false, remote.embeddedIn(), null));
 			} else if (rules.containsKey(SecurityRule.NETWORK)) {
 				combined.add(combine(DOWNLOADS_AND_DEFINES, location, rules, DEFINE_CLASS, SecurityRule.NETWORK, URL));
 			}
@@ -621,6 +680,41 @@ public final class PluginSecurityScanner implements Opcodes {
 				.map(SecurityFinding::detail).filter(Objects::nonNull).map(PluginSecurityScanner::host)
 				.distinct().limit(5).reduce((a, b) -> a + ", " + b).orElse(null);
 		return finding(rule, location, detail, cap(evidence));
+	}
+
+	/**
+	 * @return Findings for the flagged files, with the code that names each file as their location. Where that code
+	 * also turns bytes into code, a {@link SecurityRule#PAYLOAD_LOADER} for the pair.
+	 */
+	@Nonnull
+	private List<SecurityFinding> fileFindings() {
+		Map<String, List<SecurityFinding>> codeByClass = new HashMap<>();
+		if (!fileReferences.isEmpty())
+			for (Set<SecurityFinding> findings : direct.values())
+				for (SecurityFinding finding : findings)
+					if (CODE_LOADING.contains(finding.rule()) || NATIVE_LOADING.contains(finding.rule()))
+						codeByClass.computeIfAbsent(outerClass(finding.location().className()), k -> new ArrayList<>()).add(finding);
+
+		List<SecurityFinding> result = new ArrayList<>();
+		for (FlaggedFile file : flaggedFiles) {
+			Set<CodeLocation> references = fileReferences.getOrDefault(file, Set.of());
+			SecurityFinding found = new SecurityFinding(file.match().rule(), references.stream().findFirst().orElse(null),
+					file.match().detail(), List.of(), file.library(), file.embeddedPath(), file.path());
+			result.add(found);
+			Set<SecurityRule> loading = file.isNative() ? NATIVE_LOADING : CODE_LOADING;
+			Set<String> seen = new HashSet<>();
+			for (CodeLocation reference : references) {
+				String outer = outerClass(reference.className());
+				if (!seen.add(outer))
+					continue;
+				List<SecurityFinding> evidence = new ArrayList<>(List.of(found));
+				codeByClass.getOrDefault(outer, List.of()).stream().filter(f -> loading.contains(f.rule())).sorted(ORDER).forEach(evidence::add);
+				if (evidence.size() > 1)
+					result.add(new SecurityFinding(PAYLOAD_LOADER, reference, file.path(), cap(evidence),
+							isLibrary(outer) && file.library(), embeddedIn.get(reference.className()), file.path()));
+			}
+		}
+		return result;
 	}
 
 	@Nonnull
@@ -690,7 +784,7 @@ public final class PluginSecurityScanner implements Opcodes {
 	private SecurityFinding finding(@Nonnull SecurityRule rule, @Nonnull CodeLocation location, @Nullable String detail,
 	                                @Nonnull List<SecurityFinding> evidence) {
 		String className = location.className();
-		return new SecurityFinding(rule, location, detail, evidence, isLibrary(className), embeddedIn.get(className));
+		return new SecurityFinding(rule, location, detail, evidence, isLibrary(className), embeddedIn.get(className), null);
 	}
 
 	private void link(@Nonnull CodeLocation caller, @Nonnull CodeLocation callee) {
@@ -817,6 +911,32 @@ public final class PluginSecurityScanner implements Opcodes {
 	private static List<SecurityFinding> cap(@Nonnull List<SecurityFinding> evidence) {
 		List<SecurityFinding> distinct = new ArrayList<>(new LinkedHashSet<>(evidence));
 		return List.copyOf(distinct.size() > MAX_EVIDENCE ? distinct.subList(0, MAX_EVIDENCE) : distinct);
+	}
+
+	/**
+	 * A file that is not a class and was recognized as something to report.
+	 *
+	 * @param path
+	 * 		Path of the file in its jar.
+	 * @param embeddedPath
+	 * 		Path of the jar inside the plugin, or {@code null} for the plugin jar itself.
+	 * @param match
+	 * 		What the file was recognized as.
+	 * @param library
+	 *        {@code true} when the path is in a location of bundled libraries.
+	 */
+	private record FlaggedFile(@Nonnull String path, @Nullable String embeddedPath, @Nonnull Match match, boolean library) {
+		boolean isNative() {
+			return match.rule() == NATIVE_BINARY || match.rule() == DISGUISED_BINARY;
+		}
+
+		/**
+		 * @return Strings that name the file when found in code: the full path, with a leading slash, and the bare name.
+		 */
+		@Nonnull
+		Set<String> referenceNames() {
+			return new LinkedHashSet<>(List.of(path, '/' + path, path.substring(path.lastIndexOf('/') + 1)));
+		}
 	}
 
 	/**

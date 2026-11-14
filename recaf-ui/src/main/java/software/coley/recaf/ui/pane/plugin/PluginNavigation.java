@@ -14,23 +14,29 @@ import software.coley.bentofx.dockable.Dockable;
 import software.coley.bentofx.layout.container.DockContainerLeaf;
 import software.coley.bentofx.path.DockablePath;
 import software.coley.recaf.analytics.logging.Logging;
+import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.path.ClassMemberPathNode;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.FilePathNode;
 import software.coley.recaf.path.IncompletePathException;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.analysis.plugin.MinecraftPluginPlatform;
+import software.coley.recaf.services.analysis.plugin.security.ResourcePayloadScanner;
+import software.coley.recaf.services.analysis.plugin.security.SecurityFinding;
 import software.coley.recaf.services.analysis.plugin.semantic.CodeLocation;
 import software.coley.recaf.services.analysis.plugin.semantic.PluginIndex;
 import software.coley.recaf.services.analysis.plugin.semantic.PluginSemanticService;
 import software.coley.recaf.services.navigation.Actions;
-import software.coley.recaf.services.window.WindowManager;
+import software.coley.recaf.services.navigation.ClassNavigable;
+import software.coley.recaf.services.navigation.Navigable;
 import software.coley.recaf.services.workspace.WorkspaceManager;
+import software.coley.recaf.ui.control.richtext.source.JavaContextActionSupport;
 import software.coley.recaf.ui.docking.DockingManager;
-import software.coley.recaf.ui.window.PluginNameRecoveryWindow;
 import software.coley.recaf.util.Animations;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 import static software.coley.recaf.util.Menus.action;
@@ -47,9 +53,8 @@ public class PluginNavigation {
 	private final PluginSemanticService semanticService;
 	private final Actions actions;
 	private final DockingManager dockingManager;
-	private final WindowManager windowManager;
 	private final Instance<PluginNavigatorPane> navigatorProvider;
-	private final Instance<PluginNameRecoveryWindow> recoveryWindowProvider;
+	private final Instance<PluginNameRecoveryPane> recoveryProvider;
 	private final Instance<PluginSecurityPane> securityProvider;
 
 	@Inject
@@ -57,17 +62,15 @@ public class PluginNavigation {
 	                        @Nonnull PluginSemanticService semanticService,
 	                        @Nonnull Actions actions,
 	                        @Nonnull DockingManager dockingManager,
-	                        @Nonnull WindowManager windowManager,
 	                        @Nonnull Instance<PluginNavigatorPane> navigatorProvider,
-	                        @Nonnull Instance<PluginNameRecoveryWindow> recoveryWindowProvider,
+	                        @Nonnull Instance<PluginNameRecoveryPane> recoveryProvider,
 	                        @Nonnull Instance<PluginSecurityPane> securityProvider) {
 		this.workspaceManager = workspaceManager;
 		this.semanticService = semanticService;
 		this.actions = actions;
 		this.dockingManager = dockingManager;
-		this.windowManager = windowManager;
 		this.navigatorProvider = navigatorProvider;
-		this.recoveryWindowProvider = recoveryWindowProvider;
+		this.recoveryProvider = recoveryProvider;
 		this.securityProvider = securityProvider;
 	}
 
@@ -107,6 +110,94 @@ public class PluginNavigation {
 			return true;
 		} catch (IncompletePathException ex) {
 			logger.error("Cannot open {}", location, ex);
+			return false;
+		}
+	}
+
+	/**
+	 * Opens the code a finding is about, with the line of the finding selected when it can be found in the decompiled
+	 * source, or the file a finding is about when it has no code.
+	 *
+	 * @param finding
+	 * 		Finding in the current workspace.
+	 *
+	 * @return {@code true} when the code or file could be opened.
+	 */
+	public boolean navigate(@Nonnull SecurityFinding finding) {
+		if (finding.location() != null)
+			return navigate(finding.location(), FindingNeedles.of(finding));
+		return finding.file() != null && navigateFile(finding.file());
+	}
+
+	/**
+	 * Opens the class or member at the location. For a member, once its decompiled source is available the line
+	 * containing the first of the needles that occurs in the member is selected instead of the whole member.
+	 *
+	 * @param location
+	 * 		Location in the current workspace.
+	 * @param needles
+	 * 		Candidate texts of the line to select, in order of preference.
+	 *
+	 * @return {@code true} when the location could be opened.
+	 */
+	public boolean navigate(@Nullable CodeLocation location, @Nonnull List<String> needles) {
+		if (needles.isEmpty() || !(resolve(location) instanceof ClassMemberPathNode memberPath))
+			return navigate(location);
+		ClassPathNode classPath = memberPath.getParent();
+		if (classPath == null)
+			return navigate(location);
+		try {
+			ClassNavigable navigable = actions.gotoDeclaration(classPath);
+			JavaContextActionSupport support = findContextSupport(navigable);
+			if (support != null)
+				support.setLineNeedles(needles);
+			navigable.requestFocus(memberPath.getValue());
+			return true;
+		} catch (IncompletePathException ex) {
+			logger.error("Cannot open {}", location, ex);
+			return false;
+		}
+	}
+
+	@Nullable
+	private static JavaContextActionSupport findContextSupport(@Nonnull Navigable navigable) {
+		if (navigable instanceof JavaContextActionSupport support)
+			return support;
+		for (Navigable child : navigable.getNavigableChildren()) {
+			JavaContextActionSupport found = findContextSupport(child);
+			if (found != null)
+				return found;
+		}
+		return null;
+	}
+
+	/**
+	 * @param path
+	 * 		Path of a file in the workspace that is not a class, or of a class that has a different name in its jar.
+	 *
+	 * @return {@code true} when the file could be opened.
+	 */
+	public boolean navigateFile(@Nonnull String path) {
+		Workspace workspace = workspaceManager.getCurrent();
+		if (workspace == null)
+			return false;
+		PathNode<?> node = workspace.findFile(path);
+		if (node == null) {
+			for (JvmClassInfo info : workspace.getPrimaryResource().getJvmClassBundle().values())
+				if (ResourcePayloadScanner.originalPath(info).equals(path)) {
+					node = workspace.findJvmClass(info.getName());
+					break;
+				}
+		}
+		if (node == null) {
+			logger.warn("Cannot open {}, it no longer exists.", path);
+			return false;
+		}
+		try {
+			actions.gotoDeclaration(node);
+			return true;
+		} catch (IncompletePathException ex) {
+			logger.error("Cannot open {}", path, ex);
 			return false;
 		}
 	}
@@ -166,7 +257,7 @@ public class PluginNavigation {
 	 * 		Search text to show in the navigator, or {@code null} to keep the current search.
 	 */
 	public void openNavigator(@Nullable String query) {
-		openTool(PluginNavigatorPane.class, navigatorProvider, "mcplugin.navigator.title", CarbonIcons.HEADPHONES, navigator -> {
+		openTool(PluginNavigatorPane.class, navigatorProvider, "mcplugin.navigator.title", CarbonIcons.CATEGORIES, navigator -> {
 			if (query != null)
 				navigator.setQuery(query);
 		});
@@ -231,17 +322,9 @@ public class PluginNavigation {
 	}
 
 	/**
-	 * Opens a window listing suggested names for the current workspace's plugin.
+	 * Opens the name recovery of the current workspace's plugin, or brings it to the front if it is already open.
 	 */
 	public void openNameRecovery() {
-		if (!workspaceManager.hasCurrentWorkspace())
-			return;
-		FxThreadUtil.run(() -> {
-			PluginNameRecoveryWindow window = recoveryWindowProvider.get();
-			window.setOnCloseRequest(e -> recoveryWindowProvider.destroy(window));
-			window.show();
-			window.requestFocus();
-			windowManager.registerAnonymous(window);
-		});
+		openTool(PluginNameRecoveryPane.class, recoveryProvider, "mcplugin.names.title", CarbonIcons.MAGIC_WAND, pane -> {});
 	}
 }

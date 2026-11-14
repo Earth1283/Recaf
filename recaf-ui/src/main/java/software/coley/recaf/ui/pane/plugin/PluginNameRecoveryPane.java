@@ -22,6 +22,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableRow;
 import javafx.scene.control.TableView;
@@ -43,6 +44,10 @@ import software.coley.recaf.services.analysis.plugin.semantic.PluginSemanticServ
 import software.coley.recaf.services.analysis.plugin.semantic.PluginSemanticService.MappingPlan;
 import software.coley.recaf.services.mapping.MappingApplier;
 import software.coley.recaf.services.mapping.MappingApplierService;
+import software.coley.recaf.services.navigation.Navigable;
+import software.coley.recaf.path.PathNode;
+import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.path.WorkspacePathNode;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.util.FxThreadUtil;
@@ -51,6 +56,8 @@ import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -66,7 +73,7 @@ import java.util.function.Predicate;
  * @see PluginSemanticService#suggestNames(Workspace)
  */
 @Dependent
-public class PluginNameRecoveryPane extends BorderPane {
+public class PluginNameRecoveryPane extends BorderPane implements Navigable {
 	private static final Logger logger = Logging.get(PluginNameRecoveryPane.class);
 	private final ObservableList<Row> rows = FXCollections.observableArrayList();
 	private final FilteredList<Row> filtered = new FilteredList<>(rows);
@@ -83,6 +90,8 @@ public class PluginNameRecoveryPane extends BorderPane {
 	private final MappingApplierService mappingApplierService;
 	private final PluginNavigation navigation;
 	private final Workspace workspace;
+	private final WorkspacePathNode workspacePath;
+	private boolean disabled;
 
 	@Inject
 	public PluginNameRecoveryPane(@Nonnull PluginSemanticService semanticService,
@@ -93,6 +102,7 @@ public class PluginNameRecoveryPane extends BorderPane {
 		this.mappingApplierService = mappingApplierService;
 		this.navigation = navigation;
 		this.workspace = Objects.requireNonNull(workspaceManager.getCurrent(), "Cannot recover names without a workspace");
+		this.workspacePath = PathNodes.workspacePath(workspace);
 
 		setTop(createFilterBar());
 		setCenter(createTable());
@@ -163,12 +173,14 @@ public class PluginNameRecoveryPane extends BorderPane {
 		selectColumn.setCellFactory(CheckBoxTableCell.forTableColumn(selectColumn));
 		selectColumn.setEditable(true);
 		selectColumn.setSortable(false);
-		selectColumn.setPrefWidth(36);
+		fixWidth(selectColumn, 44);
 
 		TableColumn<Row, String> kindColumn = column("mcplugin.names.column.kind", 80,
 				row -> PluginElementDisplay.targetKindName(row.suggestion.target()));
-		TableColumn<Row, String> currentColumn = column("mcplugin.names.column.current", 260,
+		fixWidth(kindColumn, 80);
+		TableColumn<Row, String> currentColumn = column("mcplugin.names.column.current", 240,
 				row -> row.suggestion.target().describe());
+		currentColumn.setMinWidth(120);
 
 		TableColumn<Row, String> nameColumn = new TableColumn<>();
 		nameColumn.textProperty().bind(Lang.getBinding("mcplugin.names.column.new"));
@@ -184,21 +196,32 @@ public class PluginNameRecoveryPane extends BorderPane {
 			table.refresh();
 		});
 		nameColumn.setEditable(true);
-		nameColumn.setPrefWidth(180);
+		nameColumn.setMinWidth(120);
+		nameColumn.setPrefWidth(200);
 
-		TableColumn<Row, String> clueColumn = column("mcplugin.names.column.clue", 110,
+		TableColumn<Row, String> clueColumn = column("mcplugin.names.column.clue", 120,
 				row -> PluginElementDisplay.clueName(row.suggestion.clue()));
+		fixWidth(clueColumn, 120);
 		TableColumn<Row, Integer> confidenceColumn = new TableColumn<>();
 		confidenceColumn.textProperty().bind(Lang.getBinding("mcplugin.names.column.confidence"));
 		confidenceColumn.setCellValueFactory(c -> new SimpleObjectProperty<>(c.getValue().suggestion.confidence()));
-		confidenceColumn.setPrefWidth(100);
-		TableColumn<Row, String> reasonColumn = column("mcplugin.names.column.reason", 360,
+		fixWidth(confidenceColumn, 104);
+		TableColumn<Row, String> reasonColumn = column("mcplugin.names.column.reason", 440,
 				row -> row.suggestion.reason());
+		reasonColumn.setMinWidth(200);
+		reasonColumn.setCellFactory(c -> new TableCell<>() {
+			@Override
+			protected void updateItem(String item, boolean empty) {
+				super.updateItem(item, empty);
+				setText(empty ? null : item);
+				setTooltip(empty || item == null || item.isBlank() ? null : tooltipOf(item));
+			}
+		});
 
 		table.getColumns().addAll(List.of(selectColumn, kindColumn, currentColumn, nameColumn, clueColumn,
 				confidenceColumn, reasonColumn));
 		table.setEditable(true);
-		table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+		table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
 		table.setPlaceholder(new Label(Lang.get("mcplugin.names.empty")));
 		SortedList<Row> sorted = new SortedList<>(filtered);
 		sorted.comparatorProperty().bind(table.comparatorProperty());
@@ -212,6 +235,27 @@ public class PluginNameRecoveryPane extends BorderPane {
 			return row;
 		});
 		return table;
+	}
+
+	/**
+	 * @param column
+	 * 		Column to keep at one width, which should fit its header and content.
+	 * @param width
+	 * 		Width to use.
+	 */
+	private static void fixWidth(@Nonnull TableColumn<?, ?> column, double width) {
+		column.setMinWidth(width);
+		column.setPrefWidth(width);
+		column.setMaxWidth(width);
+		column.setResizable(false);
+	}
+
+	@Nonnull
+	private static Tooltip tooltipOf(@Nonnull String text) {
+		Tooltip tooltip = new Tooltip(text);
+		tooltip.setWrapText(true);
+		tooltip.setMaxWidth(600);
+		return tooltip;
 	}
 
 	@Nonnull
@@ -289,6 +333,8 @@ public class PluginNameRecoveryPane extends BorderPane {
 		busy.set(true);
 		CompletableFuture.supplyAsync(() -> semanticService.suggestNames(workspace))
 				.whenCompleteAsync((suggestions, error) -> {
+					if (disabled)
+						return;
 					busy.set(false);
 					if (error != null) {
 						logger.error("Failed to suggest names", error);
@@ -341,8 +387,34 @@ public class PluginNameRecoveryPane extends BorderPane {
 			logger.info(message);
 
 			// What is left are the suggestions that still apply after renaming.
-			load(message);
+			if (!disabled)
+				load(message);
 		}, FxThreadUtil.executor());
+	}
+
+	@Nonnull
+	@Override
+	public PathNode<?> getPath() {
+		return workspacePath;
+	}
+
+	@Nonnull
+	@Override
+	public Collection<Navigable> getNavigableChildren() {
+		return Collections.emptyList();
+	}
+
+	@Override
+	public boolean isTrackable() {
+		// Navigable only so that it gets closed with the workspace.
+		return false;
+	}
+
+	@Override
+	public void disable() {
+		disabled = true;
+		table.setItems(FXCollections.emptyObservableList());
+		rows.clear();
 	}
 
 	/**

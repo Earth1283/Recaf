@@ -4,12 +4,16 @@ import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import software.coley.recaf.util.PlatformType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -20,6 +24,18 @@ import java.util.stream.Stream;
  * @author Matt Coley
  */
 public class Binding extends ArrayList<String> {
+	private static final Map<String, String> SYMBOL_KEYS = Map.of(
+			"comma", ",",
+			"period", ".",
+			"slash", "/",
+			"back slash", "\\",
+			"semicolon", ";",
+			"equals", "=",
+			"minus", "-",
+			"open bracket", "[",
+			"close bracket", "]",
+			"quote", "'"
+	);
 	private final String id;
 
 	/**
@@ -143,6 +159,69 @@ public class Binding extends ArrayList<String> {
 	@Override
 	public String toString() {
 		return String.join(" + ", this);
+	}
+
+	/**
+	 * @return Human-readable text of the binding for the current platform.
+	 *
+	 * @see #displayText(PlatformType)
+	 */
+	@Nonnull
+	public String displayText() {
+		return displayText(PlatformType.get());
+	}
+
+	/**
+	 * Modifiers are listed first, in the order control/command, alt/option, shift, followed by the remaining keys.
+	 * On {@link PlatformType#MAC} {@code meta} is shown as {@code Cmd} and {@code alt} as {@code Option}.
+	 *
+	 * @param platform
+	 * 		Platform to display modifier names for.
+	 *
+	 * @return Human-readable text of the binding, such as {@code Cmd+Shift+G} or {@code Ctrl+F}.
+	 */
+	@Nonnull
+	public String displayText(@Nonnull PlatformType platform) {
+		boolean mac = platform == PlatformType.MAC;
+		List<String> parts = new ArrayList<>(size());
+		if (containsName(KeyCode.CONTROL))
+			parts.add("Ctrl");
+		if (containsName(KeyCode.META))
+			parts.add(mac ? "Cmd" : "Meta");
+		if (containsName(KeyCode.ALT))
+			parts.add(mac ? "Option" : "Alt");
+		if (containsName(KeyCode.SHIFT))
+			parts.add("Shift");
+		for (String key : this) {
+			String lower = key.toLowerCase(Locale.ROOT);
+			if (lower.equals(nameOf(KeyCode.CONTROL)) || lower.equals(nameOf(KeyCode.META))
+					|| lower.equals(nameOf(KeyCode.ALT)) || lower.equals(nameOf(KeyCode.SHIFT)))
+				continue;
+			parts.add(displayKey(lower));
+		}
+		return String.join("+", parts);
+	}
+
+	private boolean containsName(@Nonnull KeyCode code) {
+		String name = nameOf(code);
+		for (String key : this)
+			if (key.equalsIgnoreCase(name))
+				return true;
+		return false;
+	}
+
+	@Nonnull
+	private static String displayKey(@Nonnull String lowerName) {
+		String symbol = SYMBOL_KEYS.get(lowerName);
+		if (symbol != null)
+			return symbol;
+		StringBuilder sb = new StringBuilder(lowerName.length());
+		boolean upperNext = true;
+		for (char c : lowerName.toCharArray()) {
+			sb.append(upperNext ? Character.toUpperCase(c) : c);
+			upperNext = c == ' ';
+		}
+		return sb.toString();
 	}
 
 	/**

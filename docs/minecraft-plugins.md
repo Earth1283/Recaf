@@ -167,8 +167,13 @@ the configuration.
 ### The plugin navigator
 
 Open it with **Analysis → Minecraft plugin navigator**, or the button in the workspace summary. It opens as a tab with the
-editor tabs, as the security triage does, and shows the plugin's structure grouped into sections: plugin entry points, commands,
-events, listeners, tasks, config paths, permissions, and the other keys and types listed above.
+editor tabs, as the security triage and name recovery do, and shows the plugin's structure grouped into sections: plugin
+entry points, commands, events, listeners, tasks, config paths, permissions, and the other keys and types listed above.
+Every section and group shows how many entries it holds.
+
+Sections start expanded. Their groups start expanded too, unless a section has more than 12 of them, in which case they
+start collapsed so a large plugin stays readable. While a search is active, everything that matches is expanded.
+Expanding or collapsing a group, and the selected entry, are kept when the outline refreshes.
 
 - Type in the search field to filter. Every word must match, and matching covers the kind of entry, its key, and where
   it is, so `permission admin`, `PlayerJoin`, or `max-homes` all work.
@@ -176,6 +181,11 @@ events, listeners, tasks, config paths, permissions, and the other keys and type
 - Entries such as *Registered in* and *Scheduled in* jump to the other end: where a listener is registered, or where a
   task is scheduled.
 - Commands and permissions that the manifest declares but the code never uses are listed as such.
+- Commands whose name could not be read from the code are grouped as *Name not found in code*. Their executor or
+  completer is registered through code the navigator cannot follow, such as a command framework or a name built at
+  runtime.
+- The buttons next to the search field open name recovery and the security triage, re-index the plugin, and open the
+  settings.
 - The outline refreshes by itself after classes change, for example after renaming.
 
 ### Quick navigation
@@ -202,7 +212,8 @@ Every submenu ends with **Show in plugin navigator**, which opens the navigator 
 ## Recovering names in obfuscated plugins
 
 **Mappings → Recover Minecraft plugin names** suggests meaningful names for the plugin's classes, fields, methods,
-and variables, based on what the navigator finds. Nothing is renamed until you choose to apply.
+and variables, based on what the navigator finds. It opens as a tab with the editor tabs, and is brought to the front
+if it is already open. Nothing is renamed until you choose to apply.
 
 ### What names are suggested
 
@@ -236,6 +247,10 @@ Each suggestion shows the current name, the new name, the kind of clue it is bas
 the reason in words, such as *Value of config path 'settings.max-homes' (getInt)*.
 
 - Suggestions for names that look obfuscated, with a confidence of at least 50, are selected to begin with.
+- When several fields of one class would get the same name from their type, such as nine fields of one type that become
+  `player` to `player9`, the number says nothing about what each field is for. Those suggestions
+  get a confidence of 40, so none of them is selected to begin with. A single field of a type in a class is unaffected.
+- Hover over a reason to read it in full when the column is too narrow.
 - **Only obfuscated names** hides suggestions for names that already look like a person wrote them.
 - Filter by kind of target and by clue, and search across names and reasons.
 - Edit a new name by double-clicking it. Editing a name selects it.
@@ -250,8 +265,9 @@ package becomes `HomeCommand2`.
 ## Security triage
 
 **Analysis → Security triage**, or the button in the workspace summary, reads the plugin's bytecode for behavior worth
-checking before you run it on a server. The summary also shows the result in a **Security** row, which opens the
-triage when clicked. Nothing is run: the plugin's classes are only read.
+checking before you run it on a server. The summary shows the result at the top of its **Minecraft plugin** section, and
+opens the triage when you click it. The triage opens as a tab with the editor tabs. Nothing is run: the plugin's classes
+and files are only read.
 
 ### What is found
 
@@ -260,9 +276,9 @@ legitimate uses:
 
 | Severity | Examples                                                                                                     |
 |----------|--------------------------------------------------------------------------------------------------------------|
-| High     | Runs a program, defines classes from raw bytes, evaluates scripts, loads native code, grants operator, runs a permission command such as `lp user ... permission set` written into the code, grants `*`, a Discord or Telegram webhook, a paste site, a tunnel, or a public IP address in a URL |
-| Medium   | Creates a class loader, listens for connections, reaches the plugins folder itself or jars in it, names a sensitive file such as `server.properties` or `ops.json`, checks for a specific player's name or UUID, stops the server, disables another plugin, uses `Unsafe` |
-| Low      | Network connections, URLs, file writes and deletes, console commands, reflection, Base64 and decryption, classes generated with ASM |
+| High     | Runs a program, defines classes from raw bytes, evaluates scripts, loads native code, grants operator, runs a permission command such as `lp user ... permission set` written into the code, grants `*`, a Discord or Telegram webhook, a paste site, a tunnel, or a public IP address in a URL, a class file or a native library hidden in a file with another name |
+| Medium   | Creates a class loader, listens for connections, reaches the plugins folder itself or jars in it, names a sensitive file such as `server.properties` or `ops.json`, checks for a specific player's name or UUID, stops the server, disables another plugin, uses `Unsafe`, a jar or ZIP hidden in a file with another name, a native library shipped in the jar |
+| Low      | Network connections, URLs, file writes and deletes, console commands, reflection, Base64 and decryption, classes generated with ASM, large files of random-looking bytes |
 
 What raises a finding to **critical** is a combination that is rarely legitimate:
 
@@ -274,22 +290,54 @@ What raises a finding to **critical** is a combination that is rarely legitimate
 | Rewrites jars in the plugins folder    | A class reaches the plugins folder and writes jar or zip files, which is how plugin malware spreads |
 | Chat-triggered backdoor                | A chat or command handler can grant operator, run programs, or load code, directly or through what it calls, schedules, or passes as a lambda |
 | Backdoor for a specific player         | A method checks for a player written into the code and grants permissions or runs commands  |
+| Loads a hidden file as code            | A class names a file in the jar that was flagged above, by its path or its bare file name, and the same class turns bytes into code (defines classes, creates a class loader, uses instrumentation) or, for native files, loads a native library |
 
 Some combinations are reported as high or medium instead: downloading and defining classes in different classes with
 no suspicious host (high), downloading files into the plugins folder, as auto-updaters do (high), and downloading jars
 and loading them with a class loader, as many plugins do for database drivers (medium, with the hosts named).
 
+### Files that are not classes
+
+The files in the jar are checked by their content, not their name. A class file with a name like `data/logo.dat`, a
+ZIP or jar that is not named like an archive, and a native library or program (ELF, PE or Mach-O) are reported. Native
+files under their usual extensions (`.so`, `.dll`, `.dylib`, `.jnilib`, `.exe`) are medium, as most database drivers
+ship some; under any other name they are high. Large files of random-looking bytes that are not a known compressed or
+media format are reported as low, since an encrypted payload looks like that. Plugin manifests, signatures and Maven
+metadata are never reported. When a class contains a string that is exactly the path or file name of a flagged file,
+the finding names that class or method, so you can see who reads it. Findings in files have no code of their own;
+double-click opens the file.
+
 ### Reading the results
 
-- Findings are grouped by severity, then by what was found. Hover over a group for why it matters. Combined findings
-  list the findings they are made of as evidence.
-- Double-click a finding, or press Enter, to open the code. Right-click for the usual class or method menu.
+- The list on the left groups findings by severity, then by what was found. Select an entry, with the mouse or the arrow
+  keys, and the panel on the right explains it: why the rule matters, where the finding is, what was used, and the jar
+  it is in when it is in an embedded one. Combined findings list the findings they are made of as evidence, and each
+  one opens its code when clicked. **Open in editor** does what double-click does, and **Copy** puts a plain-text
+  summary of the finding on the clipboard.
+- Below the explanation is the decompiled code of the finding's class, read-only, with the line of the finding selected.
+  It follows the selection after a short pause, so moving through the list stays fast. Findings about files that are
+  not classes have no code to show.
+- Double-click a finding, or press Enter, to open the code in the editor. The line the finding is about is selected,
+  not the whole method. Decompiled line numbers do not match the bytecode, so the line is found by searching the method
+  for what was reported, such as the call or the URL. When it cannot be found, for example because a URL is kept in a
+  constant, the whole method is selected. Right-click for the usual class or method menu.
 - Search across what was found, class names, URLs and commands, and filter by severity.
+- The scope next to the search field chooses **Plugin code**, **Bundled libraries**, or **Everything**. It starts on
+  **Plugin code**. The list, the counts of each group, and the status line ("12 of 34 findings shown") always describe
+  the current scope, search and severity filter, so they add up to what is listed. In **Everything**, findings in
+  libraries come after the plugin's own and are marked **bundled library**.
+- Findings in libraries that plugins commonly bundle, such as database drivers, are usually the library's own behavior,
+  which is why they are left out of the default scope. They are not dropped, because malware also hides in packages
+  named after libraries. When the scope hides high or critical findings, a notice under the headline says how many,
+  such as "6 High in bundled libraries are hidden", with a link that switches to **Everything**. The same notice appears
+  when the plugin's own code has no findings but its libraries do. A search that matches nothing in the scope says
+  how many matches it has in the other one. The headline counts the plugin's own findings, and mentions serious findings
+  in bundled libraries separately.
 - Jars inside the plugin are scanned too, since some plugins keep their real code in a nested jar and load it at
   runtime. Their findings are marked with the jar they are in.
-- Findings in libraries that plugins commonly bundle, such as database drivers, are marked **bundled library** and
-  listed after the plugin's own. The headline counts the plugin's own findings, and mentions serious findings in
-  bundled libraries separately. They are not hidden, because malware also hides in packages named after libraries.
+- The scope, the severity filter and the position of the divider stay as you set them when the list refreshes after
+  classes change. The selected finding and the groups you expanded stay as well, as long as the same finding is found
+  again.
 - When an obfuscator encrypts the strings, its decryption routine appears in every class. These are reported once,
   with a warning that URLs, commands and paths in those classes are not visible. Run string deobfuscation and scan
   again.
@@ -298,7 +346,11 @@ and loading them with a class loader, as many plugins do for database drivers (m
 
 This is static triage. Code that is downloaded later, behavior behind reflection with encrypted names, and anything in
 native code are not visible, so a report with no findings is not proof that a plugin is safe. Combinations are looked
-for within a class and its nested classes, and for the "runs downloaded code" case within the whole jar.
+for within a class and its nested classes, and for the "runs downloaded code" case within the whole jar. Files are
+recognized by their header and size only: a payload that is hidden inside another format, such as appended to an image,
+or that is encoded as text (Base64, for example) instead of random-looking bytes, is not found unless a class that
+decodes it is. The file a class reads is matched by name only when the name is written out in the code, so a path that
+is computed at runtime is not tied to its file. Files larger than 64 MB are skipped.
 
 Not everything reported is malicious. On a corpus of real plugins, the critical findings were a loader that downloads
 its plugin from an address kept on a paste site and defines it in memory, and a world generator that downloads Gradle
@@ -438,7 +490,7 @@ The navigator and name recovery live in `software.coley.recaf.services.analysis.
 | `NamingFacts`                         | Facts only used for naming: values flowing into fields, constant keys, accessors, method behaviors |
 | `SemanticNameSuggester`               | Picks names from the index. Classes first, then fields, methods, and variables, so each can use the names before it |
 | `NameHeuristics`                      | Decides whether a name looks obfuscated, and converts text to Java names                     |
-| `PluginNavigation` (UI)               | Resolves index locations to paths, opens the navigator and the name recovery window          |
+| `PluginNavigation` (UI)               | Resolves index locations to paths, opens the navigator, name recovery and security triage tabs |
 | `PluginContextMenuAdapter` (UI)       | Adds the plugin submenu to class, method and field context menus                             |
 
 The security triage lives in `software.coley.recaf.services.analysis.plugin.security`. The UI is `PluginSecurityPane`.

@@ -83,7 +83,7 @@ record PluginNotes(@Nonnull List<String> classLines,
 
 		for (SecurityFinding finding : findings) {
 			CodeLocation location = finding.location();
-			if (!location.className().equals(className))
+			if (location == null || !location.className().equals(className))
 				continue;
 			add(model, location, securityLine(finding), methods, fields, classLines);
 		}
@@ -142,8 +142,10 @@ record PluginNotes(@Nonnull List<String> classLines,
 	private static String securityLine(@Nonnull SecurityFinding finding) {
 		StringBuilder sb = new StringBuilder("SECURITY ").append(finding.severity().name())
 				.append(": ").append(finding.rule().id().replace('-', ' ').toLowerCase(Locale.ROOT));
+		if (finding.file() != null)
+			sb.append(" '").append(finding.file()).append('\'');
 		String detail = finding.detail();
-		if (detail != null && !detail.isBlank())
+		if (detail != null && !detail.isBlank() && !detail.equals(finding.file()))
 			sb.append(" (").append(detail).append(')');
 		if (finding.library())
 			sb.append(" [bundled library]");
@@ -174,13 +176,14 @@ record PluginNotes(@Nonnull List<String> classLines,
 	 * @param minimum
 	 * 		Lowest severity to include.
 	 *
-	 * @return Findings of the plugin's own jar by the class they are in.
+	 * @return Findings of the plugin's own jar by the class they are in. Findings about a file that no code is known
+	 * to refer to have no class and are left out.
 	 */
 	@Nonnull
 	static Map<String, List<SecurityFinding>> groupSecurity(@Nonnull PluginSecurityReport report, @Nonnull Severity minimum) {
 		Map<String, List<SecurityFinding>> byClass = new HashMap<>();
 		for (SecurityFinding finding : report.findings())
-			if (finding.embeddedIn() == null && finding.severity().isAtLeast(minimum))
+			if (finding.location() != null && finding.embeddedIn() == null && finding.severity().isAtLeast(minimum))
 				byClass.computeIfAbsent(finding.location().className(), k -> new ArrayList<>()).add(finding);
 		return byClass;
 	}

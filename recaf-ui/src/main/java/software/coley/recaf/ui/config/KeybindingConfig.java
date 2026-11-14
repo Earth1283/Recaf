@@ -9,13 +9,17 @@ import javafx.scene.Node;
 import javafx.scene.control.TextField;
 import javafx.scene.input.KeyCode;
 import javafx.scene.layout.GridPane;
+import org.slf4j.Logger;
 import software.coley.observables.ObservableBoolean;
 import software.coley.observables.ObservableMap;
+import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.config.BasicConfigContainer;
+import software.coley.recaf.config.BasicConfigValue;
 import software.coley.recaf.config.BasicMapConfigValue;
 import software.coley.recaf.config.ConfigContainer;
 import software.coley.recaf.config.ConfigGroups;
 import software.coley.recaf.config.ConfigValue;
+import software.coley.recaf.config.RestoreAwareConfigContainer;
 import software.coley.recaf.services.config.ConfigComponentManager;
 import software.coley.recaf.services.config.TypedConfigComponentFactory;
 import software.coley.recaf.services.json.GsonProvider;
@@ -31,6 +35,7 @@ import software.coley.recaf.util.PlatformType;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -44,8 +49,6 @@ import java.util.stream.Collectors;
 import static javafx.scene.input.KeyCode.*;
 import static software.coley.recaf.ui.config.Binding.nameOf;
 import static software.coley.recaf.ui.config.Binding.newBind;
-import static software.coley.recaf.ui.config.BindingCreator.OSBinding.newOsBind;
-import static software.coley.recaf.ui.config.BindingCreator.bindings;
 
 /**
  * Config for various keybindings.
@@ -53,7 +56,8 @@ import static software.coley.recaf.ui.config.BindingCreator.bindings;
  * @author Matt Coley
  */
 @ApplicationScoped
-public class KeybindingConfig extends BasicConfigContainer {
+public class KeybindingConfig extends BasicConfigContainer implements RestoreAwareConfigContainer {
+	private static final Logger logger = Logging.get(KeybindingConfig.class);
 	public static final String ID = "bind";
 	private static final String ID_QUICK_NAV = "quicknav";
 	private static final String ID_QUICK_NAV_PLUGIN = "quicknav-plugin";
@@ -73,31 +77,29 @@ public class KeybindingConfig extends BasicConfigContainer {
 	private static final String ID_TOGGLE_SIDEBAR = "ui.sidebar";
 
 	private final BindingBundle bundle;
+	private final PlatformType platform;
+	private final ObservableBoolean macDefaultsMigrated = new ObservableBoolean(false);
 
 	@Inject
 	public KeybindingConfig(@Nonnull GsonProvider gsonProvider, @Nonnull ConfigComponentManager componentManager) {
-		super(ConfigGroups.SERVICE_UI, ID + CONFIG_SUFFIX);
+		this(gsonProvider, PlatformType.get());
+		registerComponent(componentManager);
+	}
 
-		// We will only be storing one 'value' so that the UI can treat it as a singular element.
-		bundle = new BindingBundle(Arrays.asList(
-				createBindForPlatform(ID_QUICK_NAV, CONTROL, G),
-				createBindForPlatform(ID_QUICK_NAV_PLUGIN, CONTROL, SHIFT, G),
-				createBindForPlatform(ID_FIND, CONTROL, F),
-				createBindForPlatform(ID_REPLACE, CONTROL, R),
-				createBindForPlatform(ID_SAVE, CONTROL, S),
-				createBindForPlatform(ID_UNDO, CONTROL, U),
-				createBindForPlatform(ID_CLOSE_TAB, CONTROL, W),
-				createBindForPlatform(ID_RENAME, ALT, R),
-				createBindForPlatform(ID_COMMENT, ALT, N),
-				createBindForPlatform(ID_GOTO, F3),
-				createBindForPlatform(ID_ASSEMBLER, F2),
-				createBindForPlatform(ID_NAVIGATE_BACK, ALT, LEFT),
-				createBindForPlatform(ID_NAVIGATE_FORWARD, ALT, RIGHT),
-				createBindForPlatform(ID_EXPORT, CONTROL, E),
-				createBindForPlatform(ID_SETTINGS, CONTROL, COMMA),
-				createBindForPlatform(ID_TOGGLE_SIDEBAR, CONTROL, B)
-		));
+	/**
+	 * @param gsonProvider
+	 * 		Provider to register the bundle deserializer with.
+	 * @param platform
+	 * 		Platform to create default bindings for.
+	 */
+	KeybindingConfig(@Nonnull GsonProvider gsonProvider, @Nonnull PlatformType platform) {
+		super(ConfigGroups.SERVICE_UI, ID + CONFIG_SUFFIX);
+		this.platform = platform;
+
+		// We will only be storing one visible 'value' so that the UI can treat it as a singular element.
+		bundle = new BindingBundle(defaultBindings(platform));
 		addValue(new BasicMapConfigValue<>("bundle", BindingBundle.class, String.class, Binding.class, bundle));
+		addValue(new BasicConfigValue<>("mac-defaults-migrated", boolean.class, macDefaultsMigrated, true));
 
 		// Register custom json adapter for the binding bundle type.
 		gsonProvider.addTypeDeserializer(BindingBundle.class, (json, typeOfT, context) -> {
@@ -117,7 +119,13 @@ public class KeybindingConfig extends BasicConfigContainer {
 
 			return new BindingBundle(bindings);
 		});
+	}
 
+	/**
+	 * @param componentManager
+	 * 		Manager to register the binding editor component with.
+	 */
+	private void registerComponent(@Nonnull ConfigComponentManager componentManager) {
 		// Register custom config component display for the binding bundle.
 		componentManager.register(BindingBundle.class, new TypedConfigComponentFactory<>(true, BindingBundle.class) {
 			@Nonnull
@@ -279,26 +287,123 @@ public class KeybindingConfig extends BasicConfigContainer {
 		return Objects.requireNonNull(bundle.get(ID_SETTINGS));
 	}
 
+	@Override
+	public void onRestore() {
+		applyMacMigration();
+	}
+
+	@Override
+	public void onNoRestore() {
+		// Nothing was saved, so every binding is already a default of the current platform.
+		if (platform == PlatformType.MAC)
+			macDefaultsMigrated.setValue(true);
+	}
+
 	/**
-	 * Wrapper around {@link Binding#newBind(String, KeyCode...)} and {@link BindingCreator}
+	 * Replaces loaded bindings that still hold the non-Mac default with the Mac default, when on macOS.
+	 * Earlier configs may have stored the Ctrl defaults, which then override the Command defaults forever.
+	 * Runs once, so that a deliberate rebind back to Ctrl is kept afterwards.
+	 */
+	private void applyMacMigration() {
+		if (platform != PlatformType.MAC || macDefaultsMigrated.getValue())
+			return;
+
+		Map<String, Binding> migrated = migrateToMacDefaults(platform, toMap(defaultBindings(PlatformType.LINUX)),
+				toMap(defaultBindings(PlatformType.MAC)), bundle.values());
+		migrated.forEach((id, replacement) -> {
+			Binding current = bundle.get(id);
+			logger.info("Migrating keybinding '{}' from '{}' to the macOS default '{}'", id, current.displayText(platform), replacement.displayText(platform));
+			current.clear();
+			current.addAll(replacement);
+		});
+		macDefaultsMigrated.setValue(true);
+	}
+
+	/**
+	 * @param platform
+	 * 		Platform to migrate for. Only {@link PlatformType#MAC} has anything to migrate.
+	 * @param nonMacDefaults
+	 * 		Default bindings of non-Mac platforms, by id.
+	 * @param macDefaults
+	 * 		Default bindings of Mac, by id.
+	 * @param loaded
+	 * 		Bindings loaded from the saved config.
+	 *
+	 * @return Replacement bindings, by id, for each loaded binding that equals the non-Mac default
+	 * while the Mac default differs. Empty when not on Mac.
+	 */
+	@Nonnull
+	static Map<String, Binding> migrateToMacDefaults(@Nonnull PlatformType platform,
+	                                                 @Nonnull Map<String, Binding> nonMacDefaults,
+	                                                 @Nonnull Map<String, Binding> macDefaults,
+	                                                 @Nonnull Collection<Binding> loaded) {
+		Map<String, Binding> migrated = new TreeMap<>();
+		if (platform != PlatformType.MAC)
+			return migrated;
+		for (Binding binding : loaded) {
+			String id = binding.getId();
+			Binding nonMacDefault = nonMacDefaults.get(id);
+			Binding macDefault = macDefaults.get(id);
+			if (nonMacDefault == null || macDefault == null)
+				continue;
+			Set<String> loadedKeys = new HashSet<>(binding);
+			if (loadedKeys.equals(new HashSet<>(nonMacDefault)) && !loadedKeys.equals(new HashSet<>(macDefault)))
+				migrated.put(id, newBind(id, macDefault));
+		}
+		return migrated;
+	}
+
+	@Nonnull
+	private static Map<String, Binding> toMap(@Nonnull List<Binding> bindings) {
+		return bindings.stream().collect(Collectors.toMap(Binding::getId, Function.identity()));
+	}
+
+	/**
+	 * @param platform
+	 * 		Platform to create the default bindings for.
+	 *
+	 * @return All default bindings of the platform.
+	 */
+	@Nonnull
+	static List<Binding> defaultBindings(@Nonnull PlatformType platform) {
+		return Arrays.asList(
+				createBindForPlatform(platform, ID_QUICK_NAV, CONTROL, G),
+				createBindForPlatform(platform, ID_QUICK_NAV_PLUGIN, CONTROL, SHIFT, G),
+				createBindForPlatform(platform, ID_FIND, CONTROL, F),
+				createBindForPlatform(platform, ID_REPLACE, CONTROL, R),
+				createBindForPlatform(platform, ID_SAVE, CONTROL, S),
+				createBindForPlatform(platform, ID_UNDO, CONTROL, U),
+				createBindForPlatform(platform, ID_CLOSE_TAB, CONTROL, W),
+				createBindForPlatform(platform, ID_RENAME, ALT, R),
+				createBindForPlatform(platform, ID_COMMENT, ALT, N),
+				createBindForPlatform(platform, ID_GOTO, F3),
+				createBindForPlatform(platform, ID_ASSEMBLER, F2),
+				createBindForPlatform(platform, ID_NAVIGATE_BACK, ALT, LEFT),
+				createBindForPlatform(platform, ID_NAVIGATE_FORWARD, ALT, RIGHT),
+				createBindForPlatform(platform, ID_EXPORT, CONTROL, E),
+				createBindForPlatform(platform, ID_SETTINGS, CONTROL, COMMA),
+				createBindForPlatform(platform, ID_TOGGLE_SIDEBAR, CONTROL, B)
+		);
+	}
+
+	/**
+	 * Wrapper around {@link Binding#newBind(String, KeyCode...)}
 	 * to swap out {@link KeyCode#CONTROL} for {@link KeyCode#META} for Mac users.
 	 *
+	 * @param platform
+	 * 		Platform to create the binding for.
 	 * @param id
 	 * 		Keybinding ID.
 	 * @param codes
 	 * 		Key-codes to use.
 	 *
-	 * @return Binding for the current platform.
+	 * @return Binding for the given platform.
 	 */
 	@Nonnull
-	private static Binding createBindForPlatform(@Nonnull String id, KeyCode... codes) {
+	static Binding createBindForPlatform(@Nonnull PlatformType platform, @Nonnull String id, KeyCode... codes) {
 		Binding defaultBind = newBind(id, codes);
-		// Swap out CONTROL for META on Mac.
-		if (defaultBind.contains(nameOf(CONTROL))) {
-			Binding macBinding = defaultBind.withReplacement(CONTROL, META);
-			return bindings(defaultBind, newOsBind(PlatformType.MAC, macBinding))
-					.buildKeyBindingForCurrentOS();
-		}
+		if (platform == PlatformType.MAC && defaultBind.contains(nameOf(CONTROL)))
+			return defaultBind.withReplacement(CONTROL, META);
 		return defaultBind;
 	}
 
@@ -332,11 +437,11 @@ public class KeybindingConfig extends BasicConfigContainer {
 
 		private BindingInputField(@Nonnull BindingBundle bundle, @Nonnull String id, @Nonnull Binding bind) {
 			getStyleClass().add("key-field");
-			setText(bind.toString());
+			setText(bind.displayText());
 			setPromptText(Lang.get("bind.inputprompt.initial"));
 
 			// Show prompt when focused, otherwise show current target binding text.
-			focusedProperty().addListener((v, old, focus) -> setText(focus ? Lang.get("bind.inputprompt.finish") : bind.toString()));
+			focusedProperty().addListener((v, old, focus) -> setText(focus ? Lang.get("bind.inputprompt.finish") : bind.displayText()));
 			setFocusTraversable(false);
 
 			// Track binding state while typing (will remember last pressed key combo, before pressing enter)

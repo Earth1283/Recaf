@@ -146,7 +146,7 @@ public class FieldsAndMethodsPane extends BorderPane implements ClassNavigable, 
 	 */
 	public void setupSelectionNavigationListener(@Nonnull ClassNavigable navigableClass) {
 		tree.setOnMouseClicked(mouseEvent -> {
-			if (mouseEvent.getClickCount() == 2 || (mouseEvent.isControlDown() && mouseEvent.getButton() == MouseButton.PRIMARY)) {
+			if (mouseEvent.getClickCount() == 2 || (mouseEvent.isShortcutDown() && mouseEvent.getButton() == MouseButton.PRIMARY)) {
 				TreeItem<PathNode<?>> selectedItem = tree.getSelectionModel().getSelectedItem();
 				if (navigationLock || selectedItem == null)
 					return;

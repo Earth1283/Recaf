@@ -42,9 +42,11 @@ import java.util.stream.Collectors;
  * Names are chosen in dependency order: classes first, then fields <i>(which can be named after the classes they hold)</i>,
  * then methods <i>(which can be named after the fields they access, or the events they handle)</i>, then variables.
  * Each suggestion keeps the strongest clue found for its target, and names are deconflicted against each other and
- * against existing names.
+ * against existing names. Fields of one class that would all get the same name from their type are told apart by
+ * a number only, which says nothing about them, so those suggestions are never recommended.
  */
 public final class SemanticNameSuggester {
+	private static final int SHARED_TYPE_NAME_CONFIDENCE = NameSuggestion.RECOMMENDED_CONFIDENCE - 10;
 	private static final Map<String, String> TYPE_NAMES = new HashMap<>();
 	private static final Set<String> COLLECTION_TYPES = Set.of("java/util/List", "java/util/ArrayList",
 			"java/util/LinkedList", "java/util/Set", "java/util/HashSet", "java/util/LinkedHashSet", "java/util/TreeSet",
@@ -576,10 +578,18 @@ public final class SemanticNameSuggester {
 				.sorted(Comparator.comparingInt((Map.Entry<NameTarget, Proposal> e) -> -e.getValue().confidence()))
 				.toList();
 		Set<FieldTarget> renamed = new HashSet<>();
-		for (var entry : fields)
-			renamed.add((FieldTarget) entry.getKey());
+		Map<String, Integer> typeNameCounts = new HashMap<>();
 		for (var entry : fields) {
 			FieldTarget target = (FieldTarget) entry.getKey();
+			renamed.add(target);
+			if (entry.getValue().clue() == NamingClue.MEMBER_TYPE)
+				typeNameCounts.merge(typeNameKey(target, entry.getValue()), 1, Integer::sum);
+		}
+		for (var entry : fields) {
+			FieldTarget target = (FieldTarget) entry.getKey();
+			Proposal proposal = entry.getValue();
+			if (proposal.clue() == NamingClue.MEMBER_TYPE && typeNameCounts.get(typeNameKey(target, proposal)) > 1)
+				proposal = proposal.withConfidence(Math.min(proposal.confidence(), SHARED_TYPE_NAME_CONFIDENCE));
 			Set<String> used = usedByClass.computeIfAbsent(target.owner(), owner -> {
 				// Names of fields that keep their name are taken.
 				Set<String> names = new HashSet<>();
@@ -588,13 +598,18 @@ public final class SemanticNameSuggester {
 						names.add(field.getName());
 				return names;
 			});
-			String name = deconflict(entry.getValue().name(), used, target.name());
+			String name = deconflict(proposal.name(), used, target.name());
 			used.add(name);
 			finalFieldNames.put(target.location(), name);
 			if (!name.equals(target.name()))
-				suggestions.add(entry.getValue().toSuggestion(target, name, target.name()));
+				suggestions.add(proposal.toSuggestion(target, name, target.name()));
 		}
 		return suggestions;
+	}
+
+	@Nonnull
+	private static String typeNameKey(@Nonnull FieldTarget target, @Nonnull Proposal proposal) {
+		return target.owner() + '\0' + proposal.name();
 	}
 
 	/**
@@ -952,6 +967,11 @@ public final class SemanticNameSuggester {
 	private record TypeName(@Nonnull String name, @Nonnull String reason, int confidence) {}
 
 	private record Proposal(@Nonnull String name, @Nonnull NamingClue clue, @Nonnull String reason, int confidence) {
+		@Nonnull
+		Proposal withConfidence(int confidence) {
+			return new Proposal(name, clue, reason, confidence);
+		}
+
 		@Nonnull
 		NameSuggestion toSuggestion(@Nonnull NameTarget target, @Nonnull String chosenName, @Nonnull String currentName) {
 			return new NameSuggestion(target, chosenName, clue, reason, Math.clamp(confidence, 0, 100),

@@ -5,6 +5,7 @@ import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import javafx.beans.binding.StringBinding;
 import javafx.scene.control.Menu;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.ToggleGroup;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
@@ -14,6 +15,8 @@ import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.config.ConfigManager;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.window.WindowManager;
+import software.coley.recaf.ui.config.BindingHint;
+import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.util.ErrorDialogs;
 import software.coley.recaf.util.FileChooserBuilder;
 import software.coley.recaf.util.Lang;
@@ -40,22 +43,29 @@ public class ConfigMenu extends Menu {
 	private final WindowManager windowManager;
 	private final ConfigManager configManager;
 	private final Menu profileMenu;
+	private final MenuItem itemEdit;
 
 	@Inject
 	public ConfigMenu(Actions actions,
 					  WindowManager windowManager,
-					  ConfigManager configManager) {
+					  ConfigManager configManager,
+					  KeybindingConfig keybindingConfig) {
 		this.actions = actions;
 		this.windowManager = windowManager;
 		this.configManager = configManager;
 
 		textProperty().bind(getBinding("menu.config"));
 		setGraphic(new FontIcon(CarbonIcons.SETTINGS));
-		setOnShowing(event -> refreshProfileMenu());
 
 		profileMenu = createProfileMenu();
 
-		getItems().add(action("menu.config.edit", CarbonIcons.CALIBRATE, actions::openConfig));
+		itemEdit = BindingHint.applyTo(action("menu.config.edit", CarbonIcons.CALIBRATE, actions::openConfig),
+				keybindingConfig::getSettings);
+		getItems().add(itemEdit);
+		setOnShowing(event -> {
+			refreshProfileMenu();
+			BindingHint.refresh(itemEdit);
+		});
 		getItems().add(profileMenu);
 		getItems().add(action("menu.config.export", CarbonIcons.DOCUMENT_EXPORT, this::exportProfile));
 		getItems().add(action("menu.config.import", CarbonIcons.DOCUMENT_IMPORT, this::importProfile));

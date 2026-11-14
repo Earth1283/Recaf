@@ -97,6 +97,11 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 			consumer.appendSummary(title);
 		});
 
+		// The plugin tools work on the primary resource, where mappings are applied.
+		boolean primary = resource == workspace.getPrimaryResource();
+		if (primary)
+			batch.add(() -> consumer.appendSummary(createSecurityLabel(workspace)));
+
 		for (var located : manifests) {
 			MinecraftPluginManifest manifest = located.manifest();
 			WorkspaceResource manifestResource = located.resource();
@@ -120,18 +125,16 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 				classRow(consumer, workspace, manifestResource, "service.analysis.minecraft-plugin.bootstrapper", manifest.bootstrapperClass());
 				classRow(consumer, workspace, manifestResource, "service.analysis.minecraft-plugin.loader", manifest.loaderClass());
 				if (!manifest.dependencies().isEmpty())
-					row(consumer, "service.analysis.minecraft-plugin.depends", new Label(String.join(", ", manifest.dependencies())));
+					row(consumer, "service.analysis.minecraft-plugin.depends", wrappedLabel(String.join(", ", manifest.dependencies())));
 				if (!manifest.softDependencies().isEmpty())
-					row(consumer, "service.analysis.minecraft-plugin.soft-depends", new Label(String.join(", ", manifest.softDependencies())));
+					row(consumer, "service.analysis.minecraft-plugin.soft-depends", wrappedLabel(String.join(", ", manifest.softDependencies())));
 			});
 		}
 
 		for (PluginApiRequest request : apiService.detectRequests(workspace))
 			batch.add(() -> consumer.appendSummary(createAttachControl(workspace, request)));
 
-		// The plugin tools work on the primary resource, where mappings are applied.
-		if (resource == workspace.getPrimaryResource()) {
-			batch.add(() -> row(consumer, "mcplugin.security.summary", createSecurityLabel(workspace)));
+		if (primary) {
 			batch.add(() -> consumer.appendSummary(createToolButtons()));
 			batch.add(() -> {
 				Label title = new BoundLabel(Lang.getBinding("mcplugin.view.title"));
@@ -149,6 +152,20 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	@Override
 	public int getPriority() {
 		return PRIORITY_MINECRAFT_PLUGIN;
+	}
+
+	/**
+	 * @param text
+	 * 		Value that may be long.
+	 *
+	 * @return Label that wraps the value onto multiple lines instead of cutting it off, with the full text as a tooltip.
+	 */
+	@Nonnull
+	private static Label wrappedLabel(@Nonnull String text) {
+		Label label = new Label(text);
+		label.setWrapText(true);
+		label.setTooltip(new Tooltip(text));
+		return label;
 	}
 
 	private void row(@Nonnull SummaryConsumer consumer, @Nonnull String translationKey, @Nonnull Label value) {
@@ -212,11 +229,14 @@ public class MinecraftPluginSummarizer implements ResourceSummarizer {
 	}
 
 	/**
-	 * @return Label showing the result of the security triage once the background scan finishes. Opens the triage.
+	 * @return Title-sized label showing the result of the security triage once the background scan finishes.
+	 * Opens the triage.
 	 */
 	@Nonnull
 	private Label createSecurityLabel(@Nonnull Workspace workspace) {
-		Label label = new Label(Lang.get("mcplugin.security.summary.pending"));
+		Label label = new Label(Lang.get("mcplugin.security.scanning"));
+		label.getStyleClass().add(Styles.TITLE_4);
+		label.setWrapText(true);
 		label.setCursor(Cursor.HAND);
 		label.setOnMouseEntered(e -> label.getStyleClass().add(Styles.TEXT_UNDERLINED));
 		label.setOnMouseExited(e -> label.getStyleClass().remove(Styles.TEXT_UNDERLINED));

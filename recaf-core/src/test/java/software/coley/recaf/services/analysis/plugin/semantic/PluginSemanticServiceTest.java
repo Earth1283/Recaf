@@ -21,6 +21,7 @@ import software.coley.recaf.workspace.model.Workspace;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -204,6 +205,38 @@ class PluginSemanticServiceTest extends TestBase {
 			assertName(suggestions, new FieldTarget("a/b", "a", "La/a;"), "plugin", NamingClue.MEMBER_TYPE);
 			assertName(suggestions, new FieldTarget("a/f", "a", "Lorg/bukkit/event/HandlerList;"), "HANDLERS", NamingClue.MEMBER_TYPE);
 			assertName(suggestions, new FieldTarget("a/f", "b", "Lorg/bukkit/entity/Player;"), "player", NamingClue.MEMBER_TYPE);
+		}
+
+		@Test
+		void fieldsSharingATypeInOneClassAreNotRecommended() {
+			Map<NameTarget, NameSuggestion> suggestions = suggestionsByTarget(open(false));
+
+			NameSuggestion lone = suggestions.get(new FieldTarget("a/f", "b", "Lorg/bukkit/entity/Player;"));
+			NameSuggestion first = suggestions.get(new FieldTarget("a/g", "a", "Lorg/bukkit/entity/Player;"));
+			NameSuggestion second = suggestions.get(new FieldTarget("a/g", "b", "Lorg/bukkit/entity/Player;"));
+			assertNotNull(lone);
+			assertNotNull(first);
+			assertNotNull(second);
+			assertEquals(Set.of("player", "player2"), Set.of(first.suggestedName(), second.suggestedName()));
+			assertEquals(NamingClue.MEMBER_TYPE, first.clue());
+			assertEquals(NameSuggestion.RECOMMENDED_CONFIDENCE - 10, first.confidence());
+			assertEquals(NameSuggestion.RECOMMENDED_CONFIDENCE - 10, second.confidence());
+			assertFalse(first.isRecommended());
+			assertFalse(second.isRecommended());
+
+			assertEquals("player", lone.suggestedName());
+			assertTrue(lone.confidence() >= NameSuggestion.RECOMMENDED_CONFIDENCE);
+			assertTrue(lone.isRecommended());
+
+			NameSuggestion server = suggestions.get(new FieldTarget("a/g", "c", "Lorg/bukkit/Server;"));
+			NameSuggestion otherServer = suggestions.get(new FieldTarget("a/h", "a", "Lorg/bukkit/Server;"));
+			assertNotNull(server);
+			assertNotNull(otherServer);
+			assertEquals("server", server.suggestedName());
+			assertEquals("server", otherServer.suggestedName());
+			assertEquals(otherServer.confidence(), server.confidence());
+			assertTrue(server.isRecommended());
+			assertTrue(otherServer.isRecommended());
 		}
 
 		@ParameterizedTest

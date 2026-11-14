@@ -35,7 +35,7 @@ public interface ResourceSummarizer extends PrioritySortable {
 	/** @see EntryPointSummarizer */
 	int PRIORITY_ENTRY_POINT = 0;
 	/** @see MinecraftPluginSummarizer */
-	int PRIORITY_MINECRAFT_PLUGIN = 500;
+	int PRIORITY_MINECRAFT_PLUGIN = -500;
 	/** @see HashSummarizer */
 	int PRIORITY_FILE_HASH = 4000;
 	/** @see JarSigningSummarizer */

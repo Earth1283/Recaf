@@ -335,7 +335,7 @@ public class WorkspaceBuilderPane extends BorderPane {
 	 * 		Key press event.
 	 */
 	private void handlePaste(KeyEvent e) {
-		if (e.isControlDown() && e.getCode() == KeyCode.V) {
+		if (e.isShortcutDown() && e.getCode() == KeyCode.V) {
 			Clipboard clipboard = Clipboard.getSystemClipboard();
 
 			// Handle files

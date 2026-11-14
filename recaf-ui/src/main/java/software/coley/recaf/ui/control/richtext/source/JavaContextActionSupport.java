@@ -131,6 +131,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 	private long lastTextChangeTimestamp;
 	private ClassPathNode path;
 	private Runnable queuedSelectionTask;
+	private List<String> lineNeedles = List.of();
 	private String className;
 	private CompilationUnitModel unit;
 	private ResolverAdapter resolver;
@@ -155,7 +156,8 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 
 	@PreDestroy
 	private void cleanup() {
-		lastFuture.cancel(true);
+		if (lastFuture != null)
+			lastFuture.cancel(true);
 		queuedSelectionTask = null;
 		parseThreadPool.close();
 	}
@@ -239,6 +241,18 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 	}
 
 	/**
+	 * Narrows the next {@link #select(ClassMember) member selection} to one line of the member, which is the first
+	 * line containing one of the needles. When none of them occurs the whole member stays selected.
+	 * The needles apply once, to the next selection that runs, which may be delayed until the source has been parsed.
+	 *
+	 * @param needles
+	 * 		Candidate texts in order of preference.
+	 */
+	public void setLineNeedles(@Nonnull List<String> needles) {
+		lineNeedles = List.copyOf(needles);
+	}
+
+	/**
 	 * Selects a member in the AST.
 	 *
 	 * @param member
@@ -251,6 +265,8 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 			queuedSelectionTask = () -> select(member);
 		} else {
 			queuedSelectionTask = null;
+			List<String> needles = lineNeedles;
+			lineNeedles = List.of();
 			try {
 				for (ClassModel declaredClass : localUnit.getDeclaredClasses()) {
 					if (member.isField()) {
@@ -259,13 +275,13 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 								.toList();
 						if (matchedFields.size() == 1) {
 							// Only one field by the given name.
-							selectRange(matchedFields.getFirst().getRange());
+							selectMemberRange(matchedFields.getFirst().getRange(), needles);
 						} else if (matchedFields.size() > 1) {
 							// Multiple fields by the given name, need to differentiate by type.
 							for (VariableModel field : matchedFields) {
 								if (field.getType().resolve(localResolver) instanceof DescribableResolution fieldTypeResolution
 										&& fieldTypeResolution.getDescribableEntry().getDescriptor().equals(member.getDescriptor())) {
-									selectRange(field.getRange());
+									selectMemberRange(field.getRange(), needles);
 									break;
 								}
 							}
@@ -276,13 +292,13 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 								.toList();
 						if (matchedMethods.size() == 1) {
 							// Only one method by the given name.
-							selectRange(matchedMethods.getFirst().getRange());
+							selectMemberRange(matchedMethods.getFirst().getRange(), needles);
 						} else if (matchedMethods.size() > 1) {
 							// Multiple methods by the given name, need to differentiate by signature.
 							for (MethodModel method : matchedMethods) {
 								if (method.resolve(localResolver) instanceof MethodResolution methodResolution
 										&& methodResolution.getMethodEntry().getDescriptor().equals(member.getDescriptor())) {
-									selectRange(method.getRange());
+									selectMemberRange(method.getRange(), needles);
 									break;
 								}
 							}
@@ -319,6 +335,26 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 				logger.error("Unhandled exception in Java context support - select inner '{}'", innerClass.getInnerClassName(), t);
 			}
 		}
+	}
+
+	/**
+	 * Selects the range of a member in the {@link #editor}, or only the line in it that has one of the needles.
+	 * Must be called on the FX thread.
+	 *
+	 * @param range
+	 * 		Range of the member.
+	 * @param needles
+	 * 		Candidate texts of the line to narrow the selection to, in order of preference. Can be empty.
+	 */
+	private void selectMemberRange(@Nonnull Range range, @Nonnull List<String> needles) {
+		LineSearch.Span line = needles.isEmpty() ? null : LineSearch.find(editor.getText(), range.begin(), range.end(), needles);
+		if (line == null) {
+			selectRange(range);
+			return;
+		}
+		CodeArea area = editor.getCodeArea();
+		area.selectRange(line.end(), line.start());
+		editor.showParagraphAtCenter(area.getCurrentParagraph());
 	}
 
 	/**

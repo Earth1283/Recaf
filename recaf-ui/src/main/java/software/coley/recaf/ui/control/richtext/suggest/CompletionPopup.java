@@ -116,7 +116,7 @@ public abstract class CompletionPopup<T> {
 				listView.fireEvent(event.copyFor(popup, listView));
 
 				// Multi-key action like 'Control Z' fail if we consume the event.
-				if (!event.isControlDown()) event.consume();
+				if (!event.isControlDown() && !event.isMetaDown()) event.consume();
 			}
 		});
 

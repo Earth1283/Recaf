@@ -15,6 +15,8 @@ import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.window.WindowManager;
 import software.coley.recaf.services.workspace.WorkspaceManager;
+import software.coley.recaf.ui.config.BindingHint;
+import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.ui.config.RecentFilesConfig;
 import software.coley.recaf.ui.control.ClosableActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
@@ -66,7 +68,8 @@ public class FileMenu extends WorkspaceAwareMenu {
 	                @Nonnull Instance<OpenUrlPopup> openUrlProvider,
 	                @Nonnull DockingManager dockingManager,
 	                @Nonnull WindowManager windowManager,
-	                @Nonnull RecentFilesConfig recentFilesConfig) {
+	                @Nonnull RecentFilesConfig recentFilesConfig,
+	                @Nonnull KeybindingConfig keybindingConfig) {
 		super(workspaceManager);
 		this.workspaceManager = workspaceManager;
 		this.pathLoadingManager = pathLoadingManager;
@@ -82,7 +85,9 @@ public class FileMenu extends WorkspaceAwareMenu {
 		menuRecent.disableProperty().bind(recentItemsProperty.emptyProperty());
 
 		MenuItem itemAddToWorkspace = action("menu.file.addtoworkspace", CarbonIcons.WORKSPACE_IMPORT, this::addToWorkspace);
-		MenuItem itemExportPrimary = action("menu.file.exportapp", CarbonIcons.EXPORT, this::exportCurrent);
+		MenuItem itemExportPrimary = BindingHint.applyTo(action("menu.file.exportapp", CarbonIcons.EXPORT, this::exportCurrent),
+				keybindingConfig::getExport);
+		setOnShowing(e -> BindingHint.refresh(itemExportPrimary));
 		MenuItem itemViewChanges = action("menu.file.modifications", CarbonIcons.COMPARE, this::openChangeViewer);
 		MenuItem itemClose = action("menu.file.close", CarbonIcons.TRASH_CAN, this::closeWorkspace);
 		itemAddToWorkspace.disableProperty().bind(hasWorkspace.not());

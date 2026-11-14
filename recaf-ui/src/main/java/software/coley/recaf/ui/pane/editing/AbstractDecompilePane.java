@@ -100,6 +100,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	protected final TutorialConfig tutorialConfig;
 	protected final Editor editor;
 	protected ClassPathNode path;
+	private boolean recordsNavigationHistory = true;
 
 	protected AbstractDecompilePane(@Nonnull DecompilerPaneConfig decompileConfig,
 	                                @Nonnull TutorialConfig tutorialConfig,
@@ -134,6 +135,8 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 		editor.getRootLineGraphicFactory().addDefaultCodeGraphicFactories();
 		contextActionSupport.install(editor);
 		editor.getCaretPosEventStream().addObserver(change -> {
+			if (!recordsNavigationHistory)
+				return;
 			PathNode<?> enclosingPath = contextActionSupport.getEnclosingDeclarationPath(change.getNewValue(), false);
 			if (enclosingPath != null)
 				navigationHistoryService.record(enclosingPath);
@@ -178,9 +181,9 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 			}
 		});
 
-		// Keep control-click navigation consistent across JVM and Android decompiler panes.
+		// Keep shortcut-click navigation consistent across JVM and Android decompiler panes.
 		addEventFilter(MouseEvent.MOUSE_CLICKED, e -> {
-			if (e.getButton() == MouseButton.PRIMARY && e.isControlDown()) {
+			if (e.getButton() == MouseButton.PRIMARY && e.isShortcutDown()) {
 				// Resolve what the caret position has, then handle navigating to the resulting path.
 				AstResolveResult result = contextActionSupport.resolvePosition(editor.getCodeArea().getCaretPosition());
 				if (result != null) {
@@ -204,6 +207,23 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 		// Layout
 		setCenter(editor);
+	}
+
+	/**
+	 * @return Editor showing the decompiled code.
+	 */
+	@Nonnull
+	public Editor getEditor() {
+		return editor;
+	}
+
+	/**
+	 * @param recordsNavigationHistory
+	 * 		{@code false} to keep caret movement in this pane out of the back/forward navigation history,
+	 * 		for panes that show code as a preview rather than as the place the user is working in.
+	 */
+	public void setRecordsNavigationHistory(boolean recordsNavigationHistory) {
+		this.recordsNavigationHistory = recordsNavigationHistory;
 	}
 
 	@Nonnull

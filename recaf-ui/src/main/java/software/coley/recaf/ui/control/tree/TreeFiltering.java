@@ -57,7 +57,7 @@ public class TreeFiltering {
 				filter.clear();
 			} else if (e.getCode() == KeyCode.ENTER) {
 				// no-op, allow tree may have key-bind action for 'enter'
-			} else if (!(e.isControlDown() || e.isAltDown()) && text != null && !text.isEmpty()) {
+			} else if (!(e.isControlDown() || e.isMetaDown() || e.isAltDown()) && text != null && !text.isEmpty()) {
 				// If no mask key is held down, request focus for the filter.
 				filter.requestFocus();
 			}

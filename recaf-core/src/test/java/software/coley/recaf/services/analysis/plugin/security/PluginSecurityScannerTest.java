@@ -3,24 +3,33 @@ package software.coley.recaf.services.analysis.plugin.security;
 import jakarta.annotation.Nonnull;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Opcodes;
 import software.coley.recaf.info.StubFileInfo;
+import software.coley.recaf.info.builder.FileInfoBuilder;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.services.compile.CompilerDiagnostic;
 import software.coley.recaf.services.compile.CompilerResult;
 import software.coley.recaf.services.compile.JavacArgumentsBuilder;
 import software.coley.recaf.services.compile.JavacCompiler;
+import software.coley.recaf.services.workspace.io.ResourceImporter;
 import software.coley.recaf.test.TestBase;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.util.io.ByteSources;
+import software.coley.recaf.util.io.ZipCreationUtils;
+import software.coley.recaf.workspace.model.bundle.BasicFileBundle;
 import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResourceBuilder;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -240,6 +249,42 @@ class PluginSecurityScannerTest extends TestBase {
 				public class ModuleLoader extends ClassLoader {
 					public Class<?> load(byte[] code) { return defineClass(null, code, 0, code.length); }
 				}""");
+		plugin("payload/Stager", """
+				public class Stager extends ClassLoader {
+					public Class<?> load() throws Exception {
+						try (var in = Stager.class.getResourceAsStream("/data/payload.bin")) {
+							byte[] code = in.readAllBytes();
+							return defineClass(null, code, 0, code.length);
+						}
+					}
+				}""");
+		plugin("payload/BareName", """
+				public class BareName extends ClassLoader {
+					public Class<?> load(java.io.InputStream in) throws Exception {
+						byte[] code = in.readAllBytes();
+						System.out.println("payload.bin");
+						return defineClass(null, code, 0, code.length);
+					}
+				}""");
+		plugin("payload/Reader", """
+				public class Reader {
+					public int size() throws Exception {
+						try (var in = Reader.class.getResourceAsStream("data/payload.bin")) {
+							return in.readAllBytes().length;
+						}
+					}
+				}""");
+		plugin("payload/Substring", """
+				public class Substring extends ClassLoader {
+					public Class<?> load(byte[] code) {
+						System.out.println("see data/payload.bin.bak or my-data/payload.bin");
+						return defineClass(null, code, 0, code.length);
+					}
+				}""");
+		plugin("payload/NativeStager", """
+				public class NativeStager {
+					public void load() { System.load("natives/helper.bin"); }
+				}""");
 		for (int i = 0; i < 25; i++)
 			plugin("strings/C" + i, "public class C" + i + " { static String s(String in) { return new String(java.util.Base64.getDecoder().decode(in)); } }");
 	}
@@ -423,6 +468,244 @@ class PluginSecurityScannerTest extends TestBase {
 			assertTrue(report.findings().get(i - 1).severity().isAtLeast(report.findings().get(i).severity()),
 					"Out of order at " + i);
 		assertEquals(Severity.CRITICAL, report.findings().getFirst().severity());
+	}
+
+	@Test
+	void importerPutsDisguisedClassesInTheClassBundleAndKeepsOtherFilesAsFiles() throws IOException {
+		Map<String, byte[]> entries = new LinkedHashMap<>();
+		entries.put("data/hidden.dat", classBytes("hidden/Payload"));
+		entries.put("a/Honest.class", classBytes("a/Honest"));
+		entries.put("assets/update.bin", ZipCreationUtils.createZip(Map.of("x.txt", "hello".getBytes())));
+		entries.put("lib/fine.jar", ZipCreationUtils.createZip(Map.of("x.txt", "hello".getBytes())));
+		entries.put("natives/helper.dat", elf());
+		entries.put("natives/libhelper.so", elf());
+		WorkspaceResource resource = recaf.get(ResourceImporter.class).importResource(ByteSources.wrap(ZipCreationUtils.createZip(entries)));
+
+		assertNotNull(resource.getJvmClassBundle().get("hidden/Payload"), "Class content is imported as a class whatever the name");
+		assertNull(resource.getFileBundle().get("data/hidden.dat"));
+		assertEquals(2, resource.getEmbeddedResources().size(), "ZIP content is imported as an embedded resource whatever the name");
+		assertEquals("data/hidden.dat", ResourcePayloadScanner.originalPath(resource.getJvmClassBundle().get("hidden/Payload")));
+		assertEquals("a/Honest.class", ResourcePayloadScanner.originalPath(resource.getJvmClassBundle().get("a/Honest")));
+
+		PluginSecurityReport report = PluginSecurityScanner.scan(new BasicWorkspace(resource), false);
+		assertEquals(List.of("data/hidden.dat"), files(report, SecurityRule.DISGUISED_CLASS));
+		assertEquals(List.of("assets/update.bin"), files(report, SecurityRule.DISGUISED_ARCHIVE));
+		assertEquals(List.of("natives/helper.dat"), files(report, SecurityRule.DISGUISED_BINARY));
+		assertEquals(List.of("natives/libhelper.so"), files(report, SecurityRule.NATIVE_BINARY));
+		assertEquals(Severity.HIGH, only(report, SecurityRule.DISGUISED_CLASS).severity());
+		assertEquals("class file, Java 17", only(report, SecurityRule.DISGUISED_CLASS).detail());
+		assertEquals(Severity.MEDIUM, only(report, SecurityRule.DISGUISED_ARCHIVE).severity());
+		assertEquals(Severity.HIGH, only(report, SecurityRule.DISGUISED_BINARY).severity());
+		assertEquals(Severity.MEDIUM, only(report, SecurityRule.NATIVE_BINARY).severity());
+		assertNull(only(report, SecurityRule.DISGUISED_CLASS).location());
+		assertEquals(6, report.filesScanned(), "Two native files, two archives, and the file in each archive");
+	}
+
+	@Test
+	void classContentInTheFileBundleIsDisguisedToo() {
+		PluginSecurityReport report = scanFiles("none", Map.of("data/blob.bin", classBytes("hidden/Payload"), "x/Real.class", classBytes("x/Real")));
+
+		assertEquals(List.of("data/blob.bin"), files(report, SecurityRule.DISGUISED_CLASS));
+	}
+
+	@Test
+	void nativeBinariesAreMediumUnderHonestNamesAndHighUnderOthers() {
+		PluginSecurityReport report = scanFiles("none", Map.of(
+				"natives/own.so", elf(), "natives/fake.png", elf(), "natives/a.dll", pe(), "natives/b.txt", pe(),
+				"natives/c.dylib", fatMachO(), "natives/d.cfg", fatMachO()));
+
+		assertEquals(List.of("natives/a.dll", "natives/c.dylib", "natives/own.so"), files(report, SecurityRule.NATIVE_BINARY));
+		assertEquals(List.of("natives/b.txt", "natives/d.cfg", "natives/fake.png"), files(report, SecurityRule.DISGUISED_BINARY));
+		assertTrue(report.ofRule(SecurityRule.DISGUISED_CLASS).isEmpty(), "A universal binary is not a class file");
+	}
+
+	@Test
+	void highEntropyBlobsAreFlaggedButKnownFormatsAndSmallFilesAreNot() throws IOException {
+		byte[] noise = randomBytes(40 * 1024);
+		byte[] png = noise.clone();
+		System.arraycopy(new byte[]{(byte) 0x89, 'P', 'N', 'G'}, 0, png, 0, 4);
+		Map<String, byte[]> files = new LinkedHashMap<>();
+		files.put("data/blob.bin", noise);
+		files.put("img/logo.png", png);
+		files.put("data/zipped.bin.zip", ZipCreationUtils.createZip(Map.of("n", noise)));
+		files.put("data/small.bin", randomBytes(1000));
+		files.put("data/plain.txt", "lorem ipsum ".repeat(5000).getBytes());
+		PluginSecurityReport report = scanFiles("none", files);
+
+		SecurityFinding blob = only(report, SecurityRule.HIGH_ENTROPY_RESOURCE);
+		assertEquals("data/blob.bin", blob.file());
+		assertEquals(Severity.LOW, blob.severity());
+		assertTrue(blob.detail().endsWith(", 40 KB"), blob.detail());
+		assertTrue(report.ofRule(SecurityRule.DISGUISED_ARCHIVE).isEmpty());
+	}
+
+	@Test
+	void classNamingAFileAndDefiningClassesIsAPayloadLoader() {
+		PluginSecurityReport report = scanFiles("payload/Stager", Map.of("data/payload.bin", classBytes("hidden/Payload")));
+
+		SecurityFinding loader = only(report, SecurityRule.PAYLOAD_LOADER);
+		assertEquals(Severity.CRITICAL, loader.severity());
+		assertTrue(loader.rule().isCombined());
+		assertEquals("data/payload.bin", loader.file());
+		assertEquals("payload/Stager", loader.location().className());
+		assertTrue(loader.evidence().stream().anyMatch(f -> f.rule() == SecurityRule.DISGUISED_CLASS && "data/payload.bin".equals(f.file())));
+		assertTrue(loader.evidence().stream().anyMatch(f -> f.rule() == SecurityRule.DEFINE_CLASS));
+		assertEquals("payload/Stager", only(report, SecurityRule.DISGUISED_CLASS).location().className());
+	}
+
+	@Test
+	void theBareFileNameCountsAsNamingTheFile() {
+		PluginSecurityReport report = scanFiles("payload/BareName", Map.of("data/payload.bin", classBytes("hidden/Payload")));
+
+		assertEquals("payload/BareName", only(report, SecurityRule.PAYLOAD_LOADER).location().className());
+	}
+
+	@Test
+	void classOnlyReadingTheFileIsNotAPayloadLoaderButIsShownAsTheReader() {
+		PluginSecurityReport report = scanFiles("payload/Reader", Map.of("data/payload.bin", classBytes("hidden/Payload")));
+
+		assertTrue(report.ofRule(SecurityRule.PAYLOAD_LOADER).isEmpty());
+		SecurityFinding file = only(report, SecurityRule.DISGUISED_CLASS);
+		assertEquals("payload/Reader", file.location().className());
+		assertTrue(file.location().isMethod());
+	}
+
+	@Test
+	void substringMatchesDoNotNameTheFile() {
+		PluginSecurityReport report = scanFiles("payload/Substring", Map.of("data/payload.bin", classBytes("hidden/Payload")));
+
+		assertTrue(report.ofRule(SecurityRule.PAYLOAD_LOADER).isEmpty());
+		assertNull(only(report, SecurityRule.DISGUISED_CLASS).location());
+	}
+
+	@Test
+	void loadingANativeFileNeedsANativeLoad() {
+		PluginSecurityReport report = scanFiles("payload/NativeStager", Map.of("natives/helper.bin", elf()));
+
+		SecurityFinding loader = only(report, SecurityRule.PAYLOAD_LOADER);
+		assertEquals("natives/helper.bin", loader.file());
+		assertTrue(loader.evidence().stream().anyMatch(f -> f.rule() == SecurityRule.DISGUISED_BINARY));
+		assertTrue(loader.evidence().stream().anyMatch(f -> f.rule() == SecurityRule.NATIVE_LIBRARY));
+
+		PluginSecurityReport definesOnly = scanFiles("payload/Stager", Map.of("data/payload.bin", elf()));
+		assertTrue(definesOnly.ofRule(SecurityRule.PAYLOAD_LOADER).isEmpty(), "Defining classes does not run a native file");
+		assertEquals("payload/Stager", only(definesOnly, SecurityRule.DISGUISED_BINARY).location().className());
+	}
+
+	@Test
+	void nativeLibrariesOfBundledLibrariesAreMarked() {
+		Map<String, byte[]> files = Map.of(
+				"org/sqlite/native/Linux/x86_64/libsqlitejdbc.so", elf(),
+				"com/sun/jna/linux-x86-64/libjnidispatch.so", elf(),
+				"META-INF/native/libnetty_epoll.so", elf(),
+				"natives/own.so", elf());
+		PluginSecurityReport report = scanFiles("none", files);
+
+		assertEquals(4, report.ofRule(SecurityRule.NATIVE_BINARY).size());
+		for (SecurityFinding finding : report.ofRule(SecurityRule.NATIVE_BINARY))
+			assertEquals(!finding.file().equals("natives/own.so"), finding.library(), finding.file());
+
+		PluginSecurityReport skipped = PluginSecurityScanner.scan(workspaceOf("none", files), true);
+		assertEquals(List.of("natives/own.so"), files(skipped, SecurityRule.NATIVE_BINARY));
+	}
+
+	@Test
+	void filesInEmbeddedJarsAreScannedAndMarked() {
+		BasicFileBundle innerFiles = new BasicFileBundle();
+		innerFiles.initialPut(new FileInfoBuilder<>().withName("data/x.dat").withRawContent(elf()).build());
+		WorkspaceFileResource inner = new WorkspaceFileResourceBuilder()
+				.withFileInfo(new StubFileInfo("lib/inner.jar"))
+				.withFileBundle(innerFiles)
+				.build();
+		WorkspaceFileResource disguised = new WorkspaceFileResourceBuilder()
+				.withFileInfo(new StubFileInfo("lib/inner.dat"))
+				.build();
+		WorkspaceResource outer = new WorkspaceResourceBuilder()
+				.withEmbeddedResources(Map.of("lib/inner.jar", inner, "lib/inner.dat", disguised))
+				.build();
+		PluginSecurityReport report = PluginSecurityScanner.scan(new BasicWorkspace(outer), false);
+
+		SecurityFinding binary = only(report, SecurityRule.DISGUISED_BINARY);
+		assertEquals("data/x.dat", binary.file());
+		assertEquals("lib/inner.jar", binary.embeddedIn());
+		SecurityFinding archive = only(report, SecurityRule.DISGUISED_ARCHIVE);
+		assertEquals("lib/inner.dat", archive.file());
+		assertNull(archive.embeddedIn());
+	}
+
+	@Test
+	void findingsNeedACodeLocationOrAFile() {
+		assertThrows(IllegalArgumentException.class,
+				() -> new SecurityFinding(SecurityRule.NATIVE_BINARY, null, null, List.of(), false, null, null));
+
+		SecurityFinding finding = new SecurityFinding(SecurityRule.NATIVE_BINARY, null, "ELF shared object", List.of(), false, null, "natives/own.so");
+		assertTrue(finding.searchText().contains("natives/own.so"));
+		assertTrue(finding.searchText().contains("native-binary"));
+	}
+
+	@Nonnull
+	private static PluginSecurityReport scanFiles(@Nonnull String classPrefix, @Nonnull Map<String, byte[]> files) {
+		return PluginSecurityScanner.scan(workspaceOf(classPrefix, files), false);
+	}
+
+	@Nonnull
+	private static Workspace workspaceOf(@Nonnull String classPrefix, @Nonnull Map<String, byte[]> files) {
+		BasicFileBundle fileBundle = new BasicFileBundle();
+		files.forEach((name, content) -> fileBundle.initialPut(new FileInfoBuilder<>().withName(name).withRawContent(content).build()));
+		BasicJvmClassBundle classes = new BasicJvmClassBundle();
+		compiled.forEach((name, bytecode) -> {
+			if (!name.startsWith("org/") && name.startsWith(classPrefix))
+				classes.initialPut(new JvmClassInfoBuilder(bytecode).build());
+		});
+		return new BasicWorkspace(new WorkspaceResourceBuilder().withJvmClassBundle(classes).withFileBundle(fileBundle).build());
+	}
+
+	@Nonnull
+	private static List<String> files(@Nonnull PluginSecurityReport report, @Nonnull SecurityRule rule) {
+		return report.ofRule(rule).stream().map(SecurityFinding::file).sorted().toList();
+	}
+
+	@Nonnull
+	private static byte[] classBytes(@Nonnull String name) {
+		ClassWriter writer = new ClassWriter(0);
+		writer.visit(Opcodes.V17, Opcodes.ACC_PUBLIC, name, null, "java/lang/Object", null);
+		writer.visitEnd();
+		return writer.toByteArray();
+	}
+
+	@Nonnull
+	private static byte[] elf() {
+		byte[] bytes = new byte[64];
+		System.arraycopy(new byte[]{0x7F, 'E', 'L', 'F', 2, 1}, 0, bytes, 0, 6);
+		bytes[16] = 3;
+		return bytes;
+	}
+
+	@Nonnull
+	private static byte[] pe() {
+		byte[] bytes = new byte[256];
+		bytes[0] = 'M';
+		bytes[1] = 'Z';
+		bytes[0x3C] = (byte) 0x80;
+		bytes[0x80] = 'P';
+		bytes[0x81] = 'E';
+		return bytes;
+	}
+
+	@Nonnull
+	private static byte[] fatMachO() {
+		byte[] bytes = new byte[4096 + 32];
+		System.arraycopy(new byte[]{(byte) 0xCA, (byte) 0xFE, (byte) 0xBA, (byte) 0xBE, 0, 0, 0, 1}, 0, bytes, 0, 8);
+		bytes[18] = 0x10;
+		System.arraycopy(new byte[]{(byte) 0xCF, (byte) 0xFA, (byte) 0xED, (byte) 0xFE}, 0, bytes, 4096, 4);
+		return bytes;
+	}
+
+	@Nonnull
+	private static byte[] randomBytes(int size) {
+		byte[] bytes = new byte[size];
+		new Random(99).nextBytes(bytes);
+		return bytes;
 	}
 
 	@Nonnull
