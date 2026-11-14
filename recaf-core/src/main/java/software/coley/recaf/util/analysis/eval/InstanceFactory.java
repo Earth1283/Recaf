@@ -28,10 +28,12 @@ import javax.crypto.CipherOutputStream;
 import javax.crypto.KeyGenerator;
 import javax.crypto.Mac;
 import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.DESKeySpec;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -103,6 +105,9 @@ public class InstanceFactory extends BasicLookupUtils {
 	 */
 	@SuppressWarnings("all")
 	private void registerMethodHandlers() {
+		// An evaluator-owned counter; no host threads or shared state are involved.
+		registerMethodHandler("java/util/concurrent/atomic/AtomicInteger", "get", "()I", (ReFrame frame, ReValue host, AtomicInteger receiver, List<ReValue> args) -> i(receiver.get()));
+		registerMethodHandler("java/util/concurrent/atomic/AtomicInteger", "incrementAndGet", "()I", (ReFrame frame, ReValue host, AtomicInteger receiver, List<ReValue> args) -> i(receiver.incrementAndGet()));
 		// java.lang.String
 		registerMethodHandler("java/lang/String", "equals", "(Ljava/lang/Object;)Z", (ReFrame frame, ReValue host, String receiver, List<ReValue> args) -> z(receiver.equals(objl((ObjectValue) args.get(0)))));
 		registerMethodHandler("java/lang/String", "length", "()I", (ReFrame frame, ReValue host, String receiver, List<ReValue> args) -> i(receiver.length()));
@@ -1518,7 +1523,13 @@ public class InstanceFactory extends BasicLookupUtils {
 		registerMapper(ArrayList.class, "()V", (host, parameters) -> new ArrayList());
 		registerMapper(ArrayList.class, "(I)V", (host, parameters) -> new ArrayList(i((IntValue) parameters.get(0))));
 
+		// java.util.concurrent.atomic.AtomicInteger
+		registerMapper(AtomicInteger.class, "()V", (host, parameters) -> new AtomicInteger());
+		registerMapper(AtomicInteger.class, "(I)V", (host, parameters) -> new AtomicInteger(i((IntValue) parameters.get(0))));
+
 		// javax.crypto.spec
+		registerMapper(DESKeySpec.class, "([B)V", (host, parameters) -> new DESKeySpec(arrb(parameters.get(0))));
+		registerMapper(DESKeySpec.class, "([BI)V", (host, parameters) -> new DESKeySpec(arrb(parameters.get(0)), i((IntValue) parameters.get(1))));
 		registerMapper(SecretKeySpec.class, "([BLjava/lang/String;)V", (host, parameters) -> new SecretKeySpec(arrb(parameters.get(0)), str((ObjectValue) parameters.get(1))));
 		registerMapper(SecretKeySpec.class, "([BIILjava/lang/String;)V", (host, parameters) -> new SecretKeySpec(arrb(parameters.get(0)), i((IntValue) parameters.get(1)), i((IntValue) parameters.get(2)), str((ObjectValue) parameters.get(3))));
 		registerMapper(GCMParameterSpec.class, "(I[B)V", (host, parameters) -> new GCMParameterSpec(i((IntValue) parameters.get(0)), arrb(parameters.get(1))));

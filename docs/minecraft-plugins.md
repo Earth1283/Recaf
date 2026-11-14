@@ -11,6 +11,7 @@ loadable.
 - [Recovering names in obfuscated plugins](#recovering-names-in-obfuscated-plugins)
 - [Security triage](#security-triage)
 - [Decompiler view](#decompiler-view)
+- [Embedded-JAR readability and bytecode investigation](bytecode-investigation.md)
 - [Configuration](#configuration)
 - [Limitations](#limitations)
 - [For developers](#for-developers)

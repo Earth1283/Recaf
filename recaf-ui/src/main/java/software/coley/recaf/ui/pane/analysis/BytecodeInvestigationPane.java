@@ -1,0 +1,484 @@
+package software.coley.recaf.ui.pane.analysis;
+
+import atlantafx.base.theme.Styles;
+import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
+import jakarta.annotation.PreDestroy;
+import jakarta.enterprise.context.Dependent;
+import jakarta.inject.Inject;
+import javafx.application.Platform;
+import javafx.beans.property.ReadOnlyObjectWrapper;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.collections.transformation.FilteredList;
+import javafx.collections.transformation.SortedList;
+import javafx.geometry.Insets;
+import javafx.scene.control.*;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+import javafx.scene.layout.*;
+import javafx.util.StringConverter;
+import software.coley.recaf.path.ClassMemberPathNode;
+import software.coley.recaf.path.PathNode;
+import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationReport;
+import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationReport.*;
+import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationService;
+import software.coley.recaf.services.analysis.bytecode.ReadableWorkspaceService;
+import software.coley.recaf.services.navigation.Actions;
+import software.coley.recaf.services.navigation.Navigable;
+import software.coley.recaf.services.workspace.WorkspaceManager;
+import software.coley.recaf.util.Lang;
+import software.coley.recaf.util.threading.ThreadPoolFactory;
+import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.workspace.model.bundle.ClassBundle;
+import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
+import software.coley.recaf.workspace.model.resource.WorkspaceResource;
+
+import java.util.*;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+
+/** Resource-aware investigation of obfuscation, bootstrap families, and string-helper call sites. */
+@Dependent
+public class BytecodeInvestigationPane extends BorderPane implements Navigable {
+	private final Workspace workspace;
+	private final BytecodeInvestigationService service;
+	private final ReadableWorkspaceService readability;
+	private final WorkspaceManager workspaces;
+	private final Actions actions;
+	private final ExecutorService worker = ThreadPoolFactory.newSingleThreadExecutor("bytecode-investigation");
+	private final AtomicInteger generation = new AtomicInteger();
+	private final AtomicInteger detailGeneration = new AtomicInteger();
+	private final ComboBox<ResourceChoice> resource = new ComboBox<>();
+	private final TextField search = new TextField();
+	private final CheckBox includeStandard = new CheckBox();
+	private final Label summary = new Label();
+	private final Label status = new Label();
+	private final TextArea details = new TextArea();
+	private final TextArea evaluation = new TextArea();
+	private final TabPane tabs = new TabPane();
+	private final TableView<MethodProfile> methods = new TableView<>();
+	private final TableView<CallSite> dynamicCalls = new TableView<>();
+	private final TableView<CallSite> stringCalls = new TableView<>();
+	private final TableView<BootstrapGroup> bootstraps = new TableView<>();
+	private final ObservableList<MethodProfile> allMethods = FXCollections.observableArrayList();
+	private final ObservableList<CallSite> allDynamic = FXCollections.observableArrayList();
+	private final ObservableList<CallSite> allStrings = FXCollections.observableArrayList();
+	private final ObservableList<BootstrapGroup> allBootstraps = FXCollections.observableArrayList();
+	private final FilteredList<MethodProfile> methodItems = new FilteredList<>(allMethods);
+	private final FilteredList<CallSite> dynamicItems = new FilteredList<>(allDynamic);
+	private final FilteredList<CallSite> stringItems = new FilteredList<>(allStrings);
+	private final FilteredList<BootstrapGroup> bootstrapItems = new FilteredList<>(allBootstraps);
+	private final SimpleObjectProperty<ClassMemberPathNode> selectedCaller = new SimpleObjectProperty<>();
+	private final SimpleObjectProperty<ClassMemberPathNode> selectedTarget = new SimpleObjectProperty<>();
+	private final SimpleObjectProperty<CallSite> selectedCall = new SimpleObjectProperty<>();
+	private final Spinner<Integer> budget = new Spinner<>(100, 1_000_000, 100_000, 10_000);
+	private final CheckBox initializeClasses = new CheckBox();
+	private final Button evaluate = button("evaluate", this::evaluate);
+	private final Button familySites = button("family-sites", this::showFamily);
+	private final Button readableCopy = button("readable-copy", this::openReadableCopy);
+	private final CheckBox readableAliases = new CheckBox();
+	private BytecodeInvestigationReport report = BytecodeInvestigationReport.EMPTY;
+	private BootstrapGroup selectedFamily;
+	private BootstrapGroup familyFilter;
+	private boolean rebuilding;
+	private volatile boolean disabled;
+	private boolean evaluating;
+
+	@Inject
+	public BytecodeInvestigationPane(@Nonnull WorkspaceManager workspaces, @Nonnull BytecodeInvestigationService service,
+	                                 @Nonnull ReadableWorkspaceService readability, @Nonnull Actions actions) {
+		workspace = Objects.requireNonNull(workspaces.getCurrent(), "No workspace is open");
+		this.service = service;
+		this.readability = readability;
+		this.workspaces = workspaces;
+		this.actions = actions;
+		setPadding(new Insets(8));
+		search.setId("investigate-search");
+		resource.setId("investigate-resource");
+		includeStandard.setId("investigate-standard");
+		search.setPromptText(text("search"));
+		search.textProperty().addListener((_, _, _) -> filter());
+		includeStandard.setText(text("standard"));
+		includeStandard.selectedProperty().addListener((_, _, _) -> filter());
+		resource.setConverter(new StringConverter<>() {
+			@Override public String toString(ResourceChoice choice) { return choice == null ? "" : choice.name(); }
+			@Override public ResourceChoice fromString(String value) { return null; }
+		});
+		resource.setMaxWidth(Double.MAX_VALUE);
+		HBox.setHgrow(resource, Priority.ALWAYS);
+		resource.getItems().addAll(resourceChoices(workspace.getPrimaryResource()));
+		resource.getSelectionModel().selectFirst();
+		resource.valueProperty().addListener((_, _, _) -> rescan());
+		HBox resources = new HBox(8, resource, button("rescan", this::rescan), button("copy-report", () -> copy(summaryReport())));
+		HBox filters = new HBox(8, search, includeStandard, button("all-sites", () -> { familyFilter = null; search.clear(); filter(); }));
+		HBox.setHgrow(search, Priority.ALWAYS);
+		summary.getStyleClass().add(Styles.TITLE_4);
+		summary.setWrapText(true);
+		status.getStyleClass().add(Styles.TEXT_SUBTLE);
+		readableAliases.setText(text("readable-aliases"));
+		readableAliases.setSelected(true);
+		Label copyHint = new Label(text("readable-hint"));
+		copyHint.setWrapText(true);
+		copyHint.getStyleClass().add(Styles.TEXT_SUBTLE);
+		FlowPane readabilityTools = new FlowPane(8, 8, readableCopy, readableAliases, button("cancel", () -> {
+			generation.incrementAndGet();
+			detailGeneration.incrementAndGet();
+			tabs.setDisable(false);
+			status.setText(text("cancelled"));
+		}));
+		VBox header = new VBox(8, resources, summary, filters, readabilityTools, copyHint, status);
+		header.setPadding(new Insets(0, 0, 8, 0));
+		setTop(header);
+
+		configureTables();
+		details.setEditable(false);
+		details.setWrapText(false);
+		details.setStyle("-fx-font-family: 'JetBrains Mono';");
+		details.setId("bytecode-investigation-details");
+		evaluation.setEditable(false);
+		evaluation.setPrefRowCount(5);
+		evaluation.setPromptText(text("evaluation-hint"));
+		Button openCaller = button("open-caller", () -> open(selectedCaller.get(), false));
+		Button openTarget = button("open-target", () -> open(selectedTarget.get(), false));
+		Button bytecode = button("bytecode", () -> open(selectedCaller.get(), true));
+		Button graph = button("callgraph", this::openGraph);
+		openCaller.disableProperty().bind(selectedCaller.isNull());
+		openTarget.disableProperty().bind(selectedTarget.isNull());
+		bytecode.disableProperty().bind(selectedCaller.isNull());
+		graph.disableProperty().bind(selectedCaller.isNull());
+		FlowPane navigation = new FlowPane(8, 8, openCaller, openTarget, bytecode, graph,
+				button("copy-details", () -> copy(details.getText() + "\n\n" + evaluation.getText())), familySites);
+		familySites.setDisable(true);
+		initializeClasses.setText(text("initializers"));
+		budget.setEditable(false);
+		budget.setPrefWidth(125);
+		FlowPane evaluationControls = new FlowPane(8, 8, evaluate, new Label(text("budget")), budget, initializeClasses);
+		evaluate.setDisable(true);
+		VBox inspector = new VBox(8, navigation, details, evaluationControls, evaluation);
+		VBox.setVgrow(details, Priority.ALWAYS);
+		SplitPane split = new SplitPane(tabs, inspector);
+		split.setDividerPositions(0.57);
+		setCenter(split);
+		rescan();
+	}
+
+	private void openReadableCopy() {
+		if (disabled || resource.getValue() == null) return;
+		int version = generation.incrementAndGet();
+		detailGeneration.incrementAndGet();
+		WorkspaceResource target = resource.getValue().resource();
+		int steps = budget.getValue();
+		boolean aliases = readableAliases.isSelected();
+		readableCopy.setDisable(true);
+		status.setText(text("building-copy"));
+		worker.execute(() -> {
+			try {
+				var result = readability.build(workspace, target, steps, aliases, () -> disabled || version != generation.get(), progress ->
+						Platform.runLater(() -> { if (!disabled && version == generation.get()) status.setText(localizeProgress(progress)); }));
+				Platform.runLater(() -> {
+					readableCopy.setDisable(false);
+					if (disabled || version != generation.get()) { result.workspace().close(); return; }
+					if (workspaces.setCurrent(result.workspace())) {
+						try { actions.gotoDeclaration(result.workspace().findFile("RECAF-READABILITY.txt")); }
+						catch (Exception ignored) { /* The report remains in the file tree. */ }
+					} else {
+						result.workspace().close();
+						status.setText(text("open-copy-failed"));
+					}
+				});
+			} catch (Exception error) {
+				Platform.runLater(() -> {
+					readableCopy.setDisable(false);
+					if (!disabled && version == generation.get()) status.setText(text("failed") + ": " + error.getMessage());
+				});
+			}
+		});
+	}
+
+	private void configureTables() {
+		column(methods, "method", MethodProfile::methodName, 360);
+		column(methods, "score", MethodProfile::score, 65);
+		column(methods, "dynamic-count", MethodProfile::dynamicCalls, 70);
+		column(methods, "bitwise", MethodProfile::bitwise, 70);
+		column(methods, "crypto", MethodProfile::cryptoCalls, 70);
+		column(methods, "instructions", MethodProfile::instructions, 95);
+		column(methods, "resource", MethodProfile::resource, 220);
+		installItems(methods, methodItems);
+		methods.getSelectionModel().selectedItemProperty().addListener((_, _, value) -> { if (!rebuilding && value != null) select(value); });
+		for (TableView<CallSite> table : List.of(dynamicCalls, stringCalls)) {
+			column(table, "caller", site -> site.method().methodName(), 340);
+			column(table, "instruction", CallSite::instruction, 80);
+			column(table, "target", CallSite::targetName, 380);
+			column(table, "resource", site -> site.method().resource(), 220);
+			table.getSelectionModel().selectedItemProperty().addListener((_, _, value) -> { if (!rebuilding && value != null) select(value); });
+		}
+		installItems(dynamicCalls, dynamicItems);
+		installItems(stringCalls, stringItems);
+		column(bootstraps, "target", group -> group.target().owner() + "." + group.target().name() + group.target().desc(), 470);
+		column(bootstraps, "sites", group -> group.sites().size(), 80);
+		column(bootstraps, "resource", BootstrapGroup::resource, 220);
+		installItems(bootstraps, bootstrapItems);
+		bootstraps.getSelectionModel().selectedItemProperty().addListener((_, _, group) -> { if (!rebuilding && group != null) select(group); });
+		tabs.getTabs().addAll(tab("hotspots", methods), tab("dynamic", dynamicCalls), tab("families", bootstraps), tab("strings", stringCalls));
+		tabs.getSelectionModel().selectedItemProperty().addListener((_, _, tab) -> {
+			clearSelection();
+			detailGeneration.incrementAndGet();
+			if (tab == null || !(tab.getContent() instanceof TableView<?> table)) return;
+			Object value = table.getSelectionModel().getSelectedItem();
+			if (value instanceof MethodProfile method) select(method);
+			else if (value instanceof CallSite site) select(site);
+			else if (value instanceof BootstrapGroup group) select(group);
+		});
+		for (TableView<?> table : List.of(methods, dynamicCalls, stringCalls, bootstraps)) {
+			table.setPlaceholder(new Label(text("empty")));
+			table.setOnMouseClicked(event -> { if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) open(selectedCaller.get(), false); });
+			table.setOnKeyPressed(event -> { if (event.getCode() == KeyCode.ENTER) open(selectedCaller.get(), false); });
+		}
+	}
+
+	private void rescan() {
+		if (disabled || resource.getValue() == null) return;
+		int version = generation.incrementAndGet();
+		detailGeneration.incrementAndGet();
+		familyFilter = null;
+		clearSelection();
+		tabs.setDisable(true);
+		status.setText(text("scanning"));
+		WorkspaceResource target = resource.getValue().resource();
+		worker.execute(() -> {
+			try {
+				BytecodeInvestigationReport scanned = service.analyze(workspace, target, () -> disabled || version != generation.get());
+				Platform.runLater(() -> {
+					if (disabled || version != generation.get()) return;
+					report = scanned;
+					rebuilding = true;
+					allMethods.setAll(report.methods());
+					allDynamic.setAll(report.callSites().stream().filter(CallSite::dynamic).toList());
+					allStrings.setAll(report.callSites().stream().filter(site -> !site.dynamic()).toList());
+					allBootstraps.setAll(report.bootstraps());
+					rebuilding = false;
+					summary.setText(String.format(text("summary"), report.classes(), report.methods().size(),
+							report.callSites().stream().filter(site -> site.dynamic() && !site.standardBootstrap()).count(), report.bootstraps().stream().filter(group -> group.sites().stream().anyMatch(site -> !site.standardBootstrap())).count()));
+					tabs.setDisable(false);
+					filter();
+					details.setText(summaryReport());
+				});
+			} catch (CancellationException ignored) {
+				// A newer scan or a closed pane owns the result now.
+			} catch (Exception error) {
+				Platform.runLater(() -> {
+					if (disabled || version != generation.get()) return;
+					tabs.setDisable(false);
+					status.setText(text("failed") + ": " + error.getMessage());
+				});
+			}
+		});
+	}
+
+	private void filter() {
+		detailGeneration.incrementAndGet();
+		rebuilding = true;
+		for (TableView<?> table : List.of(methods, dynamicCalls, stringCalls, bootstraps)) table.getSelectionModel().clearSelection();
+		clearSelection();
+		String query = search.getText().strip().toLowerCase(Locale.ROOT);
+		methodItems.setPredicate(method -> contains(query, method.methodName(), method.resource()));
+		dynamicItems.setPredicate(site -> (includeStandard.isSelected() || !site.standardBootstrap())
+				&& (familyFilter == null || (site.target().equals(familyFilter.target()) && site.method().resource().equals(familyFilter.resource())))
+				&& contains(query, site.method().methodName(), site.targetName(), site.name(), site.descriptor(), site.method().resource(), site.bootstrapArguments().toString()));
+		stringItems.setPredicate(site -> contains(query, site.method().methodName(), site.targetName(), site.method().resource()));
+		bootstrapItems.setPredicate(group -> (includeStandard.isSelected() || group.sites().stream().anyMatch(site -> !site.standardBootstrap()))
+				&& contains(query, group.target().owner(), group.target().name(), group.resource()));
+		rebuilding = false;
+		status.setText(String.format(text("shown"), methodItems.size(), dynamicItems.size(), stringItems.size(), report.failures().size())
+				+ (familyFilter == null ? "" : " · " + text("family-filter")));
+	}
+
+	private void clearSelection() {
+		selectedCaller.set(null);
+		selectedTarget.set(null);
+		selectedCall.set(null);
+		selectedFamily = null;
+		familySites.setDisable(true);
+		evaluate.setDisable(true);
+		details.clear();
+		evaluation.clear();
+	}
+
+	private void select(MethodProfile method) {
+		clearSelection();
+		detailGeneration.incrementAndGet();
+		selectedCaller.set(method.path());
+		details.setText(method.methodName() + "\nResource: " + method.resource() + "\n\nInstructions: " + method.instructions()
+				+ "\nBranches/switches: " + method.branches() + "\nException handlers: " + method.handlers()
+				+ "\nBitwise operations/helpers: " + method.bitwise() + "\nDynamic calls: " + method.dynamicCalls()
+				+ "\nEncoded-looking literals: " + method.encodedStrings() + "\nCrypto API calls: " + method.cryptoCalls()
+				+ "\nReflection/method-handle API calls: " + method.reflectionCalls() + "\nClass-loading API calls: " + method.loadingCalls()
+				+ "\nString-helper candidate: " + method.stringHelper() + "\n\n" + text("indicators"));
+	}
+
+	private void select(CallSite site) {
+		clearSelection();
+		selectedCall.set(site);
+		selectedCaller.set(site.method().path());
+		selectedTarget.set(BytecodeInvestigationService.resolve(workspace, site.method().path(), site.target()));
+		evaluate.setDisable(site.dynamic() || evaluating);
+		int version = detailGeneration.incrementAndGet();
+		details.setText(text("loading-details"));
+		worker.execute(() -> {
+			try {
+				String content = service.describe(site);
+				Platform.runLater(() -> { if (!disabled && version == detailGeneration.get()) details.setText(content); });
+			} catch (Exception error) {
+				Platform.runLater(() -> { if (!disabled && version == detailGeneration.get()) details.setText(error.toString()); });
+			}
+		});
+	}
+
+	private void select(BootstrapGroup group) {
+		clearSelection();
+		detailGeneration.incrementAndGet();
+		selectedFamily = group;
+		selectedCaller.set(group.declaration());
+		selectedTarget.set(group.declaration());
+		familySites.setDisable(false);
+		StringBuilder text = new StringBuilder(group.target().owner() + "." + group.target().name() + group.target().desc())
+				.append("\nResource: ").append(group.resource()).append("\nCall sites: ").append(group.sites().size()).append("\n\nCallers:\n");
+		group.sites().stream().map(site -> site.method().methodName()).distinct().limit(40).forEach(name -> text.append(name).append('\n'));
+		text.append("\n").append(text("bootstrap-hint"));
+		details.setText(text.toString());
+	}
+
+	private void showFamily() {
+		if (selectedFamily == null) return;
+		familyFilter = selectedFamily;
+		search.clear();
+		filter();
+		tabs.getSelectionModel().select(1);
+	}
+
+	private void evaluate() {
+		CallSite site = selectedCall.get();
+		if (site == null || site.dynamic() || evaluating) return;
+		int version = detailGeneration.get();
+		int steps = budget.getValue();
+		boolean initialize = initializeClasses.isSelected();
+		evaluating = true;
+		evaluate.setDisable(true);
+		evaluation.setText(text("evaluating"));
+		worker.execute(() -> {
+			Evaluation result = service.evaluate(workspace, site, steps, initialize);
+			Platform.runLater(() -> {
+				if (disabled) return;
+				evaluating = false;
+				evaluate.setDisable(selectedCall.get() == null || selectedCall.get().dynamic());
+				if (version != detailGeneration.get()) return;
+				evaluation.setText(result.status() + " · " + result.instructions() + " instructions\nInputs: " + result.arguments()
+						+ (result.value() == null ? "" : "\n\n" + BytecodeInvestigationService.literal(result.value())) + "\n\n" + result.explanation());
+			});
+		});
+	}
+
+	private void open(ClassMemberPathNode path, boolean bytecode) {
+		if (path == null) return;
+		try {
+			if (bytecode) actions.openAssembler(path);
+			else actions.gotoDeclaration(path);
+		} catch (Exception error) { status.setText(text("failed") + ": " + error.getMessage()); }
+	}
+
+	private void openGraph() {
+		ClassMemberPathNode path = selectedCaller.get();
+		if (path == null) return;
+		actions.openMethodCallGraphTree(workspace, path.getValueOfType(WorkspaceResource.class), path.getValueOfType(ClassBundle.class),
+				path.getParent().getValue(), path.getValueAsMethod());
+	}
+
+	private String summaryReport() {
+		StringBuilder text = new StringBuilder("BYTECODE INVESTIGATION\nResource: ")
+				.append(resource.getValue() == null ? "" : resource.getValue().name()).append('\n').append(summary.getText())
+				.append("\n\n").append(text("indicators")).append("\n\nBootstrap families:\n");
+		report.bootstraps().stream().limit(50).forEach(group -> text.append(group.sites().size()).append(" sites · ").append(group.target()).append(" · ").append(group.resource()).append('\n'));
+		text.append("\nMethods with highest indicator counts:\n");
+		report.methods().stream().limit(50).forEach(method -> text.append(method.score()).append(" · ").append(method.methodName()).append(" · ").append(method.resource()).append('\n'));
+		if (!report.failures().isEmpty()) text.append("\nScan failures:\n").append(String.join("\n", report.failures()));
+		return text.toString();
+	}
+
+	private static <T> void installItems(TableView<T> table, FilteredList<T> items) {
+		SortedList<T> sorted = new SortedList<>(items);
+		sorted.comparatorProperty().bind(table.comparatorProperty());
+		table.setItems(sorted);
+	}
+
+	private static <T, V> void column(TableView<T> table, String key, Function<T, V> value, double width) {
+		TableColumn<T, V> column = new TableColumn<>(text(key));
+		column.setCellValueFactory(cell -> new ReadOnlyObjectWrapper<>(value.apply(cell.getValue())));
+		column.setPrefWidth(width);
+		table.getColumns().add(column);
+	}
+
+	private static Tab tab(String key, javafx.scene.Node content) {
+		Tab tab = new Tab(text(key), content);
+		tab.setClosable(false);
+		return tab;
+	}
+
+	private static boolean contains(String query, String... fields) {
+		return query.isEmpty() || Arrays.stream(fields).anyMatch(field -> field.toLowerCase(Locale.ROOT).contains(query));
+	}
+
+	private static Button button(String key, Runnable action) {
+		Button button = new Button(text(key));
+		button.setId("investigate-" + key);
+		button.setOnAction(_ -> action.run());
+		return button;
+	}
+
+	private static String text(String key) { return Lang.get("investigate." + key); }
+
+	private static String localizeProgress(String progress) {
+		String[] parts = progress.split(" · ");
+		if (parts.length > 1 && Lang.has("deobf." + parts[1])) parts[1] = Lang.get("deobf." + parts[1]);
+		return String.join(" · ", parts);
+	}
+
+	private static void copy(String text) {
+		ClipboardContent content = new ClipboardContent();
+		content.putString(text);
+		Clipboard.getSystemClipboard().setContent(content);
+	}
+
+	private static List<ResourceChoice> resourceChoices(WorkspaceResource root) {
+		List<ResourceChoice> choices = new ArrayList<>();
+		Set<WorkspaceResource> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+		Deque<ResourceChoice> queue = new ArrayDeque<>();
+		queue.add(new ResourceChoice(root, root instanceof WorkspaceFileResource file ? file.getFileInfo().getName() : Lang.get("investigate.primary")));
+		while (!queue.isEmpty()) {
+			ResourceChoice choice = queue.removeFirst();
+			if (!seen.add(choice.resource())) continue;
+			choices.add(choice);
+			choice.resource().getEmbeddedResources().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry ->
+					queue.addLast(new ResourceChoice(entry.getValue(), choice.name() + " > " + entry.getKey())));
+		}
+		return choices;
+	}
+
+	private record ResourceChoice(WorkspaceResource resource, String name) {}
+
+	@Override public boolean isTrackable() { return false; }
+	@Nullable @Override public PathNode<?> getPath() { return PathNodes.workspacePath(workspace); }
+	@Nonnull @Override public Collection<Navigable> getNavigableChildren() { return List.of(); }
+	@Override @PreDestroy public void disable() {
+		disabled = true;
+		generation.incrementAndGet();
+		detailGeneration.incrementAndGet();
+		worker.shutdownNow();
+	}
+}

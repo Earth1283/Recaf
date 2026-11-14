@@ -81,6 +81,7 @@ import software.coley.recaf.ui.pane.ConfigPane;
 import software.coley.recaf.ui.pane.WorkspaceExplorerPane;
 import software.coley.recaf.ui.pane.WorkspaceInformationPane;
 import software.coley.recaf.ui.pane.analysis.AreaAnalysisPane;
+import software.coley.recaf.ui.pane.analysis.BytecodeInvestigationPane;
 import software.coley.recaf.ui.pane.analysis.CommentEditPane;
 import software.coley.recaf.ui.pane.analysis.CommentListPane;
 import software.coley.recaf.ui.pane.analysis.DocumentationPane;
@@ -174,6 +175,7 @@ public class Actions implements Service {
 	private final Instance<AssemblerPane> assemblerPaneProvider;
 	private final Instance<WorkspaceInformationPane> infoPaneProvider;
 	private final Instance<AreaAnalysisPane> areaAnalysisPaneProvider;
+	private final Instance<BytecodeInvestigationPane> bytecodeInvestigationPaneProvider;
 	private final Instance<CommentEditPane> commentPaneProvider;
 	private final Instance<CommentListPane> commentListPaneProvider;
 	private final Instance<ConfigPane> configPaneProvider;
@@ -210,6 +212,7 @@ public class Actions implements Service {
 	               @Nonnull Instance<AssemblerPane> assemblerPaneProvider,
 	               @Nonnull Instance<WorkspaceInformationPane> infoPaneProvider,
 	               @Nonnull Instance<AreaAnalysisPane> areaAnalysisPaneProvider,
+	               @Nonnull Instance<BytecodeInvestigationPane> bytecodeInvestigationPaneProvider,
 	               @Nonnull Instance<CommentEditPane> commentPaneProvider,
 	               @Nonnull Instance<CommentListPane> commentListPaneProvider,
 	               @Nonnull Instance<ConfigPane> configPaneProvider,
@@ -241,6 +244,7 @@ public class Actions implements Service {
 		this.assemblerPaneProvider = assemblerPaneProvider;
 		this.infoPaneProvider = infoPaneProvider;
 		this.areaAnalysisPaneProvider = areaAnalysisPaneProvider;
+		this.bytecodeInvestigationPaneProvider = bytecodeInvestigationPaneProvider;
 		this.commentPaneProvider = commentPaneProvider;
 		this.commentListPaneProvider = commentListPaneProvider;
 		this.configPaneProvider = configPaneProvider;
@@ -742,6 +746,29 @@ public class Actions implements Service {
 			content.setResult(target, result);
 		else
 			content.selectResource(target);
+		content.requestFocus();
+	}
+
+	/** Opens the resource-aware bytecode investigation tools in a workspace tab. */
+	public void openBytecodeInvestigation() {
+		if (!workspaceManager.hasCurrentWorkspace())
+			return;
+		for (DockablePath path : dockingManager.getBento().search().allDockables()) {
+			if (path.dockable().nodeProperty().get() instanceof BytecodeInvestigationPane pane) {
+				path.leafContainer().selectDockable(path.dockable());
+				pane.requestFocus();
+				return;
+			}
+		}
+		BytecodeInvestigationPane content = bytecodeInvestigationPaneProvider.get();
+		Dockable dockable = createDockable(dockingManager.getPrimaryDockingContainer(), getBinding("investigate.title"),
+				d -> new FontIconView(CarbonIcons.SEARCH), content);
+		dockable.addCloseListener((_, _) -> bytecodeInvestigationPaneProvider.destroy(content));
+		dockable.setContextMenuFactory(d -> {
+			ContextMenu menu = new ContextMenu();
+			addCloseActions(menu, d);
+			return menu;
+		});
 		content.requestFocus();
 	}
 

@@ -59,6 +59,14 @@ public class InheritanceGraph {
 	 * 		Workspace to pull classes from.
 	 */
 	public InheritanceGraph(@Nonnull Workspace workspace) {
+		this(workspace, true);
+	}
+
+	/**
+	 * @param workspace Workspace to index.
+	 * @param observeChanges Whether to register listeners for subsequent workspace changes. Disable for short-lived analyses.
+	 */
+	public InheritanceGraph(@Nonnull Workspace workspace, boolean observeChanges) {
 		this.workspace = workspace;
 		this.workspaceNodeProvider = new ClassPathNodeProvider.Live(workspace);
 
@@ -71,9 +79,11 @@ public class InheritanceGraph {
 
 		// Add listeners to primary resource so when classes update we keep our graph up to date.
 		WorkspaceResource primaryResource = workspace.getPrimaryResource();
-		primaryResource.addResourceJvmClassListener(listener);
-		primaryResource.addResourceAndroidClassListener(listener);
-		workspace.addWorkspaceModificationListener(listener);
+		if (observeChanges) {
+			primaryResource.addResourceJvmClassListener(listener);
+			primaryResource.addResourceAndroidClassListener(listener);
+			workspace.addWorkspaceModificationListener(listener);
+		}
 
 		// Populate downwards (parent --> child) lookup
 		rebuildParentChildIndex();

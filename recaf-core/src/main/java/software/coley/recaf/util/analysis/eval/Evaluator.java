@@ -83,6 +83,7 @@ public class Evaluator {
 	private final int maxSteps;
 	private final Map<String, ClassNode> classNodeOverrides = new ConcurrentHashMap<>();
 	private List<ClassMethodPair> callStackSeed;
+	private boolean allowUnsupportedUnreachableInstructions;
 
 	/**
 	 * @param workspace
@@ -140,6 +141,17 @@ public class Evaluator {
 	}
 
 	/**
+	 * Allows attempting methods with unsupported instructions in unused branches. Every reached instruction still
+	 * requires evaluator support; reaching an unsupported instruction fails evaluation before it executes.
+	 * The shared instruction budget and unknown-branch checks continue to apply. Disabled by default.
+	 *
+	 * @param allow Whether to check support along the executed path instead of rejecting the entire method up front.
+	 */
+	public void setAllowUnsupportedUnreachableInstructions(boolean allow) {
+		allowUnsupportedUnreachableInstructions = allow;
+	}
+
+	/**
 	 * Registers a listener for successfully executed instructions.
 	 *
 	 * @param listener
@@ -157,7 +169,8 @@ public class Evaluator {
 	 * @param methodDescriptor
 	 * 		Descriptor of the target method.
 	 *
-	 * @return {@code true} when all instructions in the method can be evaluated.
+	 * @return {@code true} when all instructions are supported, or the method can be attempted with support checks
+	 * along its executed path when {@link #setAllowUnsupportedUnreachableInstructions(boolean)} is enabled.
 	 */
 	public boolean canEvaluate(@Nonnull String className,
 	                           @Nonnull String methodName,
@@ -194,13 +207,15 @@ public class Evaluator {
 	 * @param method
 	 * 		Method to check for evaluation support.
 	 *
-	 * @return {@code true} when all instructions in the method can be evaluated.
+	 * @return {@code true} when all instructions are supported, or the method can be attempted with support checks
+	 * along its executed path when {@link #setAllowUnsupportedUnreachableInstructions(boolean)} is enabled.
 	 */
 	public boolean canEvaluate(@Nonnull MethodNode method) {
 		// Cannot be abstract, native, or have no instructions.
 		if (AccessFlag.isAbstract(method.access) || AccessFlag.isNative(method.access)
 				|| method.instructions == null || method.instructions.size() == 0)
 			return false;
+		if (allowUnsupportedUnreachableInstructions) return true;
 
 		// Must not have any unsupported instructions
 		ExecutingFrame frame = new ExecutingFrame(method, new EvaluationContext(this, maxSteps), null);
@@ -441,7 +456,10 @@ public class Evaluator {
 				return EvaluationResult.cannotEvaluate("Unknown passed parameter type at index " + i);
 			int expectedSort = argumentTypes[i].getSort();
 			int actualSort = parameterType.getSort();
-			if (expectedSort != actualSort && !(expectedSort <= Type.INT && actualSort < Type.INT))
+			// The JVM represents boolean, byte, char, short, and int arguments with the same int stack type.
+			boolean intCompatible = expectedSort >= Type.BOOLEAN && expectedSort <= Type.INT
+					&& actualSort >= Type.BOOLEAN && actualSort <= Type.INT;
+			if (expectedSort != actualSort && !intCompatible)
 				return EvaluationResult.cannotEvaluate("Mismatched parameter type at index " + i);
 		}
 
@@ -1432,6 +1450,8 @@ public class Evaluator {
 		public AbstractInsnNode evaluate(@Nonnull AbstractInsnNode insn, @Nonnull ReInterpreter interpreter)
 				throws AnalyzerException, NoNextException, UnknownValueException,
 				ExceptionHandler.ThrownException, NestedEvaluationFailure {
+			if (allowUnsupportedUnreachableInstructions && method != null && !canEvaluateInsn(insn, interpreter, method.instructions))
+				throw new AnalyzerException(insn, "Reached unsupported instruction: " + JvmPrinterUtil.toString(insn));
 			ReValue implicitException = exceptionHandler.knownFault(insn, this);
 			if (implicitException != null)
 				return exceptionHandler.routeException(this, implicitException, insn);
@@ -1707,6 +1727,10 @@ public class Evaluator {
 							throw new NestedEvaluationFailure(EvaluationResult.cannotEvaluate(
 									"Invoke-special call could not be resolved: " + min.owner + '.' + min.name + min.desc));
 
+						if (allowUnsupportedUnreachableInstructions && (interpreter.getInvokeVirtualLookup() == null
+								|| !interpreter.getInvokeVirtualLookup().hasLookup(min)))
+							throw new AnalyzerException(min, "Reached unsupported special target: " + min.owner + '.' + min.name + min.desc);
+
 						// Fall back to normal interpreter execution, which can handle some remaining cases, including value lookups.
 						// - Need to unmap values here since the underlying lookup system doesn't know how to handle our wrapped values.
 						valueList.addFirst(receiver);
@@ -1824,6 +1848,9 @@ public class Evaluator {
 							}
 						}
 
+						if (allowUnsupportedUnreachableInstructions)
+							throw new AnalyzerException(min, "Reached unsupported instance target: " + min.owner + '.' + min.name + min.desc);
+
 						// Fall back to normal interpreter execution, operating on unmapped values.
 						// - Need to unmap values here since the underlying lookup system doesn't know how to handle our wrapped values.
 						valueList.addFirst(receiver);
@@ -1914,6 +1941,9 @@ public class Evaluator {
 									yield exceptionHandler.routeException(this, thrown.exception(), insn);
 								}
 								case EvaluationFailureResult failure -> {
+									// Path-based support checking must propagate an unsupported nested operation,
+									// rather than letting an unknown return value hide that failed operation.
+									if (allowUnsupportedUnreachableInstructions) throw new NestedEvaluationFailure(failure);
 									// No-op, fallthrough will attempt to handle this.
 								}
 							}
@@ -1931,6 +1961,9 @@ public class Evaluator {
 								yield exceptionHandler.routeException(this, exceptionHandler.newThrowable(t), insn);
 							}
 						}
+
+						if (allowUnsupportedUnreachableInstructions)
+							throw new AnalyzerException(min, "Reached unsupported static target: " + min.owner + '.' + min.name + min.desc);
 
 						// Fall back to normal interpreter execution, operating on unmapped values.
 						// - Need to unmap values here since the underlying lookup system doesn't know how to handle our wrapped values.

@@ -90,6 +90,125 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class EvaluatorTest extends TransformerTestBase {
 	@Test
+	void supportedPathsCanSkipUnsupportedBranchesButNeverExecuteThem() {
+		compile("""
+								static String decode(int branch) {
+				    if (branch == 0) return "readable";
+				    try {
+				        System.setProperty("recaf.evaluator.unsupported-side-effect", "executed");
+				    } catch (Throwable ignored) { return "caught"; }
+				    return "executed";
+				}
+				static native void nativeSideEffect();
+				static String nativeCall() { nativeSideEffect(); return "must not succeed"; }
+				static String nested(int branch) { return decode(branch); }
+				static String loop(int branch) { while (branch == 0) {} return System.getenv("PATH"); }
+				""");
+		Evaluator evaluator = createEvaluator(List.of(), 100);
+		assertFalse(evaluator.canEvaluate(CLASS_NAME, "decode", "(I)Ljava/lang/String;"));
+		evaluator.setAllowUnsupportedUnreachableInstructions(true);
+		assertTrue(evaluator.canEvaluate(CLASS_NAME, "decode", "(I)Ljava/lang/String;"));
+		for (String method : List.of("decode", "nested")) {
+			EvaluationResult known = evaluator.evaluate(CLASS_NAME, method, "(I)Ljava/lang/String;", null, List.of(IntValue.of(0)));
+			assertStringValue("readable", assertInstanceOf(EvaluationYieldResult.class, known).value());
+			EvaluationFailureResult unsupported = assertInstanceOf(EvaluationFailureResult.class,
+					evaluator.evaluate(CLASS_NAME, method, "(I)Ljava/lang/String;", null, List.of(IntValue.of(1))));
+			assertTrue(unsupported.cause().getCause().getMessage().contains("Reached unsupported instruction"));
+			assertUnknownBranchFailure(evaluator.evaluate(CLASS_NAME, method, "(I)Ljava/lang/String;", null, List.of(IntValue.UNKNOWN)));
+		}
+		assertNull(System.getProperty("recaf.evaluator.unsupported-side-effect"));
+		assertInstanceOf(EvaluationFailureResult.class, evaluator.evaluate(CLASS_NAME, "nativeCall", "()Ljava/lang/String;", null, List.of()));
+		assertInstanceOf(EvaluationFailureResult.class, evaluator.evaluate(CLASS_NAME, "loop", "(I)Ljava/lang/String;", null, List.of(IntValue.of(0))));
+		evaluator.setAllowUnsupportedUnreachableInstructions(false);
+		assertFalse(evaluator.canEvaluate(CLASS_NAME, "decode", "(I)Ljava/lang/String;"));
+	}
+
+	@Test
+	void isolatedAtomicCountersSupportStringDecoders() {
+		String compiled = compile("""
+				static int count(int initial) {
+				    java.util.concurrent.atomic.AtomicInteger counter = new java.util.concurrent.atomic.AtomicInteger(initial);
+				    counter.incrementAndGet();
+				    return counter.get();
+				}
+				static int zero() { return new java.util.concurrent.atomic.AtomicInteger().incrementAndGet(); }
+				""");
+		assertIntValue(8, evaluate(compiled, "count", "(I)I", null, List.of(IntValue.of(7))));
+		assertIntValue(Integer.MIN_VALUE, evaluate(compiled, "count", "(I)I", null, List.of(IntValue.of(Integer.MAX_VALUE))));
+		assertIntValue(8, evaluate(compiled, "count", "(I)I", null, List.of(IntValue.of(7))));
+		assertIntValue(1, evaluate(compiled, "zero", "()I", null, List.of()));
+	}
+
+	@Test
+	void wideValuesUseLogicalOperandIndicesForFaultPrediction() {
+		String compiled = compile("""
+				static long[] longs = {7L, 9L};
+				static double[] doubles = {1.5, 2.5};
+				long field;
+				static String initialized() { return longs[1] + ":" + doubles[0]; }
+				static long storeLong() { long[] a = new long[1]; a[0] = 17L; return a[0]; }
+				static double storeDouble() { double[] a = new double[1]; a[0] = 3.5; return a[0]; }
+				static int caughtBounds() {
+				    try { long[] a = new long[1]; a[1] = 17L; return 0; }
+				    catch (ArrayIndexOutOfBoundsException expected) { return 1; }
+				}
+				static int caughtNull() {
+				    try { double[] a = null; a[0] = 3.5; return 0; }
+				    catch (NullPointerException expected) { return 2; }
+				}
+				static int caughtField() {
+				    try { Example instance = null; instance.field = 5L; return 0; }
+				    catch (NullPointerException expected) { return 3; }
+				}
+				static int caughtInvocation() {
+				    try { StringBuilder builder = null; builder.append(5L); return 0; }
+				    catch (NullPointerException expected) { return 4; }
+				}
+				""");
+		assertLongValue(17L, evaluate(compiled, "storeLong", "()J", null, List.of()));
+		assertDoubleValue(3.5, evaluate(compiled, "storeDouble", "()D", null, List.of()));
+		assertIntValue(1, evaluate(compiled, "caughtBounds", "()I", null, List.of()));
+		assertIntValue(2, evaluate(compiled, "caughtNull", "()I", null, List.of()));
+		assertIntValue(3, evaluate(compiled, "caughtField", "()I", null, List.of()));
+		assertIntValue(4, evaluate(compiled, "caughtInvocation", "()I", null, List.of()));
+		EvaluationResult initialized = evaluateResult(compiled, "initialized", "()Ljava/lang/String;", null, List.of(), true);
+		assertStringValue("9:1.5", assertInstanceOf(EvaluationYieldResult.class, initialized).value());
+	}
+
+	@Test
+	void acceptsJvmIntStackValuesForNarrowParametersAndRejectsWideValues() {
+		String compiled = compile("""
+				static int narrow(boolean z, byte b, char c, short s) { return (z ? 1 : 0) + b + c + s; }
+				static int nested() { return narrow(true, (byte) 2, (char) 3, (short) 4); }
+				""");
+		assertIntValue(10, evaluate(compiled, "narrow", "(ZBCS)I", null,
+				List.of(IntValue.of(1), IntValue.of(2), IntValue.of(3), IntValue.of(4))));
+		assertIntValue(10, evaluate(compiled, "nested", "()I", null, List.of()));
+		assertInstanceOf(EvaluationFailureResult.class, evaluateResult(compiled, "narrow", "(ZBCS)I", null,
+				List.of(LongValue.of(1), IntValue.of(2), IntValue.of(3), IntValue.of(4))));
+	}
+
+	@Test
+	void supportsDesKeySpecsAndDecodesCiphertext() throws Exception {
+		byte[] key = new byte[] {1,2,3,4,5,6,7,8};
+		Cipher cipher = Cipher.getInstance("DES/CBC/PKCS5Padding");
+		cipher.init(Cipher.ENCRYPT_MODE, SecretKeyFactory.getInstance("DES").generateSecret(new javax.crypto.spec.DESKeySpec(key)), new IvParameterSpec(new byte[8]));
+		String encoded = Base64.getEncoder().encodeToString(cipher.doFinal("readable configuration".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+		String compiled = compile("""
+				static String decode(String text, int offset) throws Exception {
+				    byte[] key = new byte[] {1,2,3,4,5,6,7,8};
+				    javax.crypto.spec.DESKeySpec spec = offset == 0 ? new javax.crypto.spec.DESKeySpec(key) : new javax.crypto.spec.DESKeySpec(new byte[] {0,1,2,3,4,5,6,7,8}, offset);
+				    javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("DES/CBC/PKCS5Padding");
+				    cipher.init(2, javax.crypto.SecretKeyFactory.getInstance("DES").generateSecret(spec), new javax.crypto.spec.IvParameterSpec(new byte[8]));
+				    return new String(cipher.doFinal(java.util.Base64.getDecoder().decode(text)), java.nio.charset.StandardCharsets.UTF_8);
+				}
+				""");
+		for (int offset : new int[] {0, 1})
+			assertStringValue("readable configuration", evaluate(compiled, "decode", "(Ljava/lang/String;I)Ljava/lang/String;", null,
+					List.of(ObjectValue.string(encoded), IntValue.of(offset))));
+	}
+
+	@Test
 	void testSimpleCharArrayToString() {
 		String src = """
 				.method static decrypt (I)Ljava/lang/String; {

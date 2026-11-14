@@ -52,6 +52,7 @@ public class CallResultInliningTransformer implements JvmClassTransformer {
 	public static final String IDENTIFIER = "peephole.data.callinline";
 	public static final String KEY_MAX_STEPS = IDENTIFIER + ".max-steps";
 	public static final String KEY_EVALUATE_CLASS_INITIALIZERS = IDENTIFIER + ".evaluate-class-initializers";
+	public static final String KEY_ALLOW_UNREACHABLE_UNSUPPORTED = IDENTIFIER + ".allow-unreachable-unsupported";
 
 	private static final int DEFAULT_MAX_STEPS = 20_000;
 	private static final boolean DEFAULT_EVALUATE_CLASS_INITIALIZERS = false;
@@ -59,6 +60,8 @@ public class CallResultInliningTransformer implements JvmClassTransformer {
 			new TransformationParameter<>(KEY_MAX_STEPS, int.class, DEFAULT_MAX_STEPS);
 	private static final TransformationParameter<Boolean> EVALUATE_CLASS_INITIALIZERS_PARAMETER =
 			new TransformationParameter<>(KEY_EVALUATE_CLASS_INITIALIZERS, boolean.class, DEFAULT_EVALUATE_CLASS_INITIALIZERS);
+	private static final TransformationParameter<Boolean> ALLOW_UNREACHABLE_UNSUPPORTED_PARAMETER =
+			new TransformationParameter<>(KEY_ALLOW_UNREACHABLE_UNSUPPORTED, boolean.class, false);
 
 	private final InheritanceGraphService graphService;
 
@@ -97,6 +100,7 @@ public class CallResultInliningTransformer implements JvmClassTransformer {
 		installStaticValueCollector(evaluatorInterpreter, staticValueCollector);
 
 		Evaluator evaluator = new Evaluator(workspace, evaluatorInterpreter, fieldCacheManager, maxSteps, false, evaluateClassInitializers);
+		evaluator.setAllowUnsupportedUnreachableInstructions(context.getParameters().getBoolean(KEY_ALLOW_UNREACHABLE_UNSUPPORTED, false));
 		for (MethodNode method : node.methods) {
 			// Skip if abstract.
 			InsnList instructions = method.instructions;
@@ -228,6 +232,6 @@ public class CallResultInliningTransformer implements JvmClassTransformer {
 	@Nonnull
 	@Override
 	public List<TransformationParameter<?>> getParameterDefinitions() {
-		return List.of(MAX_STEPS_PARAMETER, EVALUATE_CLASS_INITIALIZERS_PARAMETER);
+		return List.of(MAX_STEPS_PARAMETER, EVALUATE_CLASS_INITIALIZERS_PARAMETER, ALLOW_UNREACHABLE_UNSUPPORTED_PARAMETER);
 	}
 }

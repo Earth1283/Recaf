@@ -348,12 +348,9 @@ public class ExceptionHandler {
 
 	@Nonnull
 	private static ReValue peekFromTop(@Nonnull ReFrame frame, int offset) {
-		int index = frame.getStackSize() - 1;
-		for (int i = 0; i < offset; i++) {
-			ReValue value = frame.getStack(index);
-			index -= Math.max(1, value.getSize());
-		}
-		return frame.getStack(index);
+		// ASM stores each operand once on the stack, including category-2 long/double values.
+		// Their two-slot size matters for locals and maxStack, not getStack() indices.
+		return frame.getStack(frame.getStackSize() - 1 - offset);
 	}
 
 	private static boolean isNull(@Nullable ReValue value) {

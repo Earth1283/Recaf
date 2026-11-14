@@ -81,6 +81,10 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		itemViewAreas.disableProperty().bind(hasWorkspace.not());
 		getItems().add(itemViewAreas);
 
+		MenuItem itemInvestigate = action("investigate.title", CarbonIcons.SEARCH, actions::openBytecodeInvestigation);
+		itemInvestigate.disableProperty().bind(hasWorkspace.not());
+		getItems().add(itemInvestigate);
+
 		ActionMenuItem itemDeobfuscation = action("menu.analysis.deobfuscation", CarbonIcons.DEVELOPMENT, this::openDeobfuscation);
 		itemDeobfuscation.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 		getItems().add(itemDeobfuscation);
