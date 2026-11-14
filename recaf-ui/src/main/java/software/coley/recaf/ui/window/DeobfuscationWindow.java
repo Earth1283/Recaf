@@ -67,6 +67,7 @@ import software.coley.recaf.services.assembler.JvmAssemblerPipeline;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.config.ConfigComponentFactory;
 import software.coley.recaf.services.config.ConfigComponentManager;
+import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.info.association.FileTypeSyntaxAssociationService;
 import software.coley.recaf.services.navigation.Actions;
@@ -157,6 +158,7 @@ public class DeobfuscationWindow extends RecafStage {
 	private final BooleanProperty hasSelection = new SimpleBooleanProperty();
 	private final IntegerProperty maxPasses = new SimpleIntegerProperty(5);
 	private final BooleanProperty dropFaultyClasses = new SimpleBooleanProperty();
+	private final BooleanProperty previewOnly = new SimpleBooleanProperty();
 	private final ObjectProperty<TransformationPreset.ScopeMode> scopeMode = new SimpleObjectProperty<>(TransformationPreset.ScopeMode.NONE);
 	private final StringProperty packagePrefixes = new SimpleStringProperty("");
 	private final ObjectProperty<FullFeedback> transformFeedback = new SimpleObjectProperty<>();
@@ -165,12 +167,13 @@ public class DeobfuscationWindow extends RecafStage {
 	private final BorderPane stage1Pane = new BorderPane();
 	private final BorderPane stage2Pane = new BorderPane();
 	private final StackPane root = new StackPane();
+	private final VBox bitwiseOptions = new VBox(8);
 	private final TransformPreview beforePreview;
 	private final TransformPreview afterPreview;
 	private Popover activeTransformerInfoPopover;
 	private TreeView<TransformerTreeNode> availableTree;
 
-	private ClassInfo previewClass;
+	private final ObjectProperty<ClassInfo> previewClass = new SimpleObjectProperty<>();
 
 	@Inject
 	public DeobfuscationWindow(@Nonnull TransformationManager transformationManager,
@@ -477,6 +480,12 @@ public class DeobfuscationWindow extends RecafStage {
 		CheckBox dropFaulty = new CheckBox();
 		dropFaulty.selectedProperty().bindBidirectional(dropFaultyClasses);
 		dropFaulty.textProperty().bind(Lang.getBinding("deobf.scope.drop-faulty"));
+		CheckBox runOnPreviewOnly = new CheckBox();
+		runOnPreviewOnly.selectedProperty().bindBidirectional(previewOnly);
+		runOnPreviewOnly.textProperty().bind(Lang.getBinding("deobf.preview.only"));
+		Tooltip previewOnlyHint = new Tooltip();
+		previewOnlyHint.textProperty().bind(Lang.getBinding("deobf.preview.only.description"));
+		runOnPreviewOnly.setTooltip(previewOnlyHint);
 
 		ComboBox<TransformationPreset.ScopeMode> scopeCombo = new ComboBox<>();
 		scopeCombo.setMaxWidth(Integer.MAX_VALUE);
@@ -509,13 +518,14 @@ public class DeobfuscationWindow extends RecafStage {
 		scope.setPadding(new Insets(4));
 		scope.add(new BoundLabel(Lang.getBinding("deobf.max-passes")), 0, 0);
 		scope.add(maxPassesSpinner, 1, 0);
-		scope.add(dropFaulty, 0, 1, 2, 1);
-		scope.add(new BoundLabel(Lang.getBinding("deobf.scope.mode")), 0, 2);
-		scope.add(scopeCombo, 1, 2);
-		scope.add(packageField, 0, 3, 2, 1);
+		scope.add(runOnPreviewOnly, 0, 1, 2, 1);
+		scope.add(dropFaulty, 0, 2, 2, 1);
+		scope.add(new BoundLabel(Lang.getBinding("deobf.scope.mode")), 0, 3);
+		scope.add(scopeCombo, 1, 3);
+		scope.add(packageField, 0, 4, 2, 1);
 
 		// Stack the preview toolbar above the scope grid in the sidebar.
-		VBox side = new VBox(8, previewTools, scope);
+		VBox side = new VBox(8, previewTools, bitwiseOptions, scope);
 		side.setFillWidth(true);
 		side.setPadding(new Insets(4));
 		BorderPane sideWrapper = new BorderPane(side);
@@ -523,12 +533,24 @@ public class DeobfuscationWindow extends RecafStage {
 		// Bottom tools:
 		//  - Go to stage 1 (change transformer selection/order)
 		//  - Save preset for later use
-		//  - Apply to workspace
+		//  - Run the preview or apply to workspace
 		Button back = new ActionButton(CarbonIcons.ARROW_LEFT, Lang.getBinding("deobf.back"), this::showStage1);
 		Button savePreset = new ActionButton(CarbonIcons.SAVE, Lang.getBinding("deobf.save-preset"), this::savePreset);
-		Button apply = new ActionButton(CarbonIcons.PLAY, Lang.getBinding("deobf.apply"), this::applyToWorkspace).async();
+		Button apply = new ActionButton(CarbonIcons.PLAY, () -> {
+			if (previewOnly.get()) {
+				tabs.getSelectionModel().select(afterTab);
+				afterPreview.updatePreview();
+			} else {
+				ThreadUtil.run(this::applyToWorkspace);
+			}
+		});
+		apply.textProperty().bind(Bindings.when(previewOnly)
+				.then(Lang.getBinding("deobf.preview.run"))
+				.otherwise(Lang.getBinding("deobf.apply")));
 		savePreset.disableProperty().bind(hasSelection.not());
-		apply.disableProperty().bind(hasSelection.not().or(transformRunning));
+		apply.disableProperty().bind(hasSelection.not().or(transformRunning)
+				.or(previewOnly.and(previewClass.isNull())));
+		runOnPreviewOnly.disableProperty().bind(transformRunning);
 		HBox bottom = new HBox(8, back, new Spacer(), savePreset, new Spacer(), apply);
 		bottom.setAlignment(Pos.CENTER_RIGHT);
 		bottom.setPadding(new Insets(4));
@@ -548,6 +570,7 @@ public class DeobfuscationWindow extends RecafStage {
 
 		// Refresh previews whenever the execution profile changes.
 		ListChangeListener<SelectedTransformer> selectionListener = change -> {
+			refreshBitwiseOptions();
 			beforePreview.updatePreview();
 			afterPreview.updatePreview();
 		};
@@ -570,6 +593,41 @@ public class DeobfuscationWindow extends RecafStage {
 			beforePreview.updatePreview();
 			afterPreview.updatePreview();
 		});
+		refreshBitwiseOptions();
+	}
+
+	/**
+	 * Shows the optional follow-up steps beside the preview when the bitwise pass is selected.
+	 * The same parameter values are used by the transformer's settings editor and saved presets.
+	 */
+	private void refreshBitwiseOptions() {
+		SelectedTransformer selected = selectedTransformers.stream()
+				.filter(item -> item.descriptor().type() == BitwiseFoldingTransformer.class)
+				.findFirst().orElse(null);
+		bitwiseOptions.getChildren().clear();
+		bitwiseOptions.setVisible(selected != null);
+		bitwiseOptions.setManaged(selected != null);
+		if (selected == null)
+			return;
+
+		CheckBox constantFolding = new CheckBox();
+		constantFolding.textProperty().bind(Lang.getBinding("deobf." + BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING));
+		constantFolding.setSelected(Boolean.TRUE.equals(selected.parameterValues.get(BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING)));
+		constantFolding.disableProperty().bind(transformRunning);
+		CheckBox repeatBitwise = new CheckBox();
+		repeatBitwise.textProperty().bind(Lang.getBinding("deobf." + BitwiseFoldingTransformer.KEY_REPEAT_BITWISE));
+		repeatBitwise.setSelected(Boolean.TRUE.equals(selected.parameterValues.get(BitwiseFoldingTransformer.KEY_REPEAT_BITWISE)));
+		repeatBitwise.disableProperty().bind(constantFolding.selectedProperty().not().or(transformRunning));
+
+		constantFolding.setOnAction(_ -> {
+			selected.parameterValues.put(BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING, constantFolding.isSelected());
+			afterPreview.updatePreview();
+		});
+		repeatBitwise.setOnAction(_ -> {
+			selected.parameterValues.put(BitwiseFoldingTransformer.KEY_REPEAT_BITWISE, repeatBitwise.isSelected());
+			afterPreview.updatePreview();
+		});
+		bitwiseOptions.getChildren().addAll(constantFolding, repeatBitwise);
 	}
 
 	/**
@@ -949,6 +1007,7 @@ public class DeobfuscationWindow extends RecafStage {
 		Button reset = new ActionButton(CarbonIcons.RESET, Lang.getBinding("deobf.reset-params"), () -> {
 			selected.parameterValues.clear();
 			selected.parameterValues.putAll(defaultParameterValues(selected.descriptor()));
+			refreshBitwiseOptions();
 
 			// Resetting bypasses the editor's observable values, so refresh explicitly.
 			beforePreview.updatePreview();
@@ -995,6 +1054,7 @@ public class DeobfuscationWindow extends RecafStage {
 		observable.addChangeListener((ob, old, cur) -> {
 			// Propagate editor changes into the selection.
 			selected.parameterValues.put(parameter.key(), cur);
+			refreshBitwiseOptions();
 
 			// Parameter changes affect the transformed preview just like scope changes do.
 			beforePreview.updatePreview();
@@ -1204,7 +1264,7 @@ public class DeobfuscationWindow extends RecafStage {
 				.map(selected -> new TransformerPreset(selected.descriptor().type().getName(), new HashMap<>(selected.parameterValues)))
 				.toList();
 		return new TransformationPreset(transformerPresets, maxPasses.get(), dropFaultyClasses.get(),
-				scopeMode.get(), parsePrefixes(packagePrefixes.get()));
+				scopeMode.get(), parsePrefixes(packagePrefixes.get()), previewOnly.get());
 	}
 
 	/**
@@ -1257,6 +1317,7 @@ public class DeobfuscationWindow extends RecafStage {
 		selectedTransformers.setAll(resolved);
 		maxPasses.set(preset.maxPasses());
 		dropFaultyClasses.set(preset.dropFaultyClasses());
+		previewOnly.set(preset.previewOnly());
 		scopeMode.set(preset.scopeMode());
 		packagePrefixes.set(String.join(", ", preset.packagePrefixes()));
 		showStage2();
@@ -1323,20 +1384,32 @@ public class DeobfuscationWindow extends RecafStage {
 	 * Opens a class picker and refreshes both preview editors with the selection.
 	 */
 	private void pickPreviewClass() {
-		new ClassSelectionPopup(actions, configurationService, explorerConfig, workspaceManager.getCurrent(), path -> {
-			ClassInfo selection = path.getValue();
-			previewClass = selection;
-			beforePreview.setClassInfo(selection);
-			afterPreview.setClassInfo(selection);
-			beforePreview.updatePreview();
-			afterPreview.updatePreview();
-		}).showAndWait();
+		new ClassSelectionPopup(actions, configurationService, explorerConfig, workspaceManager.getCurrent(),
+				path -> setPreviewClass(path.getValue())).showAndWait();
+	}
+
+	/**
+	 * Sets the class shown by both preview editors and refreshes their contents.
+	 *
+	 * @param selection
+	 * 		Class selected for preview.
+	 */
+	void setPreviewClass(@Nonnull ClassInfo selection) {
+		previewClass.set(selection);
+		beforePreview.setClassInfo(selection);
+		afterPreview.setClassInfo(selection);
+		beforePreview.updatePreview();
+		afterPreview.updatePreview();
 	}
 
 	/**
 	 * Applies the current profile to the workspace and closes the window on success.
 	 */
 	private void applyToWorkspace() {
+		// Keep the commit path unavailable while the profile is configured for preview only.
+		if (previewOnly.get())
+			return;
+
 		// Skip if no workspace is open.
 		TransformationApplier applier = transformationApplierService.newApplierForCurrentWorkspace();
 		if (applier == null) {

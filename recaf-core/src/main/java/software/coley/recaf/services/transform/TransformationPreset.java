@@ -18,12 +18,24 @@ import java.util.Map;
  * 		Package filtering mode for the run.
  * @param packagePrefixes
  * 		Package prefixes used for filtering classes based on {@link #scopeMode}.
+ * @param previewOnly
+ * 		Whether running the profile only refreshes the preview without modifying the workspace.
  *
  * @author Matt Coley
  */
 public record TransformationPreset(@Nonnull List<TransformerPreset> transformers, int maxPasses,
                                    boolean dropFaultyClasses, @Nonnull ScopeMode scopeMode,
-                                   @Nonnull List<String> packagePrefixes) {
+                                   @Nonnull List<String> packagePrefixes, boolean previewOnly) {
+	/**
+	 * Creates a profile that can be applied to the workspace.
+	 * Retains compatibility with callers predating preview-only profiles.
+	 */
+	public TransformationPreset(@Nonnull List<TransformerPreset> transformers, int maxPasses,
+	                            boolean dropFaultyClasses, @Nonnull ScopeMode scopeMode,
+	                            @Nonnull List<String> packagePrefixes) {
+		this(transformers, maxPasses, dropFaultyClasses, scopeMode, packagePrefixes, false);
+	}
+
 	/**
 	 * Package filtering mode for the run.
 	 */

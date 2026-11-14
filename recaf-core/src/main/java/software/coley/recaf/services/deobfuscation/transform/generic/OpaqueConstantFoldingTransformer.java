@@ -92,13 +92,25 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 	private static final InvokeStaticLookup STATIC_METHOD_LOOKUP = new BasicInvokeStaticLookup();
 	private static final InvokeVirtualLookup VIRTUAL_METHOD_LOOKUP = new BasicInvokeVirtualLookup();
 	private final InheritanceGraphService graphService;
+	private final boolean bitwiseOnly;
 	private InheritanceGraph inheritanceGraph;
 	private JvmTransformerContext context;
 	private boolean inlineStringConstructors;
 
 	@Inject
 	public OpaqueConstantFoldingTransformer(@Nonnull InheritanceGraphService graphService) {
+		this(graphService, false);
+	}
+
+	/**
+	 * @param graphService
+	 * 		Service providing the workspace inheritance graph.
+	 * @param bitwiseOnly
+	 * 		Whether to restrict folding to integer/long bitwise operations and their inputs.
+	 */
+	protected OpaqueConstantFoldingTransformer(@Nonnull InheritanceGraphService graphService, boolean bitwiseOnly) {
 		this.graphService = graphService;
+		this.bitwiseOnly = bitwiseOnly;
 	}
 
 	@Override
@@ -138,7 +150,7 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 				} catch (Throwable ignored) {
 					// The second pass can retry analysis, as it did before.
 				}
-				boolean stackDirty = frames != null && pass1StackManipulation(instructions, frames);
+				boolean stackDirty = !bitwiseOnly && frames != null && pass1StackManipulation(instructions, frames);
 				dirty |= stackDirty;
 				// Unchanged instructions have the same frames. Re-analyze only after stack rewrites.
 				dirty |= pass2SequenceFolding(context, node, method, instructions, stackDirty ? null : frames);
@@ -382,7 +394,7 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 			return false;
 		}
 		int endIndex = instructions.size() - 1;
-		if (removeDiscardedSequences(method, instructions, frames, sequence))
+		if (!bitwiseOnly && removeDiscardedSequences(method, instructions, frames, sequence))
 			return true;
 
 		int unknownState = -1;
@@ -390,6 +402,8 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 		for (int i = 1; i < endIndex; i++) {
 			AbstractInsnNode instruction = instructions.get(i);
 			int opcode = instruction.getOpcode();
+			if (bitwiseOnly && !isBitwiseOperation(instruction))
+				continue;
 
 			// Casting preserves the stack size, so it is skipped by the sequence walker below.
 			// Handle known-safe casts separately before looking for value-consuming operations.
@@ -467,6 +481,10 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 				int insnOp = insn.getOpcode();
 				if (insnOp != NOP && insnOp != -1) // Skip adding NOP/Labels
 					sequence.add(insn);
+				if (bitwiseOnly && !isBitwiseInput(insn)) {
+					validSequence = false;
+					break;
+				}
 
 				// Abort if we've walked backwards into instructions where we observed an unknown stack state.
 				// Arrays are a special case since they can be used in the computation of final values of some sequence,
@@ -873,6 +891,36 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 		return below.getSize() == 1
 				&& isKnownDiscardedValue(top)
 				&& isKnownDiscardedValue(below);
+	}
+
+	/**
+	 * @return Whether the instruction is an integer/long bitwise opcode or a supported JDK bit helper.
+	 */
+	private static boolean isBitwiseOperation(@Nonnull AbstractInsnNode insn) {
+		return switch (insn.getOpcode()) {
+			case ISHL, ISHR, IUSHR, LSHL, LSHR, LUSHR, IAND, IOR, IXOR, LAND, LOR, LXOR -> true;
+			case INVOKESTATIC -> insn instanceof MethodInsnNode call
+					&& (call.owner.equals("java/lang/Integer") || call.owner.equals("java/lang/Long"))
+					&& STATIC_METHOD_LOOKUP.hasLookup(call)
+					&& switch (call.name) {
+						case "reverse", "reverseBytes", "rotateLeft", "rotateRight", "bitCount",
+						     "numberOfLeadingZeros", "numberOfTrailingZeros", "highestOneBit", "lowestOneBit",
+						     "compress", "expand" -> true;
+						default -> false;
+					};
+			default -> false;
+		};
+	}
+
+	private static boolean isBitwiseInput(@Nonnull AbstractInsnNode insn) {
+		int opcode = insn.getOpcode();
+		return isBitwiseOperation(insn) || opcode == -1 || opcode == NOP
+				|| (opcode >= ICONST_M1 && opcode <= LCONST_1)
+				|| opcode == BIPUSH || opcode == SIPUSH
+				|| (insn instanceof LdcInsnNode ldc && (ldc.cst instanceof Integer || ldc.cst instanceof Long))
+				|| opcode == ILOAD || opcode == LLOAD || opcode == ISTORE || opcode == LSTORE
+				|| opcode == I2L || opcode == L2I || opcode == I2B || opcode == I2C || opcode == I2S
+				|| (opcode >= POP && opcode <= SWAP);
 	}
 
 	/**

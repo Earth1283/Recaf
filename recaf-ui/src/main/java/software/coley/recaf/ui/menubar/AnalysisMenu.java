@@ -15,6 +15,7 @@ import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import software.coley.recaf.services.analysis.plugin.MinecraftPluginAnalysisService;
 import software.coley.recaf.services.analysis.plugin.MinecraftPluginPlatform;
 import software.coley.recaf.services.navigation.Actions;
+import software.coley.recaf.services.transform.BuiltinTransformationPresets;
 import software.coley.recaf.services.transform.TransformationPreset;
 import software.coley.recaf.services.transform.TransformationPresetManager;
 import software.coley.recaf.services.window.WindowManager;
@@ -83,6 +84,11 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		ActionMenuItem itemDeobfuscation = action("menu.analysis.deobfuscation", CarbonIcons.DEVELOPMENT, this::openDeobfuscation);
 		itemDeobfuscation.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 		getItems().add(itemDeobfuscation);
+
+		ActionMenuItem itemSimplifyBitwise = action("menu.analysis.simplify-bitwise", CarbonIcons.DEVELOPMENT,
+				() -> openPreset(BuiltinTransformationPresets.BITWISE_SIMPLIFICATION));
+		itemSimplifyBitwise.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
+		getItems().add(itemSimplifyBitwise);
 
 		Menu presetMenu = menu("menu.analysis.deobfuscation-presets", new FontIconView(CarbonIcons.SAVE));
 		presetMenu.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not().or(hasPresets.not()));
@@ -179,18 +185,28 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 	}
 
 	/**
-	 * Resolve and apply a saved preset directly to the current workspace.
+	 * Resolve a saved preset and open its preview.
 	 */
 	private void applyPreset(@Nonnull String name) {
 		TransformationPreset preset = presetManager.getPreset(name);
 		if (preset == null)
 			return;
 
+		openPreset(preset);
+	}
+
+	/**
+	 * Open the deobfuscation preview with a preselected profile.
+	 *
+	 * @param preset
+	 * 		Profile to preview and apply.
+	 */
+	private void openPreset(@Nonnull TransformationPreset preset) {
 		DeobfuscationWindow deobfuscationWindow = deobfuscationWindowProvider.get();
 		deobfuscationWindow.setOnCloseRequest(e -> deobfuscationWindowProvider.destroy(deobfuscationWindow));
 		windowManager.registerAnonymous(deobfuscationWindow);
 
-		// Apply before showing so the stage-1 tree initializes with the preset selection.
+		// Apply before showing so the preview opens with the preset selection.
 		deobfuscationWindow.applyPreset(preset);
 		deobfuscationWindow.show();
 		deobfuscationWindow.requestFocus();
