@@ -14,6 +14,7 @@ import software.coley.recaf.services.cell.text.TextProvider;
 import software.coley.recaf.services.cell.text.TextProviderService;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.ui.contextmenu.ContextMenuBuilder;
+import software.coley.recaf.ui.pane.crypto.CryptoTools;
 import software.coley.recaf.util.ClipboardUtil;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.FileBundle;
@@ -29,11 +30,15 @@ import static org.kordamp.ikonli.carbonicons.CarbonIcons.*;
 @ApplicationScoped
 public class BasicFileContextMenuProviderFactory extends AbstractContextMenuProviderFactory
 		implements FileContextMenuProviderFactory {
+	private final CryptoTools cryptoTools;
+
 	@Inject
 	public BasicFileContextMenuProviderFactory(@Nonnull TextProviderService textService,
 											   @Nonnull IconProviderService iconService,
-											   @Nonnull Actions actions) {
+											   @Nonnull Actions actions,
+											   @Nonnull CryptoTools cryptoTools) {
 		super(textService, iconService, actions);
+		this.cryptoTools = cryptoTools;
 	}
 
 	@Nonnull
@@ -70,6 +75,7 @@ public class BasicFileContextMenuProviderFactory extends AbstractContextMenuProv
 				// Export actions
 				builder.infoItem("menu.export.file", EXPORT, actions::exportClass);
 			}
+			menu.getItems().add(cryptoTools.createBytesMenu(info.getName(), info::getRawContent));
 			return menu;
 		};
 	}

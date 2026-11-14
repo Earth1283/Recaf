@@ -55,6 +55,11 @@ shadowJar {
     exclude "META-INF/plugins/*"
     exclude "META-INF/native-image/*"
     exclude "META-INF/*.properties"
+    // Signature files of signed dependencies (Bouncy Castle) are invalid once merged into the fat jar.
+    exclude "META-INF/*.SF"
+    exclude "META-INF/*.DSA"
+    exclude "META-INF/*.RSA"
+    exclude "META-INF/*.EC"
 
     dependencies {
         exclude(dependency(javaFxIncludeInDist ? 'invalid:invalid:invalid' : 'org.openjfx:.*:.*'))

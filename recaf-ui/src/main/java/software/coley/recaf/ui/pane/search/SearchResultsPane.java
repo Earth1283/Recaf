@@ -2,9 +2,12 @@ package software.coley.recaf.ui.pane.search;
 
 import atlantafx.base.theme.Styles;
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuItem;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -18,6 +21,7 @@ import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.search.result.Result;
 import software.coley.recaf.services.search.result.Results;
+import software.coley.recaf.services.search.result.StringResult;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.PathNodeTree;
 import software.coley.recaf.ui.control.tree.TreeItems;
@@ -30,6 +34,10 @@ import software.coley.recaf.workspace.model.Workspace;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Pane presentation for completed search results.
@@ -82,6 +90,11 @@ public class SearchResultsPane extends BorderPane {
 	 */
 	public void setResults(@Nonnull Results results) {
 		model.setResults(results);
+		Map<PathNode<?>, String> stringValues = new HashMap<>();
+		for (Result<?> result : model.getResults())
+			if (result instanceof StringResult stringResult)
+				stringValues.put(result.getPath(), stringResult.getValue());
+		tree.contextMenuExtensionProperty().set(path -> stringValueMenuItems(configurationService, stringValues.get(path)));
 		WorkspaceTreeNode root = new WorkspaceTreeNode(PathNodes.workspacePath(workspace));
 		root.setExpanded(true);
 		for (Result<?> result : model.getResults()) {
@@ -89,6 +102,26 @@ public class SearchResultsPane extends BorderPane {
 			TreeItems.expandParents(node);
 		}
 		tree.setRoot(root);
+	}
+
+	/**
+	 * @param configurationService
+	 * 		Service to create the constant context menu with.
+	 * @param value
+	 * 		Matched string value, or {@code null} when the path is not a string result.
+	 *
+	 * @return Context menu items for the string value, such as searching for it or crypto tools.
+	 */
+	@Nonnull
+	static List<MenuItem> stringValueMenuItems(@Nonnull CellConfigurationService configurationService, @Nullable String value) {
+		if (value == null)
+			return List.of();
+		ContextMenu menu = configurationService.contextMenuOfConstant(value);
+		if (menu == null)
+			return List.of();
+		List<MenuItem> items = new ArrayList<>(menu.getItems());
+		menu.getItems().clear();
+		return items;
 	}
 
 	@Nonnull

@@ -26,6 +26,7 @@ import javafx.scene.control.TableRow;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
 import javafx.scene.input.MouseEvent;
+import javafx.scene.input.ContextMenuEvent;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
@@ -286,6 +287,8 @@ public class StringTablePane extends BorderPane implements Navigable {
 		table.setPlaceholder(new BoundLabel(Lang.getBinding("menu.search.string-table.placeholder")));
 		table.setRowFactory(param -> {
 			TableRow<StringTableItem> row = new TableRow<>();
+			row.addEventFilter(ContextMenuEvent.CONTEXT_MENU_REQUESTED, e -> row.setContextMenu(row.isEmpty() ? null :
+					configurationService.contextMenuOfConstant(row.getItem().value())));
 			row.setOnMousePressed(e -> {
 				if (!row.isEmpty() && e.getButton() == MouseButton.PRIMARY && e.getClickCount() == 2)
 					openLocation(row.getItem().viableLocation());

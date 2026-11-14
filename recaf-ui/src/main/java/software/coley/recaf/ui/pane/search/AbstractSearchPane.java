@@ -41,6 +41,7 @@ import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.search.query.Query;
 import software.coley.recaf.services.search.result.Result;
 import software.coley.recaf.services.search.result.Results;
+import software.coley.recaf.services.search.result.StringResult;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundCheckBox;
@@ -61,8 +62,10 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -80,6 +83,7 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 	private final Actions actions;
 	private final WorkspacePathNode workspacePath;
 	private final SearchOptions searchOptions = new SearchOptions();
+	private final Map<PathNode<?>, String> liveStringValues = new ConcurrentHashMap<>();
 	protected final PathNodeTree liveResultsTree;
 	protected final BooleanProperty liveResults = new SimpleBooleanProperty(true);
 	private final AtomicInteger searchGeneration = new AtomicInteger();
@@ -335,6 +339,8 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 	protected PathNodeTree newTree() {
 		PathNodeTree tree = new PathNodeTree(configurationService, actions);
 		tree.contextSourceObjectPropertyProperty().set(SearchContextSource.SEARCH_INSTANCE);
+		tree.contextMenuExtensionProperty().set(path ->
+				SearchResultsPane.stringValueMenuItems(configurationService, liveStringValues.get(path)));
 		tree.setOnMousePressed(e -> {
 			if (e.getClickCount() == 2 && e.isPrimaryButtonDown()) {
 				var item = tree.getSelectionModel().getSelectedItem();
@@ -420,6 +426,7 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 		if (liveResults.get()) {
 			root = new WorkspaceTreeNode(PathNodes.workspacePath(workspace));
 			root.setExpanded(true);
+			liveStringValues.clear();
 			liveResultsTree.setRoot(root);
 		}
 		WorkspaceTreeNode liveRoot = root;
@@ -437,6 +444,8 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 			feedback = new LiveOnlySearchFeedback(optionsSnapshot, resultFilter, result -> {
 				if (generation != searchGeneration.get() || isDisabled())
 					return;
+				if (result instanceof StringResult stringResult)
+					liveStringValues.put(result.getPath(), stringResult.getValue());
 				WorkspaceTreeNode node = WorkspaceTreeNode.getOrInsertIntoTree(liveRoot, result.getPath());
 				TreeItems.expandParents(node);
 			});

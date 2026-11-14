@@ -13,6 +13,7 @@ dependencies {
     api(libs.bundles.asm)
     api(libs.bundles.dex)
     api(libs.binary.resources)
+    api(libs.bouncycastle)
     api(libs.cafedude)
     api(libs.bundles.cdi)
     api(libs.cfr)

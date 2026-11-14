@@ -6,6 +6,7 @@ assertj = "3.27.7"
 asm = "9.11.1"
 atlantafx = "2.1.0"
 binary-resources = "31.3.0-alpha01.8"
+bouncycastle = "1.79" # Match the bcpkix/bcutil that apkzlib brings in, mixed Bouncy Castle versions fail at runtime
 cafedude = "2.6.7"
 cdi-api = "4.1.0"
 cdi-impl = "6.0.4.Final"
@@ -71,6 +72,8 @@ atlantafx = { module = "io.github.mkpaz:atlantafx-base", version.ref = "atlantaf
 
 # Use our fork of Android's release with fixes and less transitive dependencies
 binary-resources = { module = "com.github.Col-E:binary-resources", version.ref = "binary-resources" }
+
+bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 
 cafedude = { module = "software.coley:cafedude-core", version.ref = "cafedude" }
 

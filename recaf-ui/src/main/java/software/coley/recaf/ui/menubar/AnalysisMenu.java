@@ -23,6 +23,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.ActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.docking.DockingManager;
+import software.coley.recaf.ui.pane.crypto.CryptoTools;
 import software.coley.recaf.ui.pane.plugin.PluginNavigation;
 import software.coley.recaf.ui.window.DeobfuscationWindow;
 import software.coley.recaf.util.FxThreadUtil;
@@ -59,7 +60,8 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 	                    @Nonnull TransformationPresetManager presetManager,
 	                    @Nonnull PluginNavigation pluginNavigation,
 	                    @Nonnull MinecraftPluginAnalysisService pluginAnalysisService,
-	                    @Nonnull Actions actions) {
+	                    @Nonnull Actions actions,
+	                    @Nonnull CryptoTools cryptoTools) {
 		super(workspaceManager);
 
 		this.workspaceManager = workspaceManager;
@@ -99,6 +101,9 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		getItems().add(presetMenu);
 		rebuildPresetMenu(presetMenu);
 		presetManager.getPresets().addChangeListener((ob, old, cur) -> FxThreadUtil.run(() -> rebuildPresetMenu(presetMenu)));
+
+		ActionMenuItem itemCryptoTools = action("menu.analysis.crypto-tools", CarbonIcons.PASSWORD, cryptoTools::open);
+		getItems().add(itemCryptoTools);
 
 		ActionMenuItem itemListComments = action("menu.analysis.list-comments", CarbonIcons.CHAT, actions::openCommentList);
 		itemListComments.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());

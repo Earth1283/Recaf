@@ -12,6 +12,7 @@ import software.coley.recaf.services.search.match.NumberPredicateProvider;
 import software.coley.recaf.services.search.match.StringPredicateProvider;
 import software.coley.recaf.ui.control.ActionMenuItem;
 import software.coley.recaf.ui.control.FontIconView;
+import software.coley.recaf.ui.pane.crypto.CryptoTools;
 import software.coley.recaf.ui.pane.search.NumberSearchPane;
 import software.coley.recaf.ui.pane.search.StringSearchPane;
 import software.coley.recaf.util.Lang;
@@ -23,11 +24,15 @@ import software.coley.recaf.util.Lang;
  */
 @ApplicationScoped
 public class BasicConstantContextMenuProviderFactory extends AbstractContextMenuProviderFactory implements ConstantContextMenuProviderFactory {
+	private final CryptoTools cryptoTools;
+
 	@Inject
 	public BasicConstantContextMenuProviderFactory(@Nonnull TextProviderService textService,
 	                                               @Nonnull IconProviderService iconService,
-	                                               @Nonnull Actions actions) {
+	                                               @Nonnull Actions actions,
+	                                               @Nonnull CryptoTools cryptoTools) {
 		super(textService, iconService, actions);
+		this.cryptoTools = cryptoTools;
 	}
 
 	@Nonnull
@@ -42,6 +47,7 @@ public class BasicConstantContextMenuProviderFactory extends AbstractContextMenu
 					pane.stringPredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
 					pane.setSearchValue(stringValue);
 				}));
+				menu.getItems().add(cryptoTools.createStringMenu(stringValue));
 				return menu;
 			};
 		} else if (value instanceof Number numberValue) {
