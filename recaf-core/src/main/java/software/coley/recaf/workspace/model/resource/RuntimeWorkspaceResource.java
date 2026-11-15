@@ -295,6 +295,16 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 		return true;
 	}
 
+	/**
+	 * @param className
+	 * 		Internal class name.
+	 *
+	 * @return {@code true} when the class belongs to the Java runtime image, as opposed to Recaf's own classpath.
+	 */
+	public static boolean isSystemClass(@Nonnull String className) {
+		return hasSystemClass(className);
+	}
+
 	private static boolean hasSystemClass(@Nonnull String key) {
 		return hasClass(systemClassTree, key);
 	}

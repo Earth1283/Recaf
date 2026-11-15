@@ -13,6 +13,7 @@ import software.coley.recaf.services.decompile.BaseDecompilerConfig;
 import software.coley.recaf.util.ExcludeFromJacocoGeneratedReport;
 
 import java.lang.reflect.Field;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -26,6 +27,8 @@ import java.util.Map;
 @SuppressWarnings("all") // ignore unused refs / typos
 @ExcludeFromJacocoGeneratedReport(justification = "Config POJO")
 public class VineflowerConfig extends BaseDecompilerConfig {
+	private Map<String, Object> cachedProperties;
+	private int cachedPropertiesHash;
 	private final ObservableObject<Level> loggingLevel = new ObservableObject<>(Level.WARN);
 	private final ObservableBoolean removeBridge = new ObservableBoolean(true);
 	private final ObservableBoolean removeSynthetic = new ObservableBoolean(true);
@@ -146,7 +149,11 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 	 * @return Map of values to pass to the {@link Fernflower} instance.
 	 */
 	@Nonnull
-	protected Map<String, Object> getFernflowerProperties() {
+	protected synchronized Map<String, Object> getFernflowerProperties() {
+		int hash = getHash();
+		if (cachedProperties != null && cachedPropertiesHash == hash)
+			return cachedProperties;
+
 		Map<String, Object> properties = new HashMap<>(IFernflowerPreferences.DEFAULTS);
 		getValues().forEach((key, value) -> {
 			if (value.getValue() instanceof Boolean bool)
@@ -156,7 +163,13 @@ public class VineflowerConfig extends BaseDecompilerConfig {
 		// We NEVER want kotlin output. It will break our AST parser.
 		properties.put("kt-enable", "0");
 
-		return properties;
+		// Recaf's library source already serves runtime classes on demand. Letting Vineflower add the runtime
+		// itself walks the entire runtime image for every class decompiled.
+		properties.put(IFernflowerPreferences.INCLUDE_JAVA_RUNTIME, "0");
+
+		cachedProperties = Collections.unmodifiableMap(properties);
+		cachedPropertiesHash = hash;
+		return cachedProperties;
 	}
 
 	/**

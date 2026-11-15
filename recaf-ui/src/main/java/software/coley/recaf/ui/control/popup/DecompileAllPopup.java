@@ -34,11 +34,11 @@ import software.coley.recaf.util.FileChooserBuilder;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.util.StringUtil;
-import software.coley.recaf.util.io.ZipCreationUtils;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -50,6 +50,9 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
+import java.util.zip.ZipOutputStream;
 
 /**
  * Popup for initiating decompilation of all classes, saved to a specified location.
@@ -140,8 +143,15 @@ public class DecompileAllPopup extends RecafStage {
 
 				// Decompile all classes. Results arrive on decompiler threads, possibly several at once.
 				JvmDecompiler decompiler = decompilerProperty.getValue();
-				ZipCreationUtils.ZipBuilder builder = ZipCreationUtils.builder();
 				Path path = pathProperty.get();
+				ArchiveSink archive;
+				try {
+					archive = new ArchiveSink(path);
+				} catch (IOException ex) {
+					logger.error("Failed to open '{}' for writing decompiled classes", path, ex);
+					inProgressProperty.setValue(false);
+					return;
+				}
 				targetClasses.forEach(cls -> {
 					String name = cls.getName();
 					decompilerManager.decompile(decompiler, workspace, cls)
@@ -153,17 +163,14 @@ public class DecompileAllPopup extends RecafStage {
 								} else if (result.getException() != null) {
 									logger.error("Failed to decompile '{}'", name, result.getException());
 								} else if (result.getText() != null) {
-									byte[] text = result.getText().getBytes(StandardCharsets.UTF_8);
-									synchronized (builder) {
-										builder.add(name + ".java", text);
-									}
+									archive.write(name + ".java", result.getText());
 								}
 
-								// Only count the class once its output is recorded, so that whichever class finishes
-								// last sees the output of all the others when writing the archive.
+								// Only count the class once its output is written, so that whichever class finishes
+								// last closes the archive after all the others are in it.
 								int remaining = actionedClasses.decrementAndGet();
 								if (remaining == 0)
-									writeArchive(builder, path);
+									archive.close();
 								FxThreadUtil.run(() -> {
 									progress.setProgress(1 - (actionedClasses.doubleValue() / targetCount));
 									if (remaining == 0)
@@ -235,15 +242,49 @@ public class DecompileAllPopup extends RecafStage {
 		this.namePredicate = namePredicate;
 	}
 
-	private static void writeArchive(@Nonnull ZipCreationUtils.ZipBuilder builder, @Nonnull Path path) {
-		try {
-			byte[] archive;
-			synchronized (builder) {
-				archive = builder.bytes();
+	/**
+	 * Writes decompiled classes into the output archive as they arrive, so that the sources of a large workspace are
+	 * never all held in memory at once.
+	 */
+	private static final class ArchiveSink {
+		private final Path path;
+		private final ZipOutputStream zip;
+		private boolean failed;
+
+		private ArchiveSink(@Nonnull Path path) throws IOException {
+			this.path = path;
+			zip = new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(path)));
+		}
+
+		private synchronized void write(@Nonnull String entryName, @Nonnull String text) {
+			if (failed)
+				return;
+			try {
+				zip.putNextEntry(new ZipEntry(entryName));
+			} catch (ZipException ex) {
+				// A duplicate name is rejected before anything is written, so the archive is still usable.
+				logger.warn("Skipping duplicate entry '{}' in '{}'", entryName, path);
+				return;
+			} catch (IOException ex) {
+				failed = true;
+				logger.error("Failed to write decompiled classes to '{}'", path, ex);
+				return;
 			}
-			Files.write(path, archive);
-		} catch (IOException ex) {
-			logger.error("Failed to write archive of decompiled classes to '{}'", path, ex);
+			try {
+				zip.write(text.getBytes(StandardCharsets.UTF_8));
+				zip.closeEntry();
+			} catch (IOException ex) {
+				failed = true;
+				logger.error("Failed to write decompiled classes to '{}'", path, ex);
+			}
+		}
+
+		private synchronized void close() {
+			try {
+				zip.close();
+			} catch (IOException ex) {
+				logger.error("Failed to finish archive of decompiled classes at '{}'", path, ex);
+			}
 		}
 	}
 }

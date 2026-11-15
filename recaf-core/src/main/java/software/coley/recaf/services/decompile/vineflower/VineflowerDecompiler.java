@@ -24,7 +24,6 @@ public class VineflowerDecompiler extends AbstractJvmDecompiler {
 	private final VineflowerConfig config;
 	private final IFernflowerLogger logger;
 	private final IResultSaver dummySaver = new DummyResultSaver();
-	private final WorkspaceEntriesCache workspaceEntriesCache = new WorkspaceEntriesCache();
 
 	/**
 	 * New Vineflower decompiler instance.
@@ -49,7 +48,7 @@ public class VineflowerDecompiler extends AbstractJvmDecompiler {
 			UnaryOperator<JvmClassInfo> nestedView = nested -> nestedClassView(workspace, info.getName(), nested);
 			ClassSource source = new ClassSource(workspace, info, nestedView);
 			fernflower.addSource(source);
-			fernflower.addLibrary(new LibrarySource(workspaceEntriesCache.getCachedEntries(workspace), workspace, info, nestedView));
+			fernflower.addLibrary(new LibrarySource(workspace, info, nestedView));
 			fernflower.decompileContext();
 
 			String decompiled = source.getSink().getDecompiledOutput().get();
