@@ -99,4 +99,38 @@ public class LaunchArguments {
 		if (command == null) return false;
 		return command.isIdle();
 	}
+
+	/**
+	 * @return Port to serve MCP over HTTP on, or {@code null} when not requested.
+	 */
+	@Nullable
+	public Integer getMcpHttpPort() {
+		if (command == null) return null;
+		return command.getMcpHttpPort();
+	}
+
+	/**
+	 * @return Bearer token for the MCP HTTP transport.
+	 */
+	@Nullable
+	public String getMcpToken() {
+		if (command == null) return null;
+		return command.getMcpToken();
+	}
+
+	/**
+	 * @return Flag to hide MCP tools which modify anything.
+	 */
+	public boolean isMcpReadOnly() {
+		if (command == null) return false;
+		return command.isMcpReadOnly();
+	}
+
+	/**
+	 * @return Flag to show MCP tools which execute code.
+	 */
+	public boolean isMcpAllowExecute() {
+		if (command == null) return false;
+		return command.isMcpAllowExecute();
+	}
 }

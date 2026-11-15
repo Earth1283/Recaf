@@ -10,6 +10,7 @@ import software.coley.recaf.RecafBuildConfig;
 import software.coley.recaf.analytics.SystemInformation;
 import software.coley.recaf.analytics.logging.RecafLoggingFilter;
 import software.coley.recaf.services.Service;
+import software.coley.recaf.services.mcp.McpStdio;
 import software.coley.recaf.util.StringUtil;
 
 import java.io.File;
@@ -40,6 +41,17 @@ public class LaunchCommand implements Callable<Boolean> {
 	private boolean headless;
 	@Option(names = {"--idle"}, description = "Keep headless Recaf running after startup for plugin-hosted services.")
 	private boolean idle;
+	@Option(names = {"--mcp"}, description = "Serve MCP over stdio, for clients that launch Recaf themselves. Pair with -h to skip the UI.")
+	private boolean mcp;
+	@Option(names = {"--mcp-http"}, arity = "0..1", fallbackValue = "7733",
+			description = "Serve MCP over streamable HTTP on 127.0.0.1 at the given port (default: ${FALLBACK-VALUE}). 0 picks a free port.")
+	private Integer mcpHttpPort;
+	@Option(names = {"--mcp-token"}, description = "Bearer token for the MCP HTTP transport. A random token is logged when omitted.")
+	private String mcpToken;
+	@Option(names = {"--mcp-read-only"}, description = "Only expose MCP tools which do not modify anything.")
+	private boolean mcpReadOnly;
+	@Option(names = {"--mcp-allow-execute"}, description = "Expose MCP tools which run code, such as scripts, or attach to other processes.")
+	private boolean mcpAllowExecute;
 	@Option(names = {"-q", "--silent"}, description = "Disable slf4j logging to std-out.")
 	private boolean silent;
 	@Option(names = {"-v", "--version"}, description = "Display the version information.")
@@ -52,6 +64,8 @@ public class LaunchCommand implements Callable<Boolean> {
 	@Override
 	public Boolean call() throws Exception {
 		boolean ret = false;
+		if (mcp)
+			McpStdio.claim();
 		if (silent)
 			RecafLoggingFilter.setConsoleLevel(Level.OFF);
 		if (dataDir != null)
@@ -128,6 +142,43 @@ public class LaunchCommand implements Callable<Boolean> {
 	 * @return Flag to keep headless Recaf running after startup.
 	 */
 	public boolean isIdle() {
-		return idle;
+		return idle || (headless && (mcp || mcpHttpPort != null));
+	}
+
+	/**
+	 * @return Flag to serve MCP over stdio.
+	 */
+	public boolean isMcp() {
+		return mcp;
+	}
+
+	/**
+	 * @return Port to serve MCP over HTTP on, or {@code null} when not requested.
+	 */
+	@Nullable
+	public Integer getMcpHttpPort() {
+		return mcpHttpPort;
+	}
+
+	/**
+	 * @return Bearer token for the MCP HTTP transport.
+	 */
+	@Nullable
+	public String getMcpToken() {
+		return mcpToken;
+	}
+
+	/**
+	 * @return Flag to hide MCP tools which modify anything.
+	 */
+	public boolean isMcpReadOnly() {
+		return mcpReadOnly;
+	}
+
+	/**
+	 * @return Flag to show MCP tools which execute code.
+	 */
+	public boolean isMcpAllowExecute() {
+		return mcpAllowExecute;
 	}
 }

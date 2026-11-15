@@ -8,6 +8,7 @@ import javafx.scene.control.Menu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.RadioMenuItem;
 import javafx.scene.control.ToggleGroup;
+import javafx.stage.Stage;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.kordamp.ikonli.javafx.FontIcon;
 import org.slf4j.Logger;
@@ -62,6 +63,7 @@ public class ConfigMenu extends Menu {
 		itemEdit = BindingHint.applyTo(action("menu.config.edit", CarbonIcons.CALIBRATE, actions::openConfig),
 				keybindingConfig::getSettings);
 		getItems().add(itemEdit);
+		getItems().add(action("menu.config.mcp", CarbonIcons.PLUG, this::openMcp));
 		setOnShowing(event -> {
 			refreshProfileMenu();
 			BindingHint.refresh(itemEdit);
@@ -69,6 +71,15 @@ public class ConfigMenu extends Menu {
 		getItems().add(profileMenu);
 		getItems().add(action("menu.config.export", CarbonIcons.DOCUMENT_EXPORT, this::exportProfile));
 		getItems().add(action("menu.config.import", CarbonIcons.DOCUMENT_IMPORT, this::importProfile));
+	}
+
+	/**
+	 * Opens the window for managing the MCP server.
+	 */
+	private void openMcp() {
+		Stage window = windowManager.getMcpWindow();
+		window.show();
+		window.requestFocus();
 	}
 
 	/**

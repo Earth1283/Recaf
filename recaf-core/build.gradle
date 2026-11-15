@@ -31,6 +31,8 @@ dependencies {
     api(libs.apksig)
     api(libs.bundles.logging)
     api(libs.mapping.io)
+    implementation(libs.mcp.core)
+    implementation(libs.mcp.json)
     api(libs.natural.order)
     api(libs.pe)
     api(libs.picocli)

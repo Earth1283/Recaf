@@ -33,6 +33,7 @@ jsvg = "2.1.0"
 lljzip = "2.9.2"
 rainbowgum = "0.8.2"
 mapping-io = "0.8.0"
+mcp = "2.2.0"
 mockito = "5.23.0"
 natural-order = "1.1"
 picocli = "4.7.7"
@@ -130,6 +131,8 @@ rainbowgum-core = { module = "io.jstach.rainbowgum:rainbowgum-core", version.ref
 rainbowgum-slf4j = { module = "io.jstach.rainbowgum:rainbowgum-slf4j", version.ref = "rainbowgum" }
 
 mapping-io = { module = "net.fabricmc:mapping-io", version.ref = "mapping-io" }
+mcp-core = { module = "io.modelcontextprotocol.sdk:mcp-core", version.ref = "mcp" }
+mcp-json = { module = "io.modelcontextprotocol.sdk:mcp-json-jackson2", version.ref = "mcp" }
 
 mockito = { module = "org.mockito:mockito-core", version.ref = "mockito" }
 

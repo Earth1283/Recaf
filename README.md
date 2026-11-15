@@ -80,7 +80,7 @@ Recaf exposes all of its functionality through modular API's. You can write a sc
 - For scripts, see [Scripts](https://recaf.coley.software/dev/plugins-and-scripts/scripts.html) in the documentation.
 - For CLI usage, see [Running](https://recaf.coley.software/dev/arch/running.html)
 - The gist, make the script then use `java -jar recaf.jar --input <app> --script <script.java>`
-- Looking to automate workflows with AI? Use the CLI's `--headless` and the [MCP plugin](https://github.com/Recaf-Plugins/Recaf-MCP) to give agents access to all of Recaf's capabilities.
+- Looking to automate workflows with AI? Recaf has a built-in [MCP server](docs/mcp.md). Run it headless with `--headless --mcp`, or attach agents to a running UI with `--mcp-http`.
 </details>
 
 A complete list of features can be found in the [user guide](https://recaf.coley.software/user/index.html).

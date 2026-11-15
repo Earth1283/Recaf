@@ -1,11 +1,11 @@
 package software.coley.recaf;
 
 import jakarta.annotation.Nonnull;
-import org.slf4j.Logger;
 import picocli.CommandLine;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.launch.LaunchBootstrap;
 import software.coley.recaf.launch.LaunchCommand;
+import software.coley.recaf.services.mcp.McpStdio;
 import software.coley.recaf.util.JdkValidation;
 
 import java.lang.reflect.Method;
@@ -17,7 +17,6 @@ import java.util.List;
  * @author Matt Coley
  */
 public class Main {
-	private static final Logger logger = Logging.get(Main.class);
 
 	// Class name of the UI launcher class in the UI module.
 	private static final String UI_LAUNCHER_CLASS = "software.coley.recaf.UIMain";
@@ -35,6 +34,10 @@ public class Main {
 	 * 		Application arguments.
 	 */
 	public static void main(String[] args) {
+		// Stdio MCP owns stdout, so it has to be claimed before anything can initialize logging.
+		if (List.of(args).contains("--mcp"))
+			McpStdio.claim();
+
 		// Make application name appear in Mac-OS's dock.
 		System.setProperty("apple.awt.application.name", "Recaf");
 
@@ -99,10 +102,10 @@ public class Main {
 			Method launch = uiLauncherClass.getDeclaredMethod("launch", LaunchCommand.class, String[].class);
 			launch.invoke(null, launchArgValues, args);
 		} catch (ReflectiveOperationException ex) {
-			logger.error("Failed to find UI launcher '{}'", UI_LAUNCHER_CLASS, ex);
+			Logging.get(Main.class).error("Failed to find UI launcher '{}'", UI_LAUNCHER_CLASS, ex);
 			ExitDebugLoggingHook.exit(ExitCodes.ERR_LAUNCH_NO_UI_MODULE);
 		} catch (Exception ex) {
-			logger.error("Failed to initialize UI launcher '{}'", UI_LAUNCHER_CLASS, ex);
+			Logging.get(Main.class).error("Failed to initialize UI launcher '{}'", UI_LAUNCHER_CLASS, ex);
 			ExitDebugLoggingHook.exit(ExitCodes.ERR_LAUNCH_UI_INIT);
 		}
 	}

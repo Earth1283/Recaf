@@ -47,6 +47,7 @@ public class Logging {
 	private static final LogFormatter EVENT_FORMATTER = createEventFormatter();
 	private static final LogEncoder EVENT_ENCODER = LogEncoder.of(EVENT_FORMATTER);
 	private static volatile boolean configured;
+	private static volatile boolean consoleOnStandardError;
 	private static Level interceptLevel = Level.INFO;
 
 	/**
@@ -129,6 +130,23 @@ public class Logging {
 	}
 
 	/**
+	 * Sends console logging to standard error instead of standard out, for when standard out carries a protocol.
+	 * <p/>
+	 * The console appender is bound when logging is first used, so this only takes effect if called before that.
+	 *
+	 * @return {@code true} when the console will log to standard error.
+	 * {@code false} when logging was already configured, in which case the caller must silence the console instead.
+	 */
+	public static boolean redirectConsoleToStandardError() {
+		synchronized (CONFIG_LOCK) {
+			if (configured)
+				return false;
+			consoleOnStandardError = true;
+			return true;
+		}
+	}
+
+	/**
 	 * Lazily initialize logging configuration.
 	 */
 	private static void ensureConfigured() {
@@ -154,7 +172,7 @@ public class Logging {
 				.route(route -> {
 					route.level(System.Logger.Level.TRACE);
 					route.appender("console", appender -> {
-						appender.output(LogOutput.ofStandardOut());
+						appender.output(consoleOnStandardError ? LogOutput.ofStandardErr() : LogOutput.ofStandardOut());
 						appender.encoder(EVENT_ENCODER);
 						appender.flag(LogAppender.AppenderFlag.IMMEDIATE_FLUSH);
 					});
