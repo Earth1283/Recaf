@@ -21,7 +21,7 @@ import java.util.Set;
 import static org.objectweb.asm.Opcodes.*;
 
 /**
- * Threads constant writes to a local dispatcher state directly to their switch destination.
+ * Threads constant local or operand-stack dispatcher states directly to their switch destination.
  * No blocks are copied, and state writes are retained: other readers, exception handlers, loops, and
  * runtime-dependent transitions keep their original semantics. Cleanup passes remove dead bookkeeping.
  */
@@ -62,13 +62,26 @@ public class DispatcherInliningTransformer implements JvmClassTransformer {
 			AbstractInsnNode[] instructions = method.instructions.toArray();
 			boolean dirty = false;
 			for (int i = 0; i < instructions.length; i++) {
-				if (!(instructions[i] instanceof VarInsnNode store) || store.getOpcode() != ISTORE) continue;
+				AbstractInsnNode instruction = instructions[i];
+				boolean localStore = instruction instanceof VarInsnNode && instruction.getOpcode() == ISTORE;
+				boolean stackJump = instruction instanceof JumpInsnNode && instruction.getOpcode() == GOTO;
+				if (!localStore && !stackJump) continue;
 				Frame<ReValue> frame = i < frames.length ? frames[i] : null;
 				if (frame == null || frame.getStackSize() == 0) continue;
 				if (!(frame.getStack(frame.getStackSize() - 1) instanceof IntValue value) || !value.hasKnownValue()) continue;
-				LabelNode target = destination(store, value.value().getAsInt());
-				if (target == null) continue;
-				method.instructions.insert(store, new JumpInsnNode(GOTO, target));
+				if (localStore) {
+					LabelNode target = destination((VarInsnNode) instruction, value.value().getAsInt());
+					if (target == null) continue;
+					method.instructions.insert(instruction, new JumpInsnNode(GOTO, target));
+				} else {
+					AbstractInsnNode dispatcher = follow(((JumpInsnNode) instruction).label, new HashSet<>());
+					LabelNode target = switchDestination(dispatcher, value.value().getAsInt());
+					if (target == null) continue;
+					// The switch consumed just the selector. Preserve any lower stack values and
+					// side effects of computing the selector when bypassing the dispatcher.
+					method.instructions.insertBefore(instruction, new InsnNode(POP));
+					method.instructions.set(instruction, new JumpInsnNode(GOTO, target));
+				}
 				dirty = true;
 			}
 			// javac can merge `condition ? 321 : 69` on the stack before a single ISTORE.
@@ -78,6 +91,16 @@ public class DispatcherInliningTransformer implements JvmClassTransformer {
 				Integer state = literal(instructions[i]);
 				if (state == null || i >= frames.length || frames[i] == null) continue;
 				AbstractInsnNode next = follow(instructions[i].getNext(), new HashSet<>());
+				// A stack dispatcher can also be reached by fallthrough from a literal.
+				LabelNode stackTarget = switchDestination(next, state);
+				if (stackTarget != null) {
+					InsnList transition = new InsnList();
+					transition.add(new InsnNode(POP));
+					transition.add(new JumpInsnNode(GOTO, stackTarget));
+					method.instructions.insert(instructions[i], transition);
+					dirty = true;
+					continue;
+				}
 				if (!(next instanceof VarInsnNode store) || store.getOpcode() != ISTORE) continue;
 				LabelNode target = destination(store, state);
 				if (target == null) continue;
@@ -109,10 +132,13 @@ public class DispatcherInliningTransformer implements JvmClassTransformer {
 		Set<AbstractInsnNode> seen = new HashSet<>();
 		AbstractInsnNode next = follow(store.getNext(), seen);
 		if (!(next instanceof VarInsnNode load) || load.getOpcode() != ILOAD || load.var != store.var) return null;
-		next = follow(load.getNext(), seen);
-		if (next instanceof TableSwitchInsnNode table)
+		return switchDestination(follow(load.getNext(), seen), state);
+	}
+
+	private static LabelNode switchDestination(AbstractInsnNode instruction, int state) {
+		if (instruction instanceof TableSwitchInsnNode table)
 			return state < table.min || state > table.max ? table.dflt : table.labels.get(state - table.min);
-		if (next instanceof LookupSwitchInsnNode lookup) {
+		if (instruction instanceof LookupSwitchInsnNode lookup) {
 			int index = lookup.keys.indexOf(state);
 			return index < 0 ? lookup.dflt : lookup.labels.get(index);
 		}

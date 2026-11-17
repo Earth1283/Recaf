@@ -1,6 +1,10 @@
 package software.coley.recaf.services.deobfuscation;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import software.coley.recaf.services.transform.BuiltinTransformationPresets;
+import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.*;
 
 import java.util.List;
@@ -11,6 +15,132 @@ class DispatcherInliningTest extends TransformerTestBase {
 	private static final List<Class<? extends software.coley.recaf.services.transform.JvmClassTransformer>> PLAN = List.of(
 			DispatcherInliningTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class,
 			GotoInliningTransformer.class, VariableFoldingTransformer.class);
+
+	@Test void stackCarriedConstantChainEliminatesDispatcher() {
+		assemble("""
+				.method public static example ()I {
+				    code: {
+				    A:
+				        ldc -801258686
+				        goto Dispatch
+				    Done:
+				        ldc Ljava/lang/Object;
+				        invokestatic java/lang/System.identityHashCode (Ljava/lang/Object;)I
+				        pop
+				        bipush 42
+				        ireturn
+				    First:
+				        ldc 1769454168
+				        goto Dispatch
+				    Second:
+				        ldc 2094957433
+				        goto Dispatch
+				    Third:
+				        ldc -952468007
+				    Dispatch:
+				        lookupswitch {
+				            -952468007: Done,
+				            -801258686: First,
+				            1769454168: Second,
+				            2094957433: Third,
+				            default: Done
+				        }
+				    End:
+				    }
+				}
+				""", false);
+		assertEquals(42, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		var preset = BuiltinTransformationPresets.CONTROL_FLOW_SIMPLIFICATION;
+		List<Class<? extends JvmClassTransformer>> transformers = preset.transformers().stream()
+				.<Class<? extends JvmClassTransformer>>map(entry -> {
+					try {
+						return Class.forName(entry.transformerClassName()).asSubclass(JvmClassTransformer.class);
+					} catch (ClassNotFoundException ex) {
+						throw new AssertionError(ex);
+					}
+				}).toList();
+		var result = assertDoesNotThrow(() -> newApplier(preset.maxPasses()).transformJvm(transformers));
+		assertTrue(result.getTransformerFailures().isEmpty());
+		result.apply();
+		assertEquals(42, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		String output = disassemble(false);
+		assertFalse(output.contains("switch"), output);
+		assertTrue(output.contains("System.identityHashCode"), output);
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {0, 1, 2, -1, 7})
+	void stackTableDispatcherPreservesLowerValuesAndRuntimeDefaults(int initialState) {
+		assemble("""
+				.method public static example ()I {
+				    code: {
+				    A:
+				        ldc 100L
+				        bipush %d
+				        goto Dispatch
+				    First:
+				        ldc Ljava/lang/Object;
+				        invokestatic java/lang/System.identityHashCode (Ljava/lang/Object;)I
+				        pop
+				        iconst_1
+				        goto Dispatch
+				    Second:
+				        iconst_2
+				        goto Dispatch
+				    Done:
+				        l2i
+				        ireturn
+				    Default:
+				        l2i
+				        iconst_3
+				        iadd
+				        ireturn
+				    Dispatch:
+				        tableswitch {
+				            min: 0,
+				            max: 2,
+				            cases: { First, Second, Done },
+				            default: Default
+				        }
+				    End:
+				    }
+				}
+				""".formatted(initialState), false);
+		int expected = initialState >= 0 && initialState <= 2 ? 100 : 103;
+		assertEquals(expected, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		var result = assertDoesNotThrow(() -> newApplier(6).transformJvm(PLAN));
+		assertTrue(result.getTransformerFailures().isEmpty());
+		result.apply();
+		assertEquals(expected, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		assertFalse(disassemble(false).contains("switch"));
+		assertEquals(initialState == 0, disassemble(false).contains("System.identityHashCode"));
+	}
+
+	@Test void runtimeStackSelectorKeepsItsSwitchAndDefault() {
+		assemble("""
+				.method public static example ()I {
+				    code: {
+				    A:
+				        ldc Ljava/lang/Object;
+				        invokestatic java/lang/System.identityHashCode (Ljava/lang/Object;)I
+				        goto Dispatch
+				    Done:
+				        iconst_5
+				        ireturn
+				    Dispatch:
+				        lookupswitch {
+				            123: Done,
+				            default: Done
+				        }
+				    End:
+				    }
+				}
+				""", false);
+		var result = assertDoesNotThrow(() -> newApplier().transformJvm(List.of(DispatcherInliningTransformer.class)));
+		assertTrue(result.getTransformerFailures().isEmpty());
+		assertTrue(result.getTransformedClasses().isEmpty());
+		assertTrue(disassemble(false).contains("switch"));
+	}
 
 	@Test void constantChainPreservesEffectsAndEliminatesDispatcher() throws Exception {
 		compileFull("Example", """

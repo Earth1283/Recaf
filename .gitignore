@@ -29,3 +29,6 @@ temp/
 
 # IntelliJ
 lib/
+
+# Local macOS distributions
+/dist/macos/
