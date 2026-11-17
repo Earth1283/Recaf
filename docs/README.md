@@ -9,3 +9,4 @@ If you were looking for documentation go here:
 Fork-specific guides:
 
 - [Control-flow simplification and static execution/input exploration](static-exploration.md)
+- [Bytecode investigation and readable analysis copies](bytecode-investigation.md)

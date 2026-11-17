@@ -10,6 +10,7 @@ import org.objectweb.asm.tree.*;
 import org.objectweb.asm.util.Printer;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassMemberPathNode;
+import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.services.Service;
 import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationReport.*;
@@ -93,7 +94,71 @@ public class BytecodeInvestigationService implements Service {
 		}
 		bootstraps.sort(Comparator.comparingInt((BootstrapGroup group) -> group.sites().size()).reversed()
 				.thenComparing(group -> group.target().owner()).thenComparing(BootstrapGroup::resource));
-		return new BytecodeInvestigationReport(classes, List.copyOf(methods), List.copyOf(sites), List.copyOf(bootstraps), List.copyOf(failures));
+		List<NativeMethod> nativeMethods = nativeMethods(workspace, methods, cancelled, failures);
+		List<String> nativeLibraries = new ArrayList<>();
+		for (ResourceEntry entry : resources) {
+			checkCancelled(cancelled);
+			entry.resource().getFileBundle().keySet().stream().sorted().filter(BytecodeInvestigationService::nativeLibrary)
+					.forEach(name -> nativeLibraries.add(entry.name() + " > " + name));
+		}
+		return new BytecodeInvestigationReport(classes, List.copyOf(methods), List.copyOf(sites), List.copyOf(bootstraps),
+				List.copyOf(failures), nativeMethods, List.copyOf(nativeLibraries));
+	}
+
+	private static List<NativeMethod> nativeMethods(Workspace workspace, List<MethodProfile> methods,
+	                                              BooleanSupplier cancelled, List<String> failures) {
+		Map<ClassMemberPathNode, MethodProfile> declarations = new LinkedHashMap<>();
+		Set<MethodRef> targets = new HashSet<>();
+		Map<ClassMemberPathNode, List<NativeCaller>> callers = new HashMap<>();
+		for (MethodProfile method : methods) {
+			if (!method.path().getValueAsMethod().hasNativeModifier()) continue;
+			declarations.put(method.path(), method);
+			targets.add(new MethodRef(method.path().getParent().getValue().getName(),
+					method.path().getValue().getName(), method.path().getValue().getDescriptor()));
+		}
+		if (declarations.isEmpty()) return List.of();
+		// Re-read one class at a time instead of retaining every invocation in large workspaces.
+		Map<ClassPathNode, List<MethodProfile>> byClass = new LinkedHashMap<>();
+		for (MethodProfile method : methods) byClass.computeIfAbsent(method.path().getParent(), _ -> new ArrayList<>()).add(method);
+		for (var entry : byClass.entrySet()) {
+			checkCancelled(cancelled);
+			try {
+				ClassNode node = read(entry.getKey().getValue().asJvmClass());
+				Map<String, MethodNode> code = new HashMap<>();
+				for (MethodNode method : node.methods) code.put(method.name + method.desc, method);
+				for (MethodProfile profile : entry.getValue()) {
+					checkCancelled(cancelled);
+					MethodNode method = code.get(profile.path().getValue().getName() + profile.path().getValue().getDescriptor());
+					int ordinal = 0;
+					for (AbstractInsnNode insn : method.instructions) {
+						if (insn.getOpcode() < 0) continue;
+						if (insn instanceof MethodInsnNode call) {
+							MethodRef target = new MethodRef(call.owner, call.name, call.desc);
+							if (targets.contains(target)) {
+								ClassMemberPathNode path = resolve(workspace, profile.path(), target);
+								if (path != null && declarations.containsKey(path))
+									callers.computeIfAbsent(path, _ -> new ArrayList<>()).add(new NativeCaller(profile, ordinal));
+							}
+						}
+						ordinal++;
+					}
+				}
+			} catch (CancellationException ex) {
+				throw ex;
+			} catch (Exception ex) {
+				failures.add("Native callers: " + entry.getKey().getValue().getName() + ": " + ex.getMessage());
+			}
+		}
+		return declarations.entrySet().stream()
+				.map(entry -> new NativeMethod(entry.getValue(), List.copyOf(callers.getOrDefault(entry.getKey(), List.of()))))
+				.sorted(Comparator.comparingInt((NativeMethod method) -> method.callers().size()).reversed()
+						.thenComparing(method -> method.method().methodName()).thenComparing(method -> method.method().resource())).toList();
+	}
+
+	private static boolean nativeLibrary(String name) {
+		String lower = name.toLowerCase(Locale.ROOT);
+		return lower.endsWith(".dll") || lower.endsWith(".dylib") || lower.endsWith(".so")
+				|| lower.contains(".so.") || lower.endsWith(".skid");
 	}
 
 	private static void inspect(ClassMemberPathNode path, String resource, MethodNode method,

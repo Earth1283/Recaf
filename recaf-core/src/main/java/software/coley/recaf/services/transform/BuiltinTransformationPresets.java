@@ -1,6 +1,8 @@
 package software.coley.recaf.services.transform;
 
 import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.InvokeDynamicInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredicateFoldingTransformer;
@@ -9,6 +11,7 @@ import software.coley.recaf.services.deobfuscation.transform.generic.GotoInlinin
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.VariableFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.specific.skid.SkidXorInliningTransformer;
 
 import java.util.List;
 import java.util.Map;
@@ -17,6 +20,21 @@ import java.util.Map;
  * Built-in profiles for common deobfuscation tasks, independent of saved user presets.
  */
 public final class BuiltinTransformationPresets {
+	/** Java-level Skidfuscator cleanup. Native predicates remain unknown; input initializers are not emulated. */
+	public static final TransformationPreset SKIDFUSCATOR_SIMPLIFICATION = new TransformationPreset(List.of(
+			new TransformationPreset.TransformerPreset(SkidXorInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(StaticValueCollectionTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(StaticValueInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(InvokeDynamicInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(CallResultInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(BitwiseFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DispatcherInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(OpaquePredicateFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DeadCodeRemovingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(GotoInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(VariableFoldingTransformer.class.getName(), Map.of())),
+			6, false, TransformationPreset.ScopeMode.NONE, List.of());
+
 	/** Conservative local integer dispatcher unflattening, followed by ordinary folding and cleanup. */
 	public static final TransformationPreset CONTROL_FLOW_SIMPLIFICATION = new TransformationPreset(List.of(
 			new TransformationPreset.TransformerPreset(OpaqueConstantFoldingTransformer.class.getName(), Map.of()),

@@ -11,8 +11,20 @@ import java.util.List;
 public record BytecodeInvestigationReport(int classes, @Nonnull List<MethodProfile> methods,
                                           @Nonnull List<CallSite> callSites,
                                           @Nonnull List<BootstrapGroup> bootstraps,
-                                          @Nonnull List<String> failures) {
+                                          @Nonnull List<String> failures,
+                                          @Nonnull List<NativeMethod> nativeMethods,
+                                          @Nonnull List<String> nativeLibraries) {
 	public static final BytecodeInvestigationReport EMPTY = new BytecodeInvestigationReport(0, List.of(), List.of(), List.of(), List.of());
+
+	public BytecodeInvestigationReport(int classes, @Nonnull List<MethodProfile> methods,
+	                                  @Nonnull List<CallSite> callSites, @Nonnull List<BootstrapGroup> bootstraps,
+	                                  @Nonnull List<String> failures) {
+		this(classes, methods, callSites, bootstraps, failures, List.of(), List.of());
+	}
+
+	/** Native declarations and their exact-resource direct callers; native bodies are never executed. */
+	public record NativeMethod(@Nonnull MethodProfile method, @Nonnull List<NativeCaller> callers) {}
+	public record NativeCaller(@Nonnull MethodProfile method, int instruction) {}
 
 	/** Counts describe bytecode features, not a verdict about maliciousness. */
 	public record MethodProfile(@Nonnull ClassMemberPathNode path, @Nonnull String resource,

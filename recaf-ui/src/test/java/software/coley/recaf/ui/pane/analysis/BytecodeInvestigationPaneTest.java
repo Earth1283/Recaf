@@ -117,6 +117,10 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 			caller.visitLdcInsn("readable"); caller.visitInsn(ICONST_1);
 			caller.visitMethodInsn(INVOKESTATIC, "Fixture", "decode", "(Ljava/lang/String;B)Ljava/lang/String;", false);
 			caller.visitInsn(ARETURN); caller.visitMaxs(2, 0); caller.visitEnd();
+			node.visitMethod(ACC_PUBLIC | ACC_STATIC | ACC_NATIVE, "nativeSeed", "(Ljava/lang/String;)I", null, null).visitEnd();
+			var seedCaller = node.visitMethod(ACC_PUBLIC | ACC_STATIC, "usesSeed", "()I", null, null);
+			seedCaller.visitLdcInsn("key"); seedCaller.visitMethodInsn(INVOKESTATIC, "Fixture", "nativeSeed", "(Ljava/lang/String;)I", false);
+			seedCaller.visitInsn(IRETURN); seedCaller.visitMaxs(1, 0); seedCaller.visitEnd();
 		});
 		final Workspace workspace;
 		final BytecodeInvestigationPane pane;
@@ -124,6 +128,7 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 			assumeTrue(fxAvailable, "JavaFX display unavailable");
 			BasicJvmClassBundle bundle = new BasicJvmClassBundle(); bundle.initialPut(original);
 			workspace = new BasicWorkspace(new WorkspaceResourceBuilder().withJvmClassBundle(bundle).build());
+			workspace.getPrimaryResource().getFileBundle().put(new FileInfoBuilder<>().withName("lock/driver-macos.skid").withRawContent(new byte[0]).build());
 			when(workspaces.getCurrent()).thenReturn(workspace);
 			pane = onFx(() -> {
 				var view = new BytecodeInvestigationPane(workspaces, new BytecodeInvestigationService(new BytecodeInvestigationConfig()), readability, actions);
@@ -135,6 +140,32 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 		TabPane tabs() { return (TabPane) ((SplitPane) pane.getCenter()).getItems().getFirst(); }
 		TableView<?> table(int index) { return (TableView<?>) tabs().getTabs().get(index).getContent(); }
 		@Override public void close() throws Exception { onFx(() -> { pane.disable(); return null; }); workspace.close(); }
+	}
+
+	@Test
+	void displaysNativeCallersAndLibrariesWithNavigationAndFiltering() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			await(() -> onFx(() -> fixture.table(4).getItems().size() == 1));
+			onFx(() -> {
+				fixture.tabs().getSelectionModel().select(4);
+				fixture.table(4).getSelectionModel().selectFirst();
+				String details = ((TextArea) fixture.pane.lookup("#bytecode-investigation-details")).getText();
+				assertTrue(details.contains("nativeSeed"));
+				assertTrue(details.contains("usesSeed()I @ 1"));
+				assertTrue(details.contains("lock/driver-macos.skid"));
+				assertTrue(fixture.button("evaluate").isDisabled());
+				fixture.button("open-target").fire();
+				TextField search = (TextField) fixture.pane.lookup("#investigate-search");
+				search.setText("usesSeed");
+				assertEquals(1, fixture.table(4).getItems().size());
+				search.setText("missing method");
+				assertTrue(fixture.table(4).getItems().isEmpty());
+				assertTrue(fixture.button("open-target").isDisabled());
+				return null;
+			});
+			verify(fixture.actions).gotoDeclaration(argThat((software.coley.recaf.path.ClassMemberPathNode path) -> path.getValue().getName().equals("nativeSeed")));
+			assertSame(fixture.original, fixture.workspace.getPrimaryResource().getJvmClassBundle().get("Fixture"));
+		}
 	}
 
 	private static <T> T onFx(Callable<T> action) throws Exception {

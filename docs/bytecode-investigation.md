@@ -47,7 +47,7 @@ total duration of a workspace run. Larger embedded plugins can take minutes; pha
 
 ## Investigating what remains
 
-The four searchable, sortable tables provide:
+The five searchable, sortable tables provide:
 
 - **Obfuscation hotspots:** methods ranked by dynamic calls, bit operations, encoded-looking literals, crypto,
   reflection, class loading, and exception handlers. These are investigation indicators, not a security verdict.
@@ -55,12 +55,20 @@ The four searchable, sortable tables provide:
   instructions. Standard JDK bootstrap sites are hidden by default and can be included explicitly.
 - **Bootstrap families:** grouped call sites with their exact resource and a shortcut to inspect all sites in a family.
 - **String-helper calls:** static calls returning strings with arguments, with direct access to the caller and target.
+- **Native methods:** native declarations, exact-resource direct callers and opcode ordinals, and bundled
+  native-library filename candidates, including Skidfuscator `.skid` resources. Search also matches caller names.
+  Reflective and dynamic native calls may be absent from the direct-caller list. Native methods cannot be evaluated
+  by the Java interpreter; their results remain unknown.
 
 Select a row to open its method, target, bytecode, or callers/callees graph. **Evaluate constant inputs** recovers the
 arguments at a selected static string call and interprets the helper in a fresh state. **Emulate class initializers**
 is optional for this individual inspection. Results show inputs, plaintext when available, instructions executed, and
 an explanation for unknown inputs, unsupported behavior, failures, or stale scans. Evaluation does not commit changes.
 Rescan after editing classes. Nested resources and multi-release class bundles retain distinct provenance.
+
+Skidfuscator reference bootstraps and private XOR helpers are also supported by readable analysis copies.
+The **Analysis → Simplify Skidfuscator bytecode** preset provides these passes with constant folding and flow cleanup;
+native predicate values remain unresolved.
 
 The scan and interpreter run on a background worker. Tables use filtered/sorted views and render instruction context
 only when a row is selected. Replaced scans and closed panes cannot publish obsolete results; short-lived evaluation

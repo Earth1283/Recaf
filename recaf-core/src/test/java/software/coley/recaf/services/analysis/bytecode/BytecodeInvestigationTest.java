@@ -103,4 +103,43 @@ class BytecodeInvestigationTest extends TransformerTestBase {
 			method.visitInsn(POP); method.visitInsn(RETURN); method.visitMaxs(1, 0); node.methods.add(method);
 		});
 	}
+
+	@Test
+	void inventoriesNativeBoundariesWithExactResourceCallersAndLibraryCandidates() {
+		JvmClassInfo nativeClass = TestClassUtils.createClass("Driver", node -> {
+			node.visitMethod(ACC_PUBLIC | ACC_STATIC | ACC_NATIVE, "get", "(Ljava/lang/String;)I", null, null).visitEnd();
+		});
+		JvmClassInfo javaClass = TestClassUtils.createClass("Driver", node -> {
+			var method = node.visitMethod(ACC_PUBLIC | ACC_STATIC, "get", "(Ljava/lang/String;)I", null, null);
+			method.visitInsn(ICONST_1); method.visitInsn(IRETURN); method.visitMaxs(1, 1); method.visitEnd();
+		});
+		JvmClassInfo caller = TestClassUtils.createClass("Caller", node -> {
+			var method = node.visitMethod(ACC_PUBLIC | ACC_STATIC, "seed", "()I", null, null);
+			method.visitLabel(new Label()); method.visitLdcInsn("key");
+			method.visitMethodInsn(INVOKESTATIC, "Driver", "get", "(Ljava/lang/String;)I", false);
+			method.visitInsn(IRETURN); method.visitMaxs(1, 0); method.visitEnd();
+		});
+		BasicJvmClassBundle outer = TestClassUtils.fromClasses(nativeClass, caller);
+		BasicJvmClassBundle inner = TestClassUtils.fromClasses(javaClass, caller);
+		var nested = new WorkspaceFileResourceBuilder().withFileInfo(new FileInfoBuilder<>().withName("nested.jar").withRawContent(new byte[0]).build())
+				.withJvmClassBundle(inner).build();
+		BasicFileBundle files = new BasicFileBundle();
+		files.put(new FileInfoBuilder<>().withName("lock/driver-macos.skid").withRawContent(new byte[]{1, 2}).build());
+		files.put(new FileInfoBuilder<>().withName("readme.txt").withRawContent(new byte[0]).build());
+		var primary = new WorkspaceResourceBuilder().withJvmClassBundle(outer).withFileBundle(files).withEmbeddedResources(Map.of("nested.jar", nested)).build();
+		Workspace view = new BasicWorkspace(primary);
+		var report = service.analyze(view, primary, () -> false);
+		assertTrue(report.failures().isEmpty(), report.failures().toString());
+		assertEquals(1, report.nativeMethods().size());
+		NativeMethod method = report.nativeMethods().getFirst();
+		assertEquals("Driver.get(Ljava/lang/String;)I", method.method().methodName());
+		assertEquals(1, method.callers().size());
+		assertSame(outer, method.callers().getFirst().method().path().getValueOfType(JvmClassBundle.class));
+		assertEquals(1, method.callers().getFirst().instruction());
+		assertEquals(List.of("Selected resource > lock/driver-macos.skid"), report.nativeLibraries());
+		assertSame(nativeClass, outer.get("Driver"));
+		assertSame(javaClass, inner.get("Driver"));
+		assertEquals(2, files.size());
+		view.close();
+	}
 }

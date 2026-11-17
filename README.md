@@ -65,6 +65,7 @@ Recaf offers a host of tools to make working with obfuscated code as easy as pos
 
 - Powerful deobfuscation tools:
     - Generalized Java bytecode transformers for opaque constants, predicates, and more. Pick a set of transformers in the deobfuscation window, preview your changes, and apply to the application when you're satisfied with the results. 
+    - Skidfuscator cleanup resolves supported dynamic references, exposes XOR helpers, and identifies native predicate boundaries in Bytecode investigation.
     - Support for mass-renaming obfuscated classes and their members via pattern-driven mapping generators.
     - Want more control over renaming? You can manually rename classes and their members too. You can even export the mappings to a variety of formats for use in other tools when you're done.
 

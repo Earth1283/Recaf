@@ -4,13 +4,18 @@ import jakarta.enterprise.inject.Instance;
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
 import javafx.scene.control.TabPane;
+import javafx.scene.layout.BorderPane;
 import javafx.stage.WindowEvent;
 import me.darknet.assembler.error.Outcome;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.services.assembler.AssemblerPipelineManager;
@@ -20,8 +25,14 @@ import software.coley.recaf.services.config.ConfigComponentManager;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.DecompilerConfig;
+import software.coley.recaf.services.decompile.Decompiler;
+import software.coley.recaf.services.decompile.DecompilerManagerConfig;
 import software.coley.recaf.services.decompile.JvmDecompiler;
+import software.coley.recaf.services.decompile.vineflower.VineflowerConfig;
+import software.coley.recaf.services.decompile.vineflower.VineflowerDecompiler;
 import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredicateFoldingTransformer;
 import software.coley.recaf.services.info.association.FileTypeSyntaxAssociationService;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.navigation.Actions;
@@ -57,7 +68,7 @@ import java.util.function.BooleanSupplier;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.*;
-import static org.objectweb.asm.Opcodes.ACC_FINAL;
+import static org.objectweb.asm.Opcodes.*;
 
 @Execution(ExecutionMode.SAME_THREAD)
 class DeobfuscationWindowTest extends BaseFxTest {
@@ -77,6 +88,55 @@ class DeobfuscationWindowTest extends BaseFxTest {
 		}
 		if (fxAvailable)
 			Platform.setImplicitExit(false);
+	}
+
+	@Test
+	void selectAllEnablesAnEmptySelection() throws Exception {
+		try (Fixture fixture = new Fixture(true)) {
+			onFx(() -> {
+				fixture.window.applyPreset(new TransformationPreset(List.of(), 5, false,
+						TransformationPreset.ScopeMode.NONE, List.of(), true));
+				runButton(fixture.window, "deobf.back").fire();
+				assertTrue(runButton(fixture.window, "deobf.next").isDisabled());
+				runButton(fixture.window, "deobf.selection.all").fire();
+				assertFalse(runButton(fixture.window, "deobf.next").isDisabled());
+				assertEquals(3, ((ListView<?>) fixture.window.getScene().getRoot().lookup(".list-view")).getItems().size());
+				runButton(fixture.window, "deobf.next").fire();
+				fixture.window.setPreviewClass(fixture.original);
+				return null;
+			});
+			verify(fixture.applier, timeout(5000).atLeastOnce()).transformJvm(eq(List.of(
+					BitwiseFoldingTransformer.class, DeadCodeRemovingTransformer.class, OpaquePredicateFoldingTransformer.class)),
+					argThat(parameters -> !parameters.getBoolean(BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING, true)
+							&& !parameters.getBoolean(BitwiseFoldingTransformer.KEY_REPEAT_BITWISE, true)), any(TransformationFeedback.class));
+		}
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void selectAllRetainsSettingsAndUsesTheChosenOrder(boolean recommended) throws Exception {
+		try (Fixture fixture = new Fixture(true)) {
+			onFx(() -> {
+				fixture.window.applyPreset(new TransformationPreset(List.of(
+						new TransformationPreset.TransformerPreset(DeadCodeRemovingTransformer.class.getName(), Map.of()),
+						new TransformationPreset.TransformerPreset(BitwiseFoldingTransformer.class.getName(),
+								Map.of(BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING, true))), 5, false,
+						TransformationPreset.ScopeMode.NONE, List.of(), true));
+				runButton(fixture.window, "deobf.back").fire();
+				Button selectAll = runButton(fixture.window, recommended ? "deobf.selection.all-recommended" : "deobf.selection.all");
+				selectAll.fire();
+				selectAll.fire();
+				assertEquals(3, ((ListView<?>) fixture.window.getScene().getRoot().lookup(".list-view")).getItems().size());
+				runButton(fixture.window, "deobf.next").fire();
+				fixture.window.setPreviewClass(fixture.original);
+				return null;
+			});
+			verify(fixture.applier, timeout(5000).atLeastOnce()).transformJvm(eq(recommended ? List.of(
+					BitwiseFoldingTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class) : List.of(
+					DeadCodeRemovingTransformer.class, BitwiseFoldingTransformer.class, OpaquePredicateFoldingTransformer.class)),
+					argThat(parameters -> parameters.getBoolean(BitwiseFoldingTransformer.KEY_CONSTANT_FOLDING, false)),
+					any(TransformationFeedback.class));
+		}
 	}
 
 	@Test
@@ -173,6 +233,72 @@ class DeobfuscationWindowTest extends BaseFxTest {
 	}
 
 	@Test
+	@SuppressWarnings("unchecked")
+	void innerClassChangesReachTheAfterDecompilerWithoutChangingTheWorkspace() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			JvmClassInfo inner = nestedClass("before nested");
+			JvmClassInfo transformed = nestedClass("after nested");
+			fixture.workspace.getPrimaryResource().getJvmClassBundle().put(inner);
+			when(fixture.result.getTransformedClasses()).thenReturn(Map.of(fixture.workspace.findClass(inner.getName()), transformed));
+			VineflowerDecompiler vineflower = new VineflowerDecompiler(new VineflowerConfig());
+			Instance<Decompiler> implementations = mock(Instance.class);
+			when(implementations.iterator()).thenAnswer(_ -> List.<Decompiler>of(vineflower).iterator());
+			DecompilerManager realDecompiler = new DecompilerManager(new DecompilerManagerConfig(), implementations);
+			when(fixture.decompiler.decompile(any(Workspace.class), any(JvmClassInfo.class))).thenAnswer(call ->
+					realDecompiler.decompile(call.getArgument(0), call.getArgument(1, JvmClassInfo.class)));
+			fixture.selectAndOpenDiff();
+			await(() -> fixture.diffText().contains("+         return \"after nested\";"));
+			assertTrue(fixture.diffText().contains("-         return \"before nested\";"), fixture.diffText());
+			assertEquals(Lang.get("deobf.preview.changed"), fixture.statusText());
+			when(fixture.result.getTransformedClasses()).thenReturn(Map.of(fixture.workspace.findClass(inner.getName()), nestedClass("latest nested")));
+			onFx(() -> {
+				runButton(fixture.window, "deobf.preview.run").fire();
+				return null;
+			});
+			await(() -> fixture.afterText().contains("return \"latest nested\";"));
+			assertSame(inner, fixture.workspace.findClass(inner.getName()).getValue());
+			assertSame(fixture.original, fixture.workspace.findClass("Example").getValue());
+			verify(fixture.result, never()).apply();
+		}
+	}
+
+	@Test
+	void failedTransformersAreShownInsteadOfAnUnchangedAfterView() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			when(fixture.result.getTransformerFailures()).thenReturn(Map.of(fixture.workspace.findClass("Example"),
+					Map.of(BitwiseFoldingTransformer.class, new IllegalStateException("Preview regression failure"))));
+			fixture.selectAndOpenDiff();
+			await(() -> fixture.afterText().contains("Preview regression failure"));
+			assertTrue(fixture.afterText().contains("BitwiseFoldingTransformer"));
+			assertEquals(Lang.get("deobf.preview.failed"), fixture.statusText());
+			verify(fixture.result, never()).apply();
+		}
+	}
+
+	@Test
+	void anUnchangedResultIsReportedExplicitly() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			when(fixture.result.getTransformedClasses()).thenReturn(Map.of());
+			fixture.selectAndOpenDiff();
+			await(() -> fixture.statusText().equals(Lang.get("deobf.preview.unchanged")));
+			assertTrue(fixture.afterText().contains("Integer.reverse(1)"));
+			verify(fixture.result, never()).apply();
+		}
+	}
+
+	private static JvmClassInfo nestedClass(String value) {
+		return TestClassUtils.createClass("Example$Inner", node -> {
+			node.visitInnerClass("Example$Inner", "Example", "Inner", ACC_PUBLIC | ACC_STATIC);
+			var method = node.visitMethod(ACC_PUBLIC | ACC_STATIC, "value", "()Ljava/lang/String;", null, null);
+			method.visitCode();
+			method.visitLdcInsn(value);
+			method.visitInsn(ARETURN);
+			method.visitMaxs(1, 0);
+			method.visitEnd();
+		});
+	}
+
+	@Test
 	void changesToOtherWorkspaceClassesInvalidateTheCachedTransformation() throws Exception {
 		try (Fixture fixture = new Fixture()) {
 			fixture.selectAndOpenDiff();
@@ -210,7 +336,8 @@ class DeobfuscationWindowTest extends BaseFxTest {
 	}
 
 	private static class Fixture implements AutoCloseable {
-		final JvmClassInfo original = TestClassUtils.createClass("Example", null);
+		final JvmClassInfo original = TestClassUtils.createClass("Example", node ->
+				node.visitInnerClass("Example$Inner", "Example", "Inner", ACC_PUBLIC | ACC_STATIC));
 		final JvmClassInfo modified = TestClassUtils.createClass("Example", node -> node.access |= ACC_FINAL);
 		final Workspace workspace = TestClassUtils.fromBundle(TestClassUtils.fromClasses(original));
 		final TransformationApplierService service = mock(TransformationApplierService.class);
@@ -220,8 +347,12 @@ class DeobfuscationWindowTest extends BaseFxTest {
 		final JvmAssemblerPipeline assembler = mock(JvmAssemblerPipeline.class);
 		final DeobfuscationWindow window;
 
-		@SuppressWarnings("unchecked")
 		Fixture() throws Exception {
+			this(false);
+		}
+
+		@SuppressWarnings("unchecked")
+		Fixture(boolean includeOrderingTransformers) throws Exception {
 			assumeTrue(fxAvailable, "JavaFX display unavailable");
 			when(service.newApplierForCurrentWorkspace()).thenReturn(applier);
 			when(service.newApplier(workspace)).thenReturn(applier);
@@ -243,6 +374,11 @@ class DeobfuscationWindowTest extends BaseFxTest {
 			when(searchBars.get()).thenAnswer(_ -> mock(SearchBar.class));
 			TransformationManager manager = new TransformationManager(Map.of(BitwiseFoldingTransformer.class,
 					() -> new BitwiseFoldingTransformer(mock(InheritanceGraphService.class))));
+			if (includeOrderingTransformers) {
+				manager.registerJvmClassTransformer(DeadCodeRemovingTransformer.class, DeadCodeRemovingTransformer::new);
+				manager.registerJvmClassTransformer(OpaquePredicateFoldingTransformer.class,
+						() -> new OpaquePredicateFoldingTransformer(mock(InheritanceGraphService.class)));
+			}
 			window = onFx(() -> new DeobfuscationWindow(manager, service, workspaces, decompiler, assemblerManager,
 					mock(ConfigComponentManager.class), mock(TransformationPresetManager.class),
 					mock(FileTypeSyntaxAssociationService.class), mock(CellConfigurationService.class),
@@ -278,6 +414,25 @@ class DeobfuscationWindowTest extends BaseFxTest {
 		String diffText() {
 			try {
 				return onFx(() -> diffEditor().getText());
+			} catch (Exception error) {
+				throw new AssertionError(error);
+			}
+		}
+
+		String afterText() {
+			try {
+				return onFx(() -> {
+					TabPane tabs = (TabPane) window.getScene().getRoot().lookup(".tab-pane");
+					return ((Editor) ((BorderPane) tabs.getTabs().get(1).getContent()).getCenter()).getText();
+				});
+			} catch (Exception error) {
+				throw new AssertionError(error);
+			}
+		}
+
+		String statusText() {
+			try {
+				return onFx(() -> ((Label) window.getScene().getRoot().lookup("#deobfuscation-preview-status")).getText());
 			} catch (Exception error) {
 				throw new AssertionError(error);
 			}

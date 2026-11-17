@@ -13,6 +13,7 @@ import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.builder.FileInfoBuilder;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.services.deobfuscation.transform.generic.*;
+import software.coley.recaf.services.deobfuscation.transform.specific.skid.SkidXorInliningTransformer;
 import software.coley.recaf.services.mapping.BasicMappingsRemapper;
 import software.coley.recaf.services.mapping.IntermediateMappings;
 import software.coley.recaf.services.transform.*;
@@ -88,10 +89,10 @@ public class ReadableWorkspaceService {
 					StaticValueCollectionTransformer.KEY_MAX_STEPS, maxSteps);
 			List<TransformationPhase> phases = List.of(
 					new TransformationPhase("Fold numeric noise and encoded literals", 2,
-							List.of(OpaqueConstantFoldingTransformer.class, CallResultInliningTransformer.class, VariableFoldingTransformer.class), new TransformationParameters(values)),
-					new TransformationPhase("Resolve proven static string bootstraps", 1, InvokeDynamicInliningTransformer.class),
+							List.of(SkidXorInliningTransformer.class, OpaqueConstantFoldingTransformer.class, CallResultInliningTransformer.class, VariableFoldingTransformer.class), new TransformationParameters(values)),
+					new TransformationPhase("Resolve proven bootstrap targets", 1, InvokeDynamicInliningTransformer.class),
 					new TransformationPhase("Decode strings and simplify control flow", 2,
-							List.of(StaticValueCollectionTransformer.class, StaticValueInliningTransformer.class, CallResultInliningTransformer.class,
+							List.of(SkidXorInliningTransformer.class, StaticValueCollectionTransformer.class, StaticValueInliningTransformer.class, CallResultInliningTransformer.class,
 									OpaqueConstantFoldingTransformer.class, DispatcherInliningTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class, VariableFoldingTransformer.class),
 							new TransformationParameters(withInitializers(values))));
 			for (TransformationPhase phase : phases) {

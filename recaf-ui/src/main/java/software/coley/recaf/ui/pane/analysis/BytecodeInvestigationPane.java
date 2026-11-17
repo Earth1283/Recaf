@@ -67,14 +67,17 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private final TableView<CallSite> dynamicCalls = new TableView<>();
 	private final TableView<CallSite> stringCalls = new TableView<>();
 	private final TableView<BootstrapGroup> bootstraps = new TableView<>();
+	private final TableView<NativeMethod> nativeMethods = new TableView<>();
 	private final ObservableList<MethodProfile> allMethods = FXCollections.observableArrayList();
 	private final ObservableList<CallSite> allDynamic = FXCollections.observableArrayList();
 	private final ObservableList<CallSite> allStrings = FXCollections.observableArrayList();
 	private final ObservableList<BootstrapGroup> allBootstraps = FXCollections.observableArrayList();
+	private final ObservableList<NativeMethod> allNatives = FXCollections.observableArrayList();
 	private final FilteredList<MethodProfile> methodItems = new FilteredList<>(allMethods);
 	private final FilteredList<CallSite> dynamicItems = new FilteredList<>(allDynamic);
 	private final FilteredList<CallSite> stringItems = new FilteredList<>(allStrings);
 	private final FilteredList<BootstrapGroup> bootstrapItems = new FilteredList<>(allBootstraps);
+	private final FilteredList<NativeMethod> nativeItems = new FilteredList<>(allNatives);
 	private final SimpleObjectProperty<ClassMemberPathNode> selectedCaller = new SimpleObjectProperty<>();
 	private final SimpleObjectProperty<ClassMemberPathNode> selectedTarget = new SimpleObjectProperty<>();
 	private final SimpleObjectProperty<CallSite> selectedCall = new SimpleObjectProperty<>();
@@ -226,7 +229,13 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		column(bootstraps, "resource", BootstrapGroup::resource, 220);
 		installItems(bootstraps, bootstrapItems);
 		bootstraps.getSelectionModel().selectedItemProperty().addListener((_, _, group) -> { if (!rebuilding && group != null) select(group); });
-		tabs.getTabs().addAll(tab("hotspots", methods), tab("dynamic", dynamicCalls), tab("families", bootstraps), tab("strings", stringCalls));
+		nativeMethods.setId("investigate-native-methods");
+		column(nativeMethods, "method", item -> item.method().methodName(), 470);
+		column(nativeMethods, "native-callers", item -> item.callers().size(), 100);
+		column(nativeMethods, "resource", item -> item.method().resource(), 220);
+		installItems(nativeMethods, nativeItems);
+		nativeMethods.getSelectionModel().selectedItemProperty().addListener((_, _, item) -> { if (!rebuilding && item != null) select(item); });
+		tabs.getTabs().addAll(tab("hotspots", methods), tab("dynamic", dynamicCalls), tab("families", bootstraps), tab("strings", stringCalls), tab("native", nativeMethods));
 		tabs.getSelectionModel().selectedItemProperty().addListener((_, _, tab) -> {
 			clearSelection();
 			detailGeneration.incrementAndGet();
@@ -235,8 +244,9 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 			if (value instanceof MethodProfile method) select(method);
 			else if (value instanceof CallSite site) select(site);
 			else if (value instanceof BootstrapGroup group) select(group);
+			else if (value instanceof NativeMethod item) select(item);
 		});
-		for (TableView<?> table : List.of(methods, dynamicCalls, stringCalls, bootstraps)) {
+		for (TableView<?> table : List.of(methods, dynamicCalls, stringCalls, bootstraps, nativeMethods)) {
 			table.setPlaceholder(new Label(text("empty")));
 			table.setOnMouseClicked(event -> { if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) open(selectedCaller.get(), false); });
 			table.setOnKeyPressed(event -> { if (event.getCode() == KeyCode.ENTER) open(selectedCaller.get(), false); });
@@ -263,9 +273,11 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 					allDynamic.setAll(report.callSites().stream().filter(CallSite::dynamic).toList());
 					allStrings.setAll(report.callSites().stream().filter(site -> !site.dynamic()).toList());
 					allBootstraps.setAll(report.bootstraps());
+					allNatives.setAll(report.nativeMethods());
 					rebuilding = false;
 					summary.setText(String.format(text("summary"), report.classes(), report.methods().size(),
-							report.callSites().stream().filter(site -> site.dynamic() && !site.standardBootstrap()).count(), report.bootstraps().stream().filter(group -> group.sites().stream().anyMatch(site -> !site.standardBootstrap())).count()));
+							report.callSites().stream().filter(site -> site.dynamic() && !site.standardBootstrap()).count(), report.bootstraps().stream().filter(group -> group.sites().stream().anyMatch(site -> !site.standardBootstrap())).count())
+							+ " · " + String.format(text("native-summary"), report.nativeMethods().size(), report.nativeLibraries().size()));
 					tabs.setDisable(false);
 					filter();
 					details.setText(summaryReport());
@@ -285,7 +297,7 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private void filter() {
 		detailGeneration.incrementAndGet();
 		rebuilding = true;
-		for (TableView<?> table : List.of(methods, dynamicCalls, stringCalls, bootstraps)) table.getSelectionModel().clearSelection();
+		for (TableView<?> table : List.of(methods, dynamicCalls, stringCalls, bootstraps, nativeMethods)) table.getSelectionModel().clearSelection();
 		clearSelection();
 		String query = search.getText().strip().toLowerCase(Locale.ROOT);
 		methodItems.setPredicate(method -> contains(query, method.methodName(), method.resource()));
@@ -295,6 +307,8 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		stringItems.setPredicate(site -> contains(query, site.method().methodName(), site.targetName(), site.method().resource()));
 		bootstrapItems.setPredicate(group -> (includeStandard.isSelected() || group.sites().stream().anyMatch(site -> !site.standardBootstrap()))
 				&& contains(query, group.target().owner(), group.target().name(), group.resource()));
+		nativeItems.setPredicate(item -> contains(query, item.method().methodName(), item.method().resource())
+				|| item.callers().stream().anyMatch(caller -> contains(query, caller.method().methodName(), caller.method().resource())));
 		rebuilding = false;
 		status.setText(String.format(text("shown"), methodItems.size(), dynamicItems.size(), stringItems.size(), report.failures().size())
 				+ (familyFilter == null ? "" : " · " + text("family-filter")));
@@ -355,6 +369,22 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		details.setText(text.toString());
 	}
 
+	private void select(NativeMethod item) {
+		clearSelection();
+		detailGeneration.incrementAndGet();
+		selectedCaller.set(item.method().path());
+		selectedTarget.set(item.method().path());
+		StringBuilder content = new StringBuilder(item.method().methodName())
+				.append("\nResource: ").append(item.method().resource()).append("\n\n").append(text("native-hint"))
+				.append("\n\n").append(text("native-callers")).append(": ").append(item.callers().size()).append('\n');
+		for (NativeCaller caller : item.callers())
+			content.append(caller.method().methodName()).append(" @ ").append(caller.instruction())
+					.append(" · ").append(caller.method().resource()).append('\n');
+		content.append("\n").append(text("native-libraries")).append(":\n");
+		for (String library : report.nativeLibraries()) content.append(library).append('\n');
+		details.setText(content.toString());
+	}
+
 	private void showFamily() {
 		if (selectedFamily == null) return;
 		familyFilter = selectedFamily;
@@ -407,6 +437,11 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		report.bootstraps().stream().limit(50).forEach(group -> text.append(group.sites().size()).append(" sites · ").append(group.target()).append(" · ").append(group.resource()).append('\n'));
 		text.append("\nMethods with highest indicator counts:\n");
 		report.methods().stream().limit(50).forEach(method -> text.append(method.score()).append(" · ").append(method.methodName()).append(" · ").append(method.resource()).append('\n'));
+		text.append("\n").append(text("native")).append(":\n");
+		report.nativeMethods().forEach(item -> text.append(item.callers().size()).append(" callers · ")
+				.append(item.method().methodName()).append(" · ").append(item.method().resource()).append('\n'));
+		text.append("\n").append(text("native-libraries")).append(":\n");
+		report.nativeLibraries().forEach(library -> text.append(library).append('\n'));
 		if (!report.failures().isEmpty()) text.append("\nScan failures:\n").append(String.join("\n", report.failures()));
 		return text.toString();
 	}

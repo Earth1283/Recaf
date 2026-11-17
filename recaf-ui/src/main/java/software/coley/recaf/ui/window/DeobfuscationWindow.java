@@ -43,6 +43,7 @@ import javafx.scene.control.TreeView;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.ColumnConstraints;
+import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Pane;
@@ -110,9 +111,12 @@ import software.coley.recaf.util.StringUtil;
 import software.coley.recaf.util.threading.Batch;
 import software.coley.recaf.util.threading.ThreadPoolFactory;
 import software.coley.recaf.util.threading.ThreadUtil;
+import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
 import software.coley.recaf.workspace.model.bundle.ClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
+import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -394,6 +398,14 @@ public class DeobfuscationWindow extends RecafStage {
 		BorderPane availablePane = new BorderPane();
 		availablePane.setTop(new BoundLabel(Lang.getBinding("deobf.selection.title")));
 		availablePane.setCenter(availableTree);
+		Button selectAll = new ActionButton(CarbonIcons.ADD, Lang.getBinding("deobf.selection.all"), () -> selectAll(false));
+		Button selectAllRecommended = new ActionButton(CarbonIcons.CLEAN,
+				Lang.getBinding("deobf.selection.all-recommended"), () -> selectAll(true));
+		selectAll.setDisable(descriptors.isEmpty());
+		selectAllRecommended.setDisable(descriptors.isEmpty());
+		FlowPane selectionActions = new FlowPane(8, 8, selectAll, selectAllRecommended);
+		selectionActions.setPadding(new Insets(8, 0, 0, 0));
+		availablePane.setBottom(selectionActions);
 
 		ListView<SelectedTransformer> orderList = new ListView<>(selectedTransformers);
 		orderList.setCellFactory(view -> new ReorderableListCell<>() {
@@ -875,6 +887,20 @@ public class DeobfuscationWindow extends RecafStage {
 	}
 
 	/**
+	 * Enables every available transformer while retaining existing selections and their parameter values.
+	 *
+	 * @param recommended
+	 * 		Whether to also apply the recommended execution order.
+	 */
+	private void selectAll(boolean recommended) {
+		List<SelectedTransformer> all = new ArrayList<>(selectedTransformers);
+		for (TransformerDescriptor descriptor : descriptors)
+			if (findSelected(descriptor) == null)
+				all.add(new SelectedTransformer(descriptor, defaultParameterValues(descriptor)));
+		selectedTransformers.setAll(recommended ? recommendedOrder(all) : all);
+	}
+
+	/**
 	 * @param descriptor
 	 * 		Transformer descriptor to remove from the selection.
 	 */
@@ -1106,15 +1132,26 @@ public class DeobfuscationWindow extends RecafStage {
 	 * Sorts the selected transformers by the recommended execution order.
 	 */
 	private void sortRecommended() {
+		selectedTransformers.setAll(recommendedOrder(selectedTransformers));
+	}
+
+	/**
+	 * @param selection
+	 * 		Selected transformers to order.
+	 *
+	 * @return Selection in recommended order, retaining parameter values.
+	 */
+	@Nonnull
+	private static List<SelectedTransformer> recommendedOrder(@Nonnull List<SelectedTransformer> selection) {
 		// Rebuild the selection in recommended order, keeping each transformer's parameter values.
-		List<ClassTransformer> instances = selectedTransformers.stream()
+		List<ClassTransformer> instances = selection.stream()
 				.map(selected -> selected.descriptor().instance())
 				.map(ClassTransformer.class::cast)
 				.collect(Collectors.toList());
 		List<ClassTransformer> sorted = TransformationApplier.sortRecommended(instances);
-		Map<Class<? extends ClassTransformer>, SelectedTransformer> byType = selectedTransformers.stream()
+		Map<Class<? extends ClassTransformer>, SelectedTransformer> byType = selection.stream()
 				.collect(Collectors.toMap(selected -> selected.descriptor().type(), selected -> selected));
-		selectedTransformers.setAll(sorted.stream().map(t -> byType.get(t.getClass())).toList());
+		return sorted.stream().map(t -> byType.get(t.getClass())).toList();
 	}
 
 	/**
@@ -1503,6 +1540,7 @@ public class DeobfuscationWindow extends RecafStage {
 		private final boolean andApply;
 		private final Editor editorDecompile;
 		private final Editor editorAssembly;
+		private final Label status = new Label();
 		private ClassInfo classInfo;
 
 		// Accessed only by this pane's serial worker. Retain one profile and at most two rendered texts.
@@ -1511,6 +1549,8 @@ public class DeobfuscationWindow extends RecafStage {
 		private JvmClassInfo cachedOriginal;
 		private List<JvmClassInfo> cachedClassState;
 		private JvmClassInfo cachedProcessed;
+		private Workspace cachedRenderWorkspace;
+		private boolean cachedChanged;
 		private String cachedSource;
 		private String cachedAssembly;
 		private JvmDecompiler cachedDecompiler;
@@ -1521,6 +1561,12 @@ public class DeobfuscationWindow extends RecafStage {
 		                         @Nonnull Instance<SearchBar> searchBarProvider,
 		                         boolean andApply) {
 			this.andApply = andApply;
+			if (andApply) {
+				status.setId("deobfuscation-preview-status");
+				status.setWrapText(true);
+				status.setPadding(new Insets(8));
+				setBottom(status);
+			}
 			editorDecompile = new Editor();
 			if (textConfig.doHighlightWord())
 				editorDecompile.setSelectedWordHighlighting(new SelectedWordHighlighting());
@@ -1582,6 +1628,8 @@ public class DeobfuscationWindow extends RecafStage {
 				activeEditor().setText("// " + Lang.get("deobf.preview.noselection"));
 				return;
 			}
+			if (andApply)
+				status.textProperty().bind(Lang.getBinding("deobf.preview.loading"));
 			try {
 				Workspace workspace = workspaceManager.getCurrent();
 				if (workspace == null)
@@ -1630,6 +1678,8 @@ public class DeobfuscationWindow extends RecafStage {
 					cachedWorkspace = request.workspace();
 					cachedOriginal = request.original();
 					cachedClassState = request.classState();
+					cachedRenderWorkspace = request.workspace();
+					cachedChanged = false;
 				}
 				if (cachedProcessed == null) {
 					JvmClassInfo processed = request.original();
@@ -1642,13 +1692,35 @@ public class DeobfuscationWindow extends RecafStage {
 						JvmTransformResult result = applier.transformJvm(request.types(), request.parameters(), feedback);
 						if (obsoleteProfile(request))
 							return;
-						result.getTransformerFailures().forEach((_, map) -> map.forEach((transformer, error) ->
-								logger.debugging(l -> l.warn("Transformer '{}' failure: ", transformer.getSimpleName(), error))));
+						Map<String, JvmClassInfo> originals = new HashMap<>();
+						request.classState().forEach(info -> originals.putIfAbsent(info.getName(), info));
+						cachedChanged = result.getTransformedClasses().values().stream().anyMatch(info -> {
+							JvmClassInfo original = originals.get(info.getName());
+							return original == null || !Arrays.equals(original.getBytecode(), info.getBytecode());
+						});
+						for (var failure : result.getTransformerFailures().entrySet()) {
+							for (var transformerFailure : failure.getValue().entrySet()) {
+								throw new TransformationException("Transformer '" + transformerFailure.getKey().getSimpleName()
+										+ "' failed on '" + failure.getKey().getValue().getName() + "'", transformerFailure.getValue());
+							}
+						}
 						for (JvmClassInfo resultClass : result.getTransformedClasses().values()) {
 							if (resultClass.getName().equals(request.original().getName())) {
 								processed = resultClass;
 								break;
 							}
+						}
+						// Decompilers resolve nested classes and other dependencies through the workspace.
+						// Put every transformed class ahead of the originals without committing the result.
+						if (result.getTransformedClasses().values().stream()
+								.anyMatch(info -> !info.getName().equals(request.original().getName()))) {
+							BasicJvmClassBundle previewBundle = new BasicJvmClassBundle();
+							result.getTransformedClasses().values().forEach(previewBundle::put);
+							// Even an unchanged outer class needs its own cache when its inner classes change.
+							processed = processed.toJvmClassBuilder().build();
+							previewBundle.put(processed);
+							cachedRenderWorkspace = new BasicWorkspace(new WorkspaceResourceBuilder()
+									.withJvmClassBundle(previewBundle).build(), request.workspace().getAllResources(true), false);
 						}
 					}
 					cachedProcessed = processed;
@@ -1662,8 +1734,8 @@ public class DeobfuscationWindow extends RecafStage {
 					if (request.decompile()) {
 						// Wait on our own worker so rapidly changing settings cannot flood the decompiler pool.
 						var result = (request.decompiler() == null ?
-								decompilerManager.decompile(request.workspace(), cachedProcessed) :
-								decompilerManager.decompile(request.decompiler(), request.workspace(), cachedProcessed)).get();
+								decompilerManager.decompile(cachedRenderWorkspace, cachedProcessed) :
+								decompilerManager.decompile(request.decompiler(), cachedRenderWorkspace, cachedProcessed)).get();
 						text = result.getText();
 						if (text == null || result.getException() != null)
 							throw new IllegalStateException("Could not decompile preview", result.getException());
@@ -1676,10 +1748,13 @@ public class DeobfuscationWindow extends RecafStage {
 					}
 				}
 				String rendered = text;
+				boolean changed = cachedChanged;
 				Platform.runLater(() -> {
 					if (obsoleteRender(request))
 						return;
 					activeEditor().setText(rendered);
+					if (andApply)
+						status.textProperty().bind(Lang.getBinding(changed ? "deobf.preview.changed" : "deobf.preview.unchanged"));
 					publishPreview(andApply, new PreviewText(request.workspace(), request.original(), request.classState(),
 							request.decompile(), request.decompiler(), request.decompilerHash(), rendered));
 				});
@@ -1718,6 +1793,8 @@ public class DeobfuscationWindow extends RecafStage {
 
 		private void showPreviewFailure(@Nonnull Throwable error) {
 			logger.warn("Could not generate deobfuscation preview", error);
+			if (andApply)
+				status.textProperty().bind(Lang.getBinding("deobf.preview.failed"));
 			String text = "// Failed to transform: " + error.getMessage() + "\n"
 					+ "// " + StringUtil.traceToString(error).replace("\n", "\n// ");
 			editorAssembly.setText(text);

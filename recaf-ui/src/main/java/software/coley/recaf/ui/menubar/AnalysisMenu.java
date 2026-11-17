@@ -96,6 +96,11 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		itemSimplifyBitwise.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 		getItems().add(itemSimplifyBitwise);
 
+		ActionMenuItem itemSimplifySkid = action("menu.analysis.simplify-skid", CarbonIcons.DEVELOPMENT,
+				() -> openPreset(BuiltinTransformationPresets.SKIDFUSCATOR_SIMPLIFICATION));
+		itemSimplifySkid.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
+		getItems().add(itemSimplifySkid);
+
 		getItems().add(action("flow.simplify", CarbonIcons.DEVELOPMENT,
 				() -> openPreset(BuiltinTransformationPresets.CONTROL_FLOW_SIMPLIFICATION)));
 		getItems().add(action("flow.trace.title", CarbonIcons.SEARCH, pluginNavigation::openInfluenceTrace));
