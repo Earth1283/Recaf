@@ -89,6 +89,7 @@ A complete list of features can be found in the [user guide](https://recaf.coley
 
 - [User guide](https://recaf.coley.software/user/index.html): Covers functionality, configuration, and usage.
 - [Developer guide](https://recaf.coley.software/dev/index.html): Covers architecture, scripting, plugins, and APIs.
+- [Static exploration](docs/static-exploration.md): This fork's dispatcher simplification, backward input tracing, and visual plugin execution explorer.
 - [Discord](https://discord.gg/Bya5HaA): Community discussion, support, and hangout.
 
 ## Development Setup

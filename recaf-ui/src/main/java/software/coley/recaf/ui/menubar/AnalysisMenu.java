@@ -96,6 +96,11 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		itemSimplifyBitwise.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 		getItems().add(itemSimplifyBitwise);
 
+		getItems().add(action("flow.simplify", CarbonIcons.DEVELOPMENT,
+				() -> openPreset(BuiltinTransformationPresets.CONTROL_FLOW_SIMPLIFICATION)));
+		getItems().add(action("flow.trace.title", CarbonIcons.SEARCH, pluginNavigation::openInfluenceTrace));
+		getItems().add(action("flow.explorer.title", CarbonIcons.CHART_CUSTOM, () -> pluginNavigation.openExecutionExplorer(null)));
+
 		Menu presetMenu = menu("menu.analysis.deobfuscation-presets", new FontIconView(CarbonIcons.SAVE));
 		presetMenu.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not().or(hasPresets.not()));
 		getItems().add(presetMenu);

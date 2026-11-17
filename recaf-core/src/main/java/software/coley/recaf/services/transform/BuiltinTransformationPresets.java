@@ -1,6 +1,11 @@
 package software.coley.recaf.services.transform;
 
 import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredicateFoldingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.GotoInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.VariableFoldingTransformer;
@@ -12,6 +17,16 @@ import java.util.Map;
  * Built-in profiles for common deobfuscation tasks, independent of saved user presets.
  */
 public final class BuiltinTransformationPresets {
+	/** Conservative local integer dispatcher unflattening, followed by ordinary folding and cleanup. */
+	public static final TransformationPreset CONTROL_FLOW_SIMPLIFICATION = new TransformationPreset(List.of(
+			new TransformationPreset.TransformerPreset(OpaqueConstantFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DispatcherInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(OpaquePredicateFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DeadCodeRemovingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(GotoInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(VariableFoldingTransformer.class.getName(), Map.of())),
+			6, false, TransformationPreset.ScopeMode.NONE, List.of());
+
 	/**
 	 * Folds known integer and long expressions, including reverse, rotations, shifts, and masks.
 	 * Static constants are collected and inlined first, then bitwise and variable folding are repeated

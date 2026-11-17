@@ -74,6 +74,9 @@ public class PluginContextMenuAdapter implements ClassContextMenuAdapter, Method
 	public void adaptJvmClassMenu(@Nonnull ContextMenu menu, @Nonnull ContextSource source, @Nonnull Workspace workspace,
 	                              @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
 	                              @Nonnull JvmClassInfo info) {
+		if (workspace == workspaceManager.getCurrent())
+			menu.getItems().add(actionLiteral(Lang.get("flow.explorer.title"), CarbonIcons.CHART_CUSTOM,
+					() -> navigation.openExecutionExplorer(null)));
 		PluginIndex index = indexFor(menu, workspace);
 		if (index == null)
 			return;
@@ -107,6 +110,11 @@ public class PluginContextMenuAdapter implements ClassContextMenuAdapter, Method
 	                                   @Nonnull Workspace workspace, @Nonnull WorkspaceResource resource,
 	                                   @Nonnull ClassBundle<? extends ClassInfo> bundle,
 	                                   @Nonnull ClassInfo declaringClass, @Nonnull MethodMember method) {
+		if (declaringClass.isJvmClass() && workspace == workspaceManager.getCurrent()) {
+			CodeLocation target = CodeLocation.ofMember(declaringClass.getName(), method.getName(), method.getDescriptor());
+			menu.getItems().add(actionLiteral(Lang.get("flow.trace.title"), CarbonIcons.SEARCH, () -> navigation.openInfluenceTrace(target)));
+			menu.getItems().add(actionLiteral(Lang.get("flow.explorer.title"), CarbonIcons.CHART_CUSTOM, () -> navigation.openExecutionExplorer(target)));
+		}
 		PluginIndex index = indexFor(menu, workspace);
 		if (index == null)
 			return;

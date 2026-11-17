@@ -26,12 +26,15 @@ import software.coley.recaf.services.analysis.plugin.security.SecurityFinding;
 import software.coley.recaf.services.analysis.plugin.semantic.CodeLocation;
 import software.coley.recaf.services.analysis.plugin.semantic.PluginIndex;
 import software.coley.recaf.services.analysis.plugin.semantic.PluginSemanticService;
+import software.coley.recaf.services.analysis.flow.FlowGraph.Site;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.navigation.ClassNavigable;
 import software.coley.recaf.services.navigation.Navigable;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.richtext.source.JavaContextActionSupport;
 import software.coley.recaf.ui.docking.DockingManager;
+import software.coley.recaf.ui.pane.analysis.ExecutionExplorerPane;
+import software.coley.recaf.ui.pane.analysis.InfluenceTracePane;
 import software.coley.recaf.util.Animations;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.workspace.model.Workspace;
@@ -56,6 +59,8 @@ public class PluginNavigation {
 	private final Instance<PluginNavigatorPane> navigatorProvider;
 	private final Instance<PluginNameRecoveryPane> recoveryProvider;
 	private final Instance<PluginSecurityPane> securityProvider;
+	private final Instance<ExecutionExplorerPane> executionProvider;
+	private final Instance<InfluenceTracePane> influenceProvider;
 
 	@Inject
 	public PluginNavigation(@Nonnull WorkspaceManager workspaceManager,
@@ -64,7 +69,9 @@ public class PluginNavigation {
 	                        @Nonnull DockingManager dockingManager,
 	                        @Nonnull Instance<PluginNavigatorPane> navigatorProvider,
 	                        @Nonnull Instance<PluginNameRecoveryPane> recoveryProvider,
-	                        @Nonnull Instance<PluginSecurityPane> securityProvider) {
+	                        @Nonnull Instance<PluginSecurityPane> securityProvider,
+	                        @Nonnull Instance<ExecutionExplorerPane> executionProvider,
+	                        @Nonnull Instance<InfluenceTracePane> influenceProvider) {
 		this.workspaceManager = workspaceManager;
 		this.semanticService = semanticService;
 		this.actions = actions;
@@ -72,6 +79,8 @@ public class PluginNavigation {
 		this.navigatorProvider = navigatorProvider;
 		this.recoveryProvider = recoveryProvider;
 		this.securityProvider = securityProvider;
+		this.executionProvider = executionProvider;
+		this.influenceProvider = influenceProvider;
 	}
 
 	/**
@@ -279,6 +288,27 @@ public class PluginNavigation {
 	 */
 	public void openSecurityTriage() {
 		openTool(PluginSecurityPane.class, securityProvider, "mcplugin.security.title", CarbonIcons.SECURITY, pane -> {});
+	}
+
+	/** Opens the separate static execution map, optionally focused on a method. */
+	public void openExecutionExplorer(@Nullable CodeLocation method) {
+		openTool(ExecutionExplorerPane.class, executionProvider, "flow.explorer.title", CarbonIcons.CHART_CUSTOM,
+				pane -> { if (method != null) pane.request(method); });
+	}
+
+	/** Opens sink-first influence tracing with all recognized privileged call sites. */
+	public void openInfluenceTrace() {
+		openTool(InfluenceTracePane.class, influenceProvider, "flow.trace.title", CarbonIcons.SEARCH, pane -> {});
+	}
+
+	/** Focuses tracing on one exact call site from the execution map. */
+	public void openInfluenceTrace(@Nonnull Site site) {
+		openTool(InfluenceTracePane.class, influenceProvider, "flow.trace.title", CarbonIcons.SEARCH, pane -> pane.request(site));
+	}
+
+	/** Chooses call sites in, or referring to, the method selected in an editor context menu. */
+	public void openInfluenceTrace(@Nonnull CodeLocation method) {
+		openTool(InfluenceTracePane.class, influenceProvider, "flow.trace.title", CarbonIcons.SEARCH, pane -> pane.request(method));
 	}
 
 	/**

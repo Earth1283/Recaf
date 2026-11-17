@@ -5,6 +5,7 @@ import jakarta.annotation.Nullable;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DuplicateCatchMergingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.GotoInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.InvokeDynamicInliningTransformer;
@@ -50,6 +51,7 @@ final class DeobfuscatedView {
 			CallResultInliningTransformer.class,
 			InvokeDynamicInliningTransformer.class,
 			OpaqueConstantFoldingTransformer.class,
+			DispatcherInliningTransformer.class,
 			OpaquePredicateFoldingTransformer.class,
 			GotoInliningTransformer.class,
 			DeadCodeRemovingTransformer.class,

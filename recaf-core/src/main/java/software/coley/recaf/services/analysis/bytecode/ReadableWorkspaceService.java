@@ -92,7 +92,7 @@ public class ReadableWorkspaceService {
 					new TransformationPhase("Resolve proven static string bootstraps", 1, InvokeDynamicInliningTransformer.class),
 					new TransformationPhase("Decode strings and simplify control flow", 2,
 							List.of(StaticValueCollectionTransformer.class, StaticValueInliningTransformer.class, CallResultInliningTransformer.class,
-									OpaqueConstantFoldingTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class, VariableFoldingTransformer.class),
+									OpaqueConstantFoldingTransformer.class, DispatcherInliningTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class, VariableFoldingTransformer.class),
 							new TransformationParameters(withInitializers(values))));
 			for (TransformationPhase phase : phases) {
 				check(cancelled);
