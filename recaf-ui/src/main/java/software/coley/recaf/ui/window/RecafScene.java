@@ -42,7 +42,8 @@ public class RecafScene extends Scene {
 				"/style/code-editor.css",
 				"/style/docking.css",
 				"/style/hex.css",
-				"/style/tweaks.css"
+				"/style/tweaks.css",
+				"/style/islands.css"
 		);
 	}
 }

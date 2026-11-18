@@ -1,0 +1,75 @@
+/* Islands Dark. The frame shows through the gaps between docked work areas. */
+.root {
+    -color-bg-inset: #28282e;
+    -color-bg-default: #191a1c;
+    -color-bg-overlay: #202125;
+    -color-bg-subtle: #303137;
+    -color-border-default: #404248;
+    -color-border-muted: #34363b;
+    -color-border-subtle: #393b40;
+    -color-fg-default: #dfe1e5;
+    -color-fg-muted: #a0a4ad;
+    -color-accent-fg: #82aaff;
+    -color-accent-emphasis: #4f76b5;
+    -color-accent-subtle: #293a58;
+    -color-base-8: #2c313a;
+}
+.workspace-toolbar {
+    -fx-padding: 0 2 5 0;
+    -fx-spacing: 4;
+    -fx-background-color: -color-bg-inset;
+}
+.workspace-toolbar .menu-bar { -fx-background-color: transparent; }
+.workspace-toolbar .menu { -fx-padding: 4 7; }
+.workspace-search {
+    -fx-font-size: 12px;
+    -fx-padding: 3 8;
+    -fx-background-radius: 6;
+}
+.container-branch { -fx-background-color: -color-bg-inset; }
+.container-branch:horizontal > .split-pane-divider { -fx-padding: 0 2.5; }
+.container-branch:vertical > .split-pane-divider { -fx-padding: 2.5 0; }
+.container-leaf {
+    -fx-background-color: -color-bg-overlay;
+    -fx-background-radius: 8;
+    -fx-padding: 3;
+    -fx-border-width: 0;
+}
+.header-region, .header-pane .header {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+/* Bento measures the header's insets but lays its content wrapper at the origin.
+   Pad the wrapper so both halves of the inset surround the icon and title. */
+.header-pane .header > StackPane { -fx-padding: 2 7 4 7; }
+.header-pane .header:hover {
+    -fx-background-color: -color-bg-subtle;
+    -fx-background-radius: 5;
+}
+.header-pane .header:selected, .header-pane:active .header:selected {
+    -fx-background-color: #405c88, #293a58;
+    -fx-background-insets: 1, 2;
+    -fx-background-radius: 6, 5;
+}
+.embedded-bento .container-leaf { -fx-padding: 0; }
+.coffee-stroke {
+    -fx-stroke: #d7af92;
+    -fx-fill: transparent;
+    -fx-stroke-width: 1.2;
+    -fx-stroke-line-cap: round;
+    -fx-stroke-line-join: round;
+}
+
+.workspace-tool-stripe {
+    -fx-padding: 1 4 1 0;
+    -fx-spacing: 4;
+}
+.workspace-tool-stripe .button {
+    -fx-background-color: transparent;
+    -fx-background-radius: 5;
+    -fx-padding: 6;
+}
+.workspace-tool-stripe .button:hover { -fx-background-color: -color-bg-subtle; }
+.workspace-tool-stripe .button:focused {
+    -fx-background-color: -color-accent-subtle;
+}

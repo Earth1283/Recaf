@@ -1,0 +1,109 @@
+name: Platform builds
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-intel
+            javafx: mac
+            library: libglass.dylib
+            architecture: x86_64
+          - target: macos-apple-silicon
+            javafx: mac-aarch64
+            library: libglass.dylib
+            architecture: arm64
+          - target: windows-x86_64
+            javafx: win
+            library: glass.dll
+            architecture: x86-64
+          - target: linux-amd64
+            javafx: linux
+            library: libglass.so
+            architecture: x86-64
+    env:
+      TARGET_VERSION: '25'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.TARGET_VERSION }}
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Build executable JAR with platform JavaFX libraries
+        run: ./gradlew :recaf-ui:shadowJar -Pjfx.platform=${{ matrix.javafx }}
+      - name: Verify and name the package
+        env:
+          TARGET: ${{ matrix.target }}
+          LIBRARY: ${{ matrix.library }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          mkdir package
+          jar="package/recaf-$TARGET.jar"
+          cp recaf-ui/build/libs/recaf-ui-*-all.jar "$jar"
+          unzip -p "$jar" "$LIBRARY" > "$RUNNER_TEMP/$LIBRARY"
+          file -b "$RUNNER_TEMP/$LIBRARY" | grep -F "$ARCHITECTURE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          path: package/*.jar
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Update nightly prerelease
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-nightly
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: package
+          merge-multiple: true
+      - name: Publish all four packages to the rolling prerelease
+        working-directory: package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A slower build or a rerun of an older commit must not move nightly backwards.
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "Skipping superseded commit $GITHUB_SHA"
+            exit 0
+          fi
+
+          jars=(recaf-macos-intel.jar recaf-macos-apple-silicon.jar recaf-windows-x86_64.jar recaf-linux-amd64.jar)
+          sha256sum "${jars[@]}" > SHA256SUMS
+          echo "Built from $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA. Requires Java 25." > "$RUNNER_TEMP/notes.md"
+          release_args=(--title "Recaf nightly" --notes-file "$RUNNER_TEMP/notes.md" --prerelease --latest=false)
+
+          release_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name == "nightly") | .id')
+          if [[ -n "$release_id" ]]; then
+            gh release upload nightly "${jars[@]}" SHA256SUMS --clobber
+            git push --force origin "$GITHUB_SHA:refs/tags/nightly"
+            gh release edit nightly "${release_args[@]}"
+          else
+            git push --force origin "$GITHUB_SHA:refs/tags/nightly"
+            gh release create nightly "${jars[@]}" SHA256SUMS --verify-tag "${release_args[@]}"
+          fi

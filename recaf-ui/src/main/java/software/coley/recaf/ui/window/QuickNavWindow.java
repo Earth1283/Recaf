@@ -17,6 +17,7 @@ import javafx.scene.control.ListCell;
 import javafx.scene.control.OverrunStyle;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.control.TextInputControl;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
@@ -442,6 +443,14 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 		FxThreadUtil.run(pluginContent::focusSearchBar);
 	}
 
+	/** Opens the combined search, ready for a new query. */
+	public void showAll() {
+		tabs.getSelectionModel().selectFirst();
+		show();
+		requestFocus();
+		((ContentPaneBase) tabs.getSelectionModel().getSelectedItem().getContent()).focusSearchBar();
+	}
+
 	private static boolean contains(@Nullable String text, @Nonnull String search) {
 		return text != null && text.contains(search);
 	}
@@ -472,8 +481,13 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 			searchBar.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
 				if (e.getCode() == KeyCode.UP)
 					getParent().requestFocus();
-				else if (e.getCode() == KeyCode.DOWN)
+				else if (e.getCode() == KeyCode.DOWN) {
 					results.selectCell();
+					e.consume();
+				} else if (e.getCode() == KeyCode.ENTER && e.getTarget() instanceof TextInputControl && !results.list.isEmpty()) {
+					results.openFirst();
+					e.consume();
+				}
 			});
 		}
 
@@ -610,17 +624,28 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 		private static final PseudoClass PSEUDO_HOVER = PseudoClass.getPseudoClass("hover");
 		private final ObservableList<T> list = FXCollections.observableArrayList();
 		private final VirtualFlow<T, Cell<T, Node>> flow;
-		private final Function<T, PathNode<?>> pathMapper;
+		private final Consumer<T> openResult;
 
 		private PathResultsPane(@Nonnull Actions actions, @Nonnull Stage stage,
 		                        @Nonnull Function<T, PathNode<?>> pathMapper,
 		                        @Nonnull Consumer<ListCell<T>> renderCell) {
-			this.pathMapper = pathMapper;
-			flow = VirtualFlow.createVertical(list, initial -> new ResultCell(initial, actions, stage, renderCell));
+			openResult = item -> {
+				try {
+					actions.gotoDeclaration(pathMapper.apply(item));
+					stage.hide();
+				} catch (IncompletePathException ex) {
+					logger.error("Failed to open path", ex);
+				}
+			};
+			flow = VirtualFlow.createVertical(list, initial -> new ResultCell(initial, renderCell));
 			setCenter(new VirtualizedScrollPane<>(flow));
 			list.addListener((InvalidationListener) e -> {
 				flow.setFocusTraversable(!list.isEmpty());
 			});
+		}
+
+		private void openFirst() {
+			openResult.accept(list.getFirst());
 		}
 
 		/**
@@ -639,20 +664,13 @@ public class QuickNavWindow extends AbstractIdentifiableStage {
 			private final Runnable select;
 			private int index;
 
-			private ResultCell(@Nullable T initial, @Nonnull Actions actions, @Nonnull Stage stage,
+			private ResultCell(@Nullable T initial,
 			                   @Nonnull Consumer<ListCell<T>> renderCell) {
 				this.renderCell = renderCell;
 
 				select = () -> {
-					try {
-						T item = cell.getItem();
-						if (item != null) {
-							actions.gotoDeclaration(pathMapper.apply(item));
-							stage.hide();
-						}
-					} catch (IncompletePathException ex) {
-						logger.error("Failed to open path", ex);
-					}
+					if (cell.getItem() != null)
+						openResult.accept(cell.getItem());
 				};
 
 				updateItem(initial);

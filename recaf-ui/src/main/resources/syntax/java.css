@@ -1,17 +1,17 @@
 .code-area .keyword {
-    -fx-fill: rgb(0, 175, 255);
+    -fx-fill: #cf8e6d;
 }
 
 .code-area .string {
-    -fx-fill: rgb(175, 215, 223);
+    -fx-fill: #85a876;
 }
 
 .code-area .constant {
-	-fx-fill: rgb(125, 215, 215);
+	-fx-fill: #6ea3c9;
 }
 
 .code-area .annotation {
-    -fx-fill: rgb(0, 215, 215);
+    -fx-fill: #bbb568;
 }
 
 .code-area .comment-javadoc {
@@ -31,9 +31,9 @@
 }
 
 .code-area .comment-multi {
-	-fx-fill: rgb(155, 155, 215);
+	-fx-fill: #91969e;
 }
 
 .code-area .comment-line {
-	-fx-fill: rgb(175, 175, 215);
+	-fx-fill: #91969e;
 }

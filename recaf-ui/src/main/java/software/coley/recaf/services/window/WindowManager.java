@@ -15,6 +15,7 @@ import software.coley.collections.observable.ObservableList;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.Service;
 import software.coley.recaf.ui.window.IdentifiableStage;
+import software.coley.recaf.ui.window.QuickNavWindow;
 import software.coley.recaf.util.NodeEvents;
 
 import java.util.Collection;
@@ -236,6 +237,11 @@ public class WindowManager implements Service {
 	@Nonnull
 	public Stage getMappingPreviewWindow() {
 		return Objects.requireNonNull(getWindow(WIN_MAP_PROGRESS));
+	}
+
+	/** Opens the combined workspace search and focuses its query field. */
+	public void showSearchNowhere() {
+		((QuickNavWindow) getQuickNav()).showAll();
 	}
 
 	/**

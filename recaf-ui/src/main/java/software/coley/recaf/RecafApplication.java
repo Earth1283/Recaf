@@ -1,10 +1,18 @@
 package software.coley.recaf;
 
 import javafx.application.Application;
+import javafx.beans.binding.Bindings;
+import javafx.geometry.Pos;
 import javafx.scene.Scene;
+import javafx.scene.control.ContentDisplay;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import software.coley.recaf.cdi.UiInitializationEvent;
 import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.navigation.NavigationHistoryService;
@@ -14,13 +22,15 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.RecafTheme;
 import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.ui.config.WindowScaleConfig;
+import software.coley.recaf.ui.control.ActionButton;
+import software.coley.recaf.ui.control.DoubleShiftShortcut;
+import software.coley.recaf.ui.docking.DockingManager;
 import software.coley.recaf.ui.menubar.MainMenu;
 import software.coley.recaf.ui.window.QuickNavWindow;
-import software.coley.recaf.ui.pane.LoggingPane;
-import software.coley.recaf.ui.docking.DockingManager;
 import software.coley.recaf.ui.window.RecafScene;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Icons;
+import software.coley.recaf.util.Lang;
 import software.coley.recaf.workspace.PathExportingManager;
 
 /**
@@ -52,17 +62,41 @@ public class RecafApplication extends Application {
 
 		// Get components
 		MainMenu menu = recaf.get(MainMenu.class);
-		LoggingPane logging = recaf.get(LoggingPane.class);
+		Actions actions = recaf.get(Actions.class);
 
 		// Layout
 		BorderPane wrapper = new BorderPane();
-		wrapper.setTop(menu);
+		ActionButton search = new ActionButton(CarbonIcons.SEARCH, Lang.getBinding("dialog.quicknav"),
+				windowManager::showSearchNowhere);
+		search.getStyleClass().add("workspace-search");
+		search.withTooltip("dialog.quicknav.shortcut");
+		search.contentDisplayProperty().bind(Bindings.when(wrapper.widthProperty().lessThan(790))
+				.then(ContentDisplay.GRAPHIC_ONLY).otherwise(ContentDisplay.LEFT));
+		HBox toolbar = new HBox(menu, search);
+		toolbar.setAlignment(Pos.CENTER_LEFT);
+		toolbar.getStyleClass().add("workspace-toolbar");
+		HBox.setHgrow(menu, Priority.ALWAYS);
+		wrapper.setTop(toolbar);
+		ActionButton project = new ActionButton(CarbonIcons.TREE_VIEW, dockingManager::toggleWorkspacePanel)
+				.withTooltip("workspace.title");
+		ActionButton inspect = new ActionButton(CarbonIcons.CODE, actions::openBytecodeInvestigation)
+				.withTooltip("investigate.title");
+		ActionButton settings = new ActionButton(CarbonIcons.SETTINGS, actions::openConfig)
+				.withTooltip("menu.config");
+		Region space = new Region();
+		VBox.setVgrow(space, Priority.ALWAYS);
+		VBox tools = new VBox(project, inspect, space, settings);
+		tools.getStyleClass().add("workspace-tool-stripe");
+		tools.visibleProperty().bind(menu.getAnalysisMenu().disableProperty().not());
+		tools.managedProperty().bind(tools.visibleProperty());
+		wrapper.setLeft(tools);
 		wrapper.setCenter(dockingManager.getRoot().asRegion());
 		wrapper.getStyleClass().addAll("padded", "bg-inset");
 
 		// Display
 		WindowScaleConfig scaleConfig = recaf.get(WindowScaleConfig.class);
 		Scene scene = new RecafScene(wrapper);
+		DoubleShiftShortcut.install(stage, windowManager::showSearchNowhere);
 		scene.addEventFilter(KeyEvent.KEY_PRESSED, (KeyEvent event) -> {
 			// Global keybind handling
 			if (keybindingConfig.getNavigateBack().match(event) && navigationHistoryService.back()) {
@@ -76,13 +110,12 @@ public class RecafApplication extends Application {
 				quickNav.show();
 				quickNav.requestFocus();
 			} else if (keybindingConfig.getQuickNav().match(event)) {
-				Stage quickNav = windowManager.getQuickNav();
-				quickNav.show();
-				quickNav.requestFocus();
+				windowManager.showSearchNowhere();
+				event.consume();
 			} else if (keybindingConfig.getExport().match(event) && workspaceManager.hasCurrentWorkspace()) {
 				recaf.get(PathExportingManager.class).export(workspaceManager.getCurrent());
 			} else if (keybindingConfig.getSettings().match(event)) {
-				recaf.get(Actions.class).openConfig();
+				actions.openConfig();
 				event.consume();
 			}
 		});

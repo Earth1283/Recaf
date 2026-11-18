@@ -318,8 +318,8 @@ bind.editor.undo=Undo
 bind.editor.closetab=Close current tab
 bind.navigate.back=Navigate back
 bind.navigate.forward=Navigate forward
-bind.quicknav=Quick nav
-bind.quicknav-plugin=Quick nav (Minecraft plugin)
+bind.quicknav=Search Nowhere
+bind.quicknav-plugin=Search Nowhere (Minecraft plugin)
 bind.workspace.export=Export workspace
 bind.settings=Open settings
 
@@ -495,7 +495,8 @@ dialog.conv.title.literal=Number literal
 dialog.conv.title.expression=Number expression
 
 ## Quick nav
-dialog.quicknav=Quick navigation
+dialog.quicknav=Search Nowhere
+dialog.quicknav.shortcut=Search Nowhere (press Shift twice)
 dialog.quicknav.tab.all=All
 dialog.quicknav.tab.classes=Classes
 dialog.quicknav.tab.members=Members

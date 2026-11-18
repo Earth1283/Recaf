@@ -6,6 +6,7 @@ import software.coley.recaf.ui.config.KeybindingConfig;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.control.TextInputControl;
 import javafx.event.Event;
+import software.coley.recaf.ui.control.DoubleShiftShortcut;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
@@ -83,7 +84,7 @@ public class DockingManager {
 	/** Size in px for {@link #newBottomContainer()} */
 	private static final double BOTTOM_SIZE = 100;
 	/** Size in px for the {@link WorkspaceExplorerPane} in {@link #newWorkspaceContainer()} */
-	private static final double TOP_WORKSPACE_EXPLORER_SIZE = 0.25;
+	private static final double TOP_WORKSPACE_EXPLORER_SIZE = 0.21;
 	/** Split layout holding {@link #ID_CONTAINER_ROOT_TOP} and {@link #ID_CONTAINER_ROOT_BOTTOM} */
 	public static final String ID_CONTAINER_ROOT_SPLIT = "layout-root-split";
 	/** Top half of the main UI at initial layout. */
@@ -188,6 +189,7 @@ public class DockingManager {
 		// Stages created via our docking framework need to be tracked in the window manager.
 		bento.stageBuilding().setStageFactory(originScene -> {
 			DragDropStage stage = new DragDropStage(true);
+			DoubleShiftShortcut.install(stage, windowManager::showSearchNowhere);
 			windowManager.registerAnonymous(stage);
 			return stage;
 		});
@@ -208,12 +210,13 @@ public class DockingManager {
 		// Create root
 		DockBuilding builder = bento.dockBuilding();
 		DockContainer top = newWelcomeContainer();
-		DockContainer bottom = newBottomContainer();
+		DockContainerLeaf bottom = newBottomContainer();
 		builder.root(ID_CONTAINER_ROOT_SPLIT);
 		root = builder.root(ID_CONTAINER_ROOT_SPLIT);
 		root.setOrientation(Orientation.VERTICAL);
 		root.addContainers(top, bottom);
 		root.setContainerSizePx(bottom, BOTTOM_SIZE);
+		root.setContainerCollapsed(bottom, true);
 		bento.registerRoot(root);
 	}
 

@@ -1,0 +1,88 @@
+{
+  "Atlas": {
+    "pkg": "dev.atlas.core",
+    "source": "package dev.atlas.core;\n\npublic final class Atlas {\n    public static void main(String[] args) {\n        RouteRegistry registry = new RouteRegistry();\n        registry.register(new Route(\"/home\"));\n        System.out.println(registry.size());\n    }\n}",
+    "bytecode": "Compiled from \"Atlas.java\"\npublic final class dev.atlas.core.Atlas {\n  public dev.atlas.core.Atlas();\n    Code:\n       0: aload_0\n       1: invokespecial #1                  // Method java/lang/Object.\"<init>\":()V\n       4: return\n\n  public static void main(java.lang.String[]);\n    Code:\n       0: new           #7                  // class dev/atlas/core/RouteRegistry\n       3: dup\n       4: invokespecial #9                  // Method dev/atlas/core/RouteRegistry.\"<init>\":()V\n       7: astore_1\n       8: aload_1\n       9: new           #10                 // class dev/atlas/core/Route\n      12: dup\n      13: ldc           #12                 // String /home\n      15: invokespecial #14                 // Method dev/atlas/core/Route.\"<init>\":(Ljava/lang/String;)V\n      18: invokevirtual #17                 // Method dev/atlas/core/RouteRegistry.register:(Ldev/atlas/core/Route;)V\n      21: getstatic     #21                 // Field java/lang/System.out:Ljava/io/PrintStream;\n      24: aload_1\n      25: invokevirtual #27                 // Method dev/atlas/core/RouteRegistry.size:()I\n      28: invokevirtual #31                 // Method java/io/PrintStream.println:(I)V\n      31: return\n}",
+    "methods": [
+      [
+        4,
+        "main"
+      ]
+    ]
+  },
+  "PathCodec": {
+    "pkg": "dev.atlas.io",
+    "source": "package dev.atlas.io;\n\npublic final class PathCodec {\n    public static String normalize(String path) {\n        return path.startsWith(\"/\") ? path : \"/\" + path;\n    }\n}",
+    "bytecode": "Compiled from \"PathCodec.java\"\npublic final class dev.atlas.io.PathCodec {\n  public dev.atlas.io.PathCodec();\n    Code:\n       0: aload_0\n       1: invokespecial #1                  // Method java/lang/Object.\"<init>\":()V\n       4: return\n\n  public static java.lang.String normalize(java.lang.String);\n    Code:\n       0: aload_0\n       1: ldc           #7                  // String /\n       3: invokevirtual #9                  // Method java/lang/String.startsWith:(Ljava/lang/String;)Z\n       6: ifeq          13\n       9: aload_0\n      10: goto          19\n      13: aload_0\n      14: invokedynamic #15,  0             // InvokeDynamic #0:makeConcatWithConstants:(Ljava/lang/String;)Ljava/lang/String;\n      19: areturn\n}",
+    "methods": [
+      [
+        4,
+        "normalize"
+      ]
+    ]
+  },
+  "Route": {
+    "pkg": "dev.atlas.core",
+    "source": "package dev.atlas.core;\n\npublic final class Route {\n    private final String path;\n\n    public Route(String path) {\n        this.path = path;\n    }\n\n    public String path() {\n        return path;\n    }\n}",
+    "bytecode": "Compiled from \"Route.java\"\npublic final class dev.atlas.core.Route {\n  private final java.lang.String path;\n\n  public dev.atlas.core.Route(java.lang.String);\n    Code:\n       0: aload_0\n       1: invokespecial #1                  // Method java/lang/Object.\"<init>\":()V\n       4: aload_0\n       5: aload_1\n       6: putfield      #7                  // Field path:Ljava/lang/String;\n       9: return\n\n  public java.lang.String path();\n    Code:\n       0: aload_0\n       1: getfield      #7                  // Field path:Ljava/lang/String;\n       4: areturn\n}",
+    "methods": [
+      [
+        6,
+        "Route"
+      ],
+      [
+        10,
+        "path"
+      ]
+    ]
+  },
+  "RouteReader": {
+    "pkg": "dev.atlas.io",
+    "source": "package dev.atlas.io;\n\nimport dev.atlas.core.Route;\n\npublic final class RouteReader {\n    public Route read(String value) {\n        return new Route(PathCodec.normalize(value));\n    }\n}",
+    "bytecode": "Compiled from \"RouteReader.java\"\npublic final class dev.atlas.io.RouteReader {\n  public dev.atlas.io.RouteReader();\n    Code:\n       0: aload_0\n       1: invokespecial #1                  // Method java/lang/Object.\"<init>\":()V\n       4: return\n\n  public dev.atlas.core.Route read(java.lang.String);\n    Code:\n       0: new           #7                  // class dev/atlas/core/Route\n       3: dup\n       4: aload_1\n       5: invokestatic  #9                  // Method dev/atlas/io/PathCodec.normalize:(Ljava/lang/String;)Ljava/lang/String;\n       8: invokespecial #15                 // Method dev/atlas/core/Route.\"<init>\":(Ljava/lang/String;)V\n      11: areturn\n}",
+    "methods": [
+      [
+        6,
+        "read"
+      ]
+    ]
+  },
+  "RouteRegistry": {
+    "pkg": "dev.atlas.core",
+    "source": "package dev.atlas.core;\n\nimport java.util.LinkedHashMap;\nimport java.util.Map;\nimport java.util.Optional;\n\npublic final class RouteRegistry {\n    private final Map<String, Route> routes;\n\n    public RouteRegistry() {\n        this.routes = new LinkedHashMap<>();\n    }\n\n    public void register(Route route) {\n        routes.put(route.path(), route);\n    }\n\n    public Optional<Route> resolve(String path) {\n        return Optional.ofNullable(routes.get(path));\n    }\n\n    public int size() {\n        return routes.size();\n    }\n}",
+    "bytecode": "Compiled from \"RouteRegistry.java\"\npublic final class dev.atlas.core.RouteRegistry {\n  private final java.util.Map<java.lang.String, dev.atlas.core.Route> routes;\n\n  public dev.atlas.core.RouteRegistry();\n    Code:\n       0: aload_0\n       1: invokespecial #1                  // Method java/lang/Object.\"<init>\":()V\n       4: aload_0\n       5: new           #7                  // class java/util/LinkedHashMap\n       8: dup\n       9: invokespecial #9                  // Method java/util/LinkedHashMap.\"<init>\":()V\n      12: putfield      #10                 // Field routes:Ljava/util/Map;\n      15: return\n\n  public void register(dev.atlas.core.Route);\n    Code:\n       0: aload_0\n       1: getfield      #10                 // Field routes:Ljava/util/Map;\n       4: aload_1\n       5: invokevirtual #16                 // Method dev/atlas/core/Route.path:()Ljava/lang/String;\n       8: aload_1\n       9: invokeinterface #22,  3           // InterfaceMethod java/util/Map.put:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;\n      14: pop\n      15: return\n\n  public java.util.Optional<dev.atlas.core.Route> resolve(java.lang.String);\n    Code:\n       0: aload_0\n       1: getfield      #10                 // Field routes:Ljava/util/Map;\n       4: aload_1\n       5: invokeinterface #28,  2           // InterfaceMethod java/util/Map.get:(Ljava/lang/Object;)Ljava/lang/Object;\n      10: checkcast     #17                 // class dev/atlas/core/Route\n      13: invokestatic  #32                 // Method java/util/Optional.ofNullable:(Ljava/lang/Object;)Ljava/util/Optional;\n      16: areturn\n\n  public int size();\n    Code:\n       0: aload_0\n       1: getfield      #10                 // Field routes:Ljava/util/Map;\n       4: invokeinterface #38,  1           // InterfaceMethod java/util/Map.size:()I\n       9: ireturn\n}",
+    "methods": [
+      [
+        10,
+        "RouteRegistry"
+      ],
+      [
+        14,
+        "register"
+      ],
+      [
+        18,
+        "resolve"
+      ],
+      [
+        22,
+        "size"
+      ]
+    ]
+  },
+  "Router": {
+    "pkg": "dev.atlas.core",
+    "source": "package dev.atlas.core;\n\npublic final class Router {\n    private final RouteRegistry registry;\n\n    public Router(RouteRegistry registry) {\n        this.registry = registry;\n    }\n\n    public boolean accepts(String path) {\n        return registry.resolve(path).isPresent();\n    }\n}",
+    "bytecode": "Compiled from \"Router.java\"\npublic final class dev.atlas.core.Router {\n  private final dev.atlas.core.RouteRegistry registry;\n\n  public dev.atlas.core.Router(dev.atlas.core.RouteRegistry);\n    Code:\n       0: aload_0\n       1: invokespecial #1                  // Method java/lang/Object.\"<init>\":()V\n       4: aload_0\n       5: aload_1\n       6: putfield      #7                  // Field registry:Ldev/atlas/core/RouteRegistry;\n       9: return\n\n  public boolean accepts(java.lang.String);\n    Code:\n       0: aload_0\n       1: getfield      #7                  // Field registry:Ldev/atlas/core/RouteRegistry;\n       4: aload_1\n       5: invokevirtual #13                 // Method dev/atlas/core/RouteRegistry.resolve:(Ljava/lang/String;)Ljava/util/Optional;\n       8: invokevirtual #19                 // Method java/util/Optional.isPresent:()Z\n      11: ireturn\n}",
+    "methods": [
+      [
+        6,
+        "Router"
+      ],
+      [
+        10,
+        "accepts"
+      ]
+    ]
+  }
+}

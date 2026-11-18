@@ -7,6 +7,7 @@ import software.coley.recaf.info.BinaryXmlFileInfo;
 import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.util.io.ByteHeaderUtil;
 import software.coley.recaf.util.Icons;
+import software.coley.recaf.ui.control.CoffeeIcon;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.FileBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
@@ -28,7 +29,7 @@ public class BasicFileIconProviderFactory implements FileIconProviderFactory {
 	private static final IconProvider IMAGE = Icons.createProvider(Icons.FILE_IMAGE);
 	private static final IconProvider EXECUTABLE = Icons.createProvider(Icons.FILE_PROGRAM);
 	private static final IconProvider ZIP = Icons.createProvider(Icons.FILE_ZIP);
-	private static final IconProvider JAR = Icons.createProvider(Icons.FILE_JAR);
+	private static final IconProvider JAR = CoffeeIcon::new;
 	private static final IconProvider ANDROID = Icons.createProvider(Icons.ANDROID);
 	private static final IconProvider ARSC = Icons.createProvider(Icons.FOLDER_RES);
 	private static final IconProvider UNKNOWN = Icons.createProvider(Icons.FILE_BINARY);

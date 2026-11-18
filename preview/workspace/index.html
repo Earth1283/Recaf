@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recaf · Workspace preview</title><link rel="icon" href="assets/logo.png"><link rel="stylesheet" href="style.css?v=2"><link rel="stylesheet" href="islands.css"><script defer src="preview.js?v=2"></script></head>
+<body data-layout="idea">
+<header class="toolbar">
+  <div class="brand"><img src="assets/logo.png" alt="">Recaf</div>
+  <span class="divider"></span><span class="project"><i data-icon="archive"></i>atlas-core.jar</span>
+  <button id="search" class="search"><i data-icon="search"></i><span>Search Nowhere</span><kbd>Shift Shift</kbd></button>
+  <nav aria-label="Preview candidates"><small>Preview</small><a href="#idea">IntelliJ Islands</a><a href="#code">VS Code</a></nav>
+</header>
+<main>
+  <div class="rail" role="toolbar" aria-label="Tool windows"><button id="projectToggle" title="Project (Ctrl+B)" aria-label="Toggle project"><i data-icon="folder"></i></button><button id="find" title="Search Nowhere" aria-label="Search Nowhere"><i data-icon="search"></i></button><button id="structureToggle" title="Class structure" aria-label="Toggle class structure"><i data-icon="structure"></i></button><button id="panelToggle" title="Bytecode inspector (Ctrl+J)" aria-label="Toggle bytecode inspector"><i data-icon="instructions"></i></button></div>
+  <aside class="sidebar">
+    <div class="projectTree"><header><strong id="treeTitle">Project</strong><button id="collapse" title="Collapse packages" aria-label="Collapse packages"><i data-icon="fold"></i></button></header><div id="tree"></div></div>
+    <section class="structure"><header><strong id="structureTitle">Structure</strong><span id="memberCount"></span></header><div id="members"></div></section>
+  </aside>
+  <section class="desk" aria-label="Class workspace">
+    <section class="editor"><div class="tabstrip"><div id="tabs"></div><button id="split" title="Change bytecode panel position" aria-label="Change bytecode panel position"><i data-icon="split"></i></button></div>
+    <div class="breadcrumb"></div><div id="listing" tabindex="0" aria-label="Java source"></div></section>
+    <section class="dock" aria-label="Class inspection"><header><div class="dockTabs"><button data-view="bytecode">Bytecode</button><button data-view="details">Class details</button></div><label class="methodPick"><i data-icon="method"></i><select aria-label="Inspect method"></select></label><button id="hidePanel" title="Hide inspection panel" aria-label="Hide inspection panel"><i data-icon="close"></i></button></header><div id="inspections"></div></section>
+  </section>
+</main>
+<footer><span class="ready">●</span><span id="statusPath"></span><span class="statusRight" id="lineStatus"></span><span>Java 17</span><span>Read-only</span></footer>
+<dialog aria-label="Search Nowhere"><div class="searchHead"><i data-icon="search"></i><input aria-label="Search classes and methods" placeholder="Search classes and methods…" autocomplete="off"><button id="dismiss" aria-label="Close search">Esc</button></div><div id="results"></div></dialog>
+</body></html>

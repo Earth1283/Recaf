@@ -6,6 +6,7 @@ import software.coley.recaf.info.*;
 import software.coley.recaf.services.phantom.GeneratedPhantomWorkspaceResource;
 import software.coley.recaf.util.io.ByteHeaderUtil;
 import software.coley.recaf.util.Icons;
+import software.coley.recaf.ui.control.CoffeeIcon;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.resource.WorkspaceDirectoryResource;
 import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
@@ -22,7 +23,7 @@ public class BasicResourceIconProviderFactory implements ResourceIconProviderFac
 	private static final IconProvider PROVIDER_ANDROID = Icons.createProvider(Icons.ANDROID);
 	private static final IconProvider PROVIDER_TEXT = Icons.createProvider(Icons.FILE_TEXT);
 	private static final IconProvider PROVIDER_ZIP = Icons.createProvider(Icons.FILE_ZIP);
-	private static final IconProvider PROVIDER_JAR = Icons.createProvider(Icons.FILE_JAR);
+	private static final IconProvider PROVIDER_JAR = CoffeeIcon::new;
 	private static final IconProvider PROVIDER_CLASS = Icons.createProvider(Icons.FILE_CLASS);
 	private static final IconProvider PROVIDER_IMAGE = Icons.createProvider(Icons.FILE_IMAGE);
 	private static final IconProvider PROVIDER_AUDIO = Icons.createProvider(Icons.FILE_AUDIO);
