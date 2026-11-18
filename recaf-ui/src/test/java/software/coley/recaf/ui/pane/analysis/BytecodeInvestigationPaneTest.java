@@ -110,6 +110,7 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 		final WorkspaceManager workspaces = mock(WorkspaceManager.class);
 		final Actions actions = mock(Actions.class);
 		final ReadableWorkspaceService readability = mock(ReadableWorkspaceService.class);
+		final ObfuscatorFingerprinting fingerprinting = spy(new ObfuscatorFingerprinting());
 		final JvmClassInfo original = TestClassUtils.createClass("Fixture", node -> {
 			var helper = node.visitMethod(ACC_PRIVATE | ACC_STATIC, "decode", "(Ljava/lang/String;B)Ljava/lang/String;", null, null);
 			helper.visitVarInsn(ALOAD, 0); helper.visitInsn(ARETURN); helper.visitMaxs(1, 2); helper.visitEnd();
@@ -131,7 +132,8 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 			workspace.getPrimaryResource().getFileBundle().put(new FileInfoBuilder<>().withName("lock/driver-macos.skid").withRawContent(new byte[0]).build());
 			when(workspaces.getCurrent()).thenReturn(workspace);
 			pane = onFx(() -> {
-				var view = new BytecodeInvestigationPane(workspaces, new BytecodeInvestigationService(new BytecodeInvestigationConfig()), readability, actions);
+				var view = new BytecodeInvestigationPane(workspaces, new BytecodeInvestigationService(new BytecodeInvestigationConfig()),
+						readability, fingerprinting, actions);
 				new Scene(view, 1300, 850); view.applyCss(); view.layout();
 				return view;
 			});
@@ -140,6 +142,30 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 		TabPane tabs() { return (TabPane) ((SplitPane) pane.getCenter()).getItems().getFirst(); }
 		TableView<?> table(int index) { return (TableView<?>) tabs().getTabs().get(index).getContent(); }
 		@Override public void close() throws Exception { onFx(() -> { pane.disable(); return null; }); workspace.close(); }
+	}
+
+	@Test
+	void fingerprintingRequiresTheExplicitRunAction() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			await(() -> onFx(() -> !fixture.tabs().isDisabled()));
+			Tab tab = onFx(() -> {
+				Tab fingerprints = fixture.tabs().getTabs().getLast();
+				fixture.tabs().getSelectionModel().select(fingerprints);
+				fixture.button("rescan").fire();
+				return fingerprints;
+			});
+			await(() -> onFx(() -> !fixture.tabs().isDisabled()));
+			verifyNoInteractions(fixture.fingerprinting);
+			onFx(() -> {
+				((Button) tab.getContent().lookup("#investigate-fingerprint-run")).fire();
+				return null;
+			});
+			await(() -> onFx(() -> ((TextArea) tab.getContent().lookup("#investigate-fingerprint-report"))
+					.getText().contains("Skidfuscator · Possible match")));
+			verify(fixture.fingerprinting).scan(same(fixture.workspace.getPrimaryResource()), any());
+			verifyNoInteractions(fixture.readability);
+			assertSame(fixture.original, fixture.workspace.getPrimaryResource().getJvmClassBundle().get("Fixture"));
+		}
 	}
 
 	@Test

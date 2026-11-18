@@ -83,18 +83,20 @@ public class ReadableWorkspaceService {
 				}
 			};
 			Map<String, Object> values = Map.of(
-					OpaqueConstantFoldingTransformer.KEY_INLINE_STRING_CTORS, true,
 					CallResultInliningTransformer.KEY_MAX_STEPS, maxSteps,
 					CallResultInliningTransformer.KEY_ALLOW_UNREACHABLE_UNSUPPORTED, true,
 					StaticValueCollectionTransformer.KEY_MAX_STEPS, maxSteps);
 			List<TransformationPhase> phases = List.of(
 					new TransformationPhase("Fold numeric noise and encoded literals", 2,
-							List.of(SkidXorInliningTransformer.class, OpaqueConstantFoldingTransformer.class, CallResultInliningTransformer.class, VariableFoldingTransformer.class), new TransformationParameters(values)),
+							List.of(LiteralStackSimplificationTransformer.class, SkidXorInliningTransformer.class, OpaqueConstantFoldingTransformer.class,
+									LiteralArrayStringTransformer.class, CallResultInliningTransformer.class, VariableFoldingTransformer.class), new TransformationParameters(values)),
 					new TransformationPhase("Resolve proven bootstrap targets", 1, InvokeDynamicInliningTransformer.class),
 					new TransformationPhase("Decode strings and simplify control flow", 2,
-							List.of(SkidXorInliningTransformer.class, StaticValueCollectionTransformer.class, StaticValueInliningTransformer.class, CallResultInliningTransformer.class,
-									OpaqueConstantFoldingTransformer.class, DispatcherInliningTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class, VariableFoldingTransformer.class),
-							new TransformationParameters(withInitializers(values))));
+							List.of(LiteralStackSimplificationTransformer.class, SkidXorInliningTransformer.class, StaticValueCollectionTransformer.class,
+									StaticValueInliningTransformer.class, CallResultInliningTransformer.class, OpaqueConstantFoldingTransformer.class,
+									DispatcherInliningTransformer.class, OpaquePredicateFoldingTransformer.class, DeadCodeRemovingTransformer.class,
+									LiteralArrayStringTransformer.class, VariableFoldingTransformer.class),
+							new TransformationParameters(withStringConstructorsAndInitializers(values))));
 			for (TransformationPhase phase : phases) {
 				check(cancelled);
 				phaseName.set(phase.id());
@@ -154,8 +156,10 @@ public class ReadableWorkspaceService {
 		}
 	}
 
-	private static Map<String, Object> withInitializers(Map<String, Object> values) {
+	private static Map<String, Object> withStringConstructorsAndInitializers(Map<String, Object> values) {
 		Map<String, Object> result = new HashMap<>(values);
+		// Let the earlier phase remove literal array setup before the general constructor inliner runs.
+		result.put(OpaqueConstantFoldingTransformer.KEY_INLINE_STRING_CTORS, true);
 		result.put(CallResultInliningTransformer.KEY_EVALUATE_CLASS_INITIALIZERS, true);
 		return result;
 	}

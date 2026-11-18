@@ -308,6 +308,15 @@ public class ZkmInvokeDynamicResolver implements InvokeDynamicResolver {
 
 	/**
 	 * @param classNode
+	 * 		Class to check.
+	 * @return Whether the class contains the generated reference metadata structure recognized by this resolver.
+	 */
+	public static boolean hasReferenceMetadata(@Nonnull ClassNode classNode) {
+		return discoverMetadata(classNode) != null;
+	}
+
+	/**
+	 * @param classNode
 	 * 		Class to inspect for ZKM metadata helpers.
 	 *
 	 * @return Discovered metadata, or {@code null} when the class does not appear to be a ZKM-generated class.

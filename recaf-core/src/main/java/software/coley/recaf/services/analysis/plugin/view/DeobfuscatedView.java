@@ -9,6 +9,8 @@ import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherI
 import software.coley.recaf.services.deobfuscation.transform.generic.DuplicateCatchMergingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.GotoInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.InvokeDynamicInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.LiteralArrayStringTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.LiteralStackSimplificationTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredicateFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.RedundantTryCatchRemovingTransformer;
@@ -46,6 +48,7 @@ final class DeobfuscatedView {
 	 * plugin index describes methods by their original signatures.
 	 */
 	static final List<Class<? extends JvmClassTransformer>> PLAN = List.of(
+			LiteralStackSimplificationTransformer.class,
 			StaticValueCollectionTransformer.class,
 			StaticValueInliningTransformer.class,
 			CallResultInliningTransformer.class,
@@ -57,6 +60,7 @@ final class DeobfuscatedView {
 			DeadCodeRemovingTransformer.class,
 			DuplicateCatchMergingTransformer.class,
 			RedundantTryCatchRemovingTransformer.class,
+			LiteralArrayStringTransformer.class,
 			VariableFoldingTransformer.class,
 			DashOpaqueSeedFoldingTransformer.class,
 			ZkmDecryptionCleanupTransformer.class);
