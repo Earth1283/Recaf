@@ -6,6 +6,11 @@ import jakarta.inject.Inject;
 import javafx.stage.Stage;
 import software.coley.recaf.services.window.WindowManager;
 
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
 /**
  * Identifiable stage.
  * <br>
@@ -18,6 +23,13 @@ import software.coley.recaf.services.window.WindowManager;
  * @see AbstractIdentifiableStage Base class to use when creating stages.
  */
 public interface IdentifiableStage {
+	/** Declares the ID of a stage that can be constructed on its first lookup. */
+	@Target(ElementType.TYPE)
+	@Retention(RetentionPolicy.RUNTIME)
+	@interface OnDemand {
+		String value();
+	}
+
 	/**
 	 * @return Unique stage ID.
 	 */

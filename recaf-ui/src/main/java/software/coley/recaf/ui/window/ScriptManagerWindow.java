@@ -14,6 +14,7 @@ import software.coley.recaf.util.Lang;
  * @see ScriptManagerPane
  */
 @Dependent
+@IdentifiableStage.OnDemand(WindowManager.WIN_SCRIPTS)
 public class ScriptManagerWindow extends AbstractIdentifiableStage {
 	@Inject
 	public ScriptManagerWindow(ScriptManagerPane scriptManagerPane) {

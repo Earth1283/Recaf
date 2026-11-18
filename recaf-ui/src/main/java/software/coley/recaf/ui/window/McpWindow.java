@@ -14,6 +14,7 @@ import software.coley.recaf.util.Lang;
  * @see McpPane
  */
 @Dependent
+@IdentifiableStage.OnDemand(WindowManager.WIN_MCP)
 public class McpWindow extends AbstractIdentifiableStage {
 	@Inject
 	public McpWindow(@Nonnull McpPane pane) {

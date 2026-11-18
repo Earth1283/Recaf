@@ -5,12 +5,14 @@ import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import javafx.application.Platform;
 import javafx.geometry.Dimension2D;
 import javafx.geometry.Rectangle2D;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
 import javafx.stage.WindowEvent;
 import org.slf4j.Logger;
+import software.coley.collections.Unchecked;
 import software.coley.collections.observable.ObservableList;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.Service;
@@ -25,6 +27,8 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.FutureTask;
 
 /**
  * Manages active {@link Stage} windows.
@@ -50,7 +54,8 @@ public class WindowManager implements Service {
 	private final WindowStyling windowStyling;
 	private final WindowManagerConfig config;
 	private final ObservableList<Stage> activeWindows = new ObservableList<>();
-	private final Map<String, Stage> windowMappings = new HashMap<>();
+	private final Map<String, Instance.Handle<IdentifiableStage>> deferredStages = new HashMap<>();
+	private final Map<String, Stage> windowMappings = new ConcurrentHashMap<>();
 	private final Map<Stage, Screen> lastStageScreen = new IdentityHashMap<>();
 	private final Map<Stage, Boolean> pendingStageRecentering = new IdentityHashMap<>();
 
@@ -60,11 +65,14 @@ public class WindowManager implements Service {
 		this.windowStyling = windowStyling;
 		this.config = config;
 
-		// Register identifiable stages.
-		// These will be @Dependent scoped, so we need to be careful with their instances.
-		// Interacting with named windows should always be done through this class to prevent duplicate allocations.
-		for (IdentifiableStage stage : stages)
-			register(stage.getId(), stage.asStage());
+		for (var handle : stages.handles()) {
+			var deferred = handle.getBean().getBeanClass().getAnnotation(IdentifiableStage.OnDemand.class);
+			if (deferred == null) {
+				register(handle.get());
+			} else if (windowMappings.containsKey(deferred.value()) || deferredStages.putIfAbsent(deferred.value(), handle) != null) {
+				throw new IllegalStateException("Duplicate window ID: " + deferred.value());
+			}
+		}
 	}
 
 	/**
@@ -97,9 +105,13 @@ public class WindowManager implements Service {
 	 */
 	public void register(@Nonnull String id, @Nonnull Stage stage) {
 		// Validate input, ensuring duplicate allocations are not allowed.
-		if (windowMappings.containsKey(id))
+		if (windowMappings.containsKey(id) || deferredStages.containsKey(id))
 			throw new IllegalStateException("The stage ID was already registered: " + id);
 
+		trackStage(id, stage);
+	}
+
+	private void trackStage(String id, Stage stage) {
 		// Add custom stylesheets if any are registered.
 		if (!windowStyling.getStylesheetUris().isEmpty())
 			NodeEvents.runOnceIfPresentOrOnChange(stage.sceneProperty(),
@@ -188,7 +200,23 @@ public class WindowManager implements Service {
 	 */
 	@Nullable
 	public Stage getWindow(@Nonnull String id) {
-		return windowMappings.get(id);
+		Stage existing = windowMappings.get(id);
+		if (existing != null) return existing;
+		var handle = deferredStages.get(id);
+		if (handle == null) return null;
+
+		// Recheck the mapping on the FX thread in case another lookup created it first.
+		if (!Platform.isFxApplicationThread()) {
+			var result = new FutureTask<>(() -> getWindow(id));
+			Platform.runLater(result);
+			return Unchecked.get(result::get);
+		}
+		IdentifiableStage stage = handle.get();
+		if (!id.equals(stage.getId()))
+			throw new IllegalStateException("Declared window ID differs from its stage ID: " + id);
+		Stage window = stage.asStage();
+		trackStage(id, window);
+		return window;
 	}
 
 	/**

@@ -8,6 +8,7 @@ import software.coley.collections.tree.SortedTreeImpl;
 import software.coley.collections.tree.Tree;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -151,13 +152,17 @@ public class ClasspathUtil {
 		if (classSet == null) {
 			synchronized (ClasspathUtil.class) {
 				if (classSet == null) {
-					classSet = new TreeSet<>();
-					ModuleFinder.ofSystem().findAll().stream()
-							.map(Unchecked.function(ModuleReference::open))
-							.flatMap(Unchecked.function(ModuleReader::list))
-							.filter(s -> s.endsWith(".class") && s.indexOf('-') == -1)
-							.map(s -> s.substring(0, s.length() - 6))
-							.forEach(s -> classSet.add(s));
+					NavigableSet<String> names = new TreeSet<>();
+					for (ModuleReference module : ModuleFinder.ofSystem().findAll()) {
+						try (ModuleReader reader = module.open(); Stream<String> entries = reader.list()) {
+							entries.filter(s -> s.endsWith(".class") && s.indexOf('-') == -1)
+									.map(s -> s.substring(0, s.length() - 6))
+									.forEach(names::add);
+						} catch (IOException ex) {
+							throw new UncheckedIOException("Failed to list classes of " + module.descriptor().name(), ex);
+						}
+					}
+					classSet = names;
 				}
 			}
 		}

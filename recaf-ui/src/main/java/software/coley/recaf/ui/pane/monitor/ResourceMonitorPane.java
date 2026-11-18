@@ -6,12 +6,14 @@ import jakarta.annotation.Nonnull;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import javafx.application.Platform;
+import javafx.beans.value.ObservableValue;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.AccessibleRole;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
+import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Label;
@@ -26,6 +28,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
+import javafx.stage.Window;
 import javafx.stage.WindowEvent;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
@@ -39,6 +42,7 @@ import java.lang.management.MemoryUsage;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -65,6 +69,10 @@ public class ResourceMonitorPane extends HBox {
 	};
 
 	private final ScheduledExecutorService sampler = ThreadPoolFactory.newScheduledThreadPool("resource-monitor-pane", 1, true);
+	private final ObservableValue<Boolean> showing = sceneProperty().flatMap(Scene::windowProperty)
+			.flatMap(Window::showingProperty).orElse(false);
+	private ScheduledFuture<?> sampling;
+	private long samplingSession;
 	private final SummaryMetric memoryMetric;
 	private final SummaryMetric cpuMetric;
 	private final SummaryMetric threadMetric;
@@ -94,7 +102,20 @@ public class ResourceMonitorPane extends HBox {
 		threadMetric.setPrefWidth(EDGE_COLUMN_WIDTH_BONUS);
 
 		getChildren().addAll(memoryMetric, new Separator(Orientation.VERTICAL), cpuMetric, new Separator(Orientation.VERTICAL), threadMetric);
-		sampler.scheduleAtFixedRate(this::sample, 0, 1, TimeUnit.SECONDS);
+		showing.subscribe(visible -> {
+			if (visible) {
+				long session = ++samplingSession;
+				sampling = sampler.scheduleWithFixedDelay(() -> sample(session), 0, 1, TimeUnit.SECONDS);
+			} else if (sampling != null) {
+				sampling.cancel(false);
+				sampling = null;
+				closeActiveDetail();
+				Arrays.fill(processCpuHistory, -1);
+				Arrays.fill(gcCollectionDeltas, -1);
+				Arrays.fill(gcTimeDeltas, -1);
+				previousGcCollectionCount = previousGcTimeMillis = -1;
+			}
+		});
 	}
 
 	private void showMemoryDetails(Node owner) {
@@ -150,12 +171,14 @@ public class ResourceMonitorPane extends HBox {
 			ResourceMonitorMetrics.endThreadCpuTime(session.cpuTimeLease);
 	}
 
-	private void sample() {
+	private void sample(long sessionId) {
 		ActiveDetail session = activeDetail;
 		boolean threadDetails = session != null && session.type != DetailType.MEMORY;
 		try {
 			ResourceMonitorMetrics.Snapshot snapshot = ResourceMonitorMetrics.sample(threadDetails);
 			FxThreadUtil.run(() -> {
+				if (sampling == null || samplingSession != sessionId)
+					return;
 				updateSummary(snapshot);
 				if (session != null && activeDetail == session)
 					session.updater.update(snapshot);

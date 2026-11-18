@@ -16,6 +16,7 @@ import software.coley.recaf.util.Lang;
  * @see SystemInformationPane
  */
 @Dependent
+@IdentifiableStage.OnDemand(WindowManager.WIN_INFO)
 public class SystemInformationWindow extends AbstractIdentifiableStage {
 	@Inject
 	public SystemInformationWindow(@Nonnull SystemInformationPane infoPane) {

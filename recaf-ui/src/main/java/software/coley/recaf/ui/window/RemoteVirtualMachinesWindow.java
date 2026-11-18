@@ -17,6 +17,7 @@ import software.coley.recaf.util.threading.ThreadUtil;
  * @see RemoteVirtualMachinesPane
  */
 @Dependent
+@IdentifiableStage.OnDemand(WindowManager.WIN_REMOTE_VMS)
 public class RemoteVirtualMachinesWindow extends AbstractIdentifiableStage {
 	@Inject
 	public RemoteVirtualMachinesWindow(@Nonnull RemoteVirtualMachinesPane remoteVirtualMachinesPane,

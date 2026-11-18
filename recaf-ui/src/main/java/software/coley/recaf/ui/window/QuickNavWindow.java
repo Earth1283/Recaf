@@ -86,6 +86,7 @@ import java.util.stream.Stream;
  * @author Matt Coley
  */
 @Dependent
+@IdentifiableStage.OnDemand(WindowManager.WIN_QUICK_NAV)
 public class QuickNavWindow extends AbstractIdentifiableStage {
 	private static final Logger logger = Logging.get(QuickNavWindow.class);
 	private final TabPane tabs = new TabPane();

@@ -188,6 +188,21 @@ class WorkspaceModelTest {
 		}
 
 		@Test
+		void enumerateRuntimeClassesAfterSingleLookup() {
+			var runtime = RuntimeWorkspaceResource.getInstance().getJvmClassBundle();
+			var stringClass = runtime.get("java.lang.String");
+			assertNotNull(stringClass);
+			assertSame(stringClass, runtime.get("java/lang/String"));
+
+			// Bulk views must include classes that the workspace never requested individually.
+			var names = runtime.keySet();
+			assertTrue(names.contains("java/time/zone/ZoneOffsetTransitionRule"));
+			assertEquals(names.size(), runtime.size());
+			assertEquals(names.size(), runtime.values().size());
+			assertTrue(runtime.entrySet().contains(Map.entry("java/lang/String", stringClass)));
+		}
+
+		@Test
 		void findClass_embeddedInPrimary() throws IOException {
 			WorkspaceFileResource embeddedResource = new WorkspaceFileResourceBuilder()
 					.withFileInfo(new StubFileInfo("embedded.jar"))

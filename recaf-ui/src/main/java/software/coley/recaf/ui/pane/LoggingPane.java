@@ -3,10 +3,13 @@ package software.coley.recaf.ui.pane;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import javafx.beans.value.ObservableValue;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Cursor;
+import javafx.scene.Scene;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -14,10 +17,10 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Polygon;
 import javafx.scene.shape.Shape;
+import javafx.stage.Window;
 import javafx.util.Duration;
 import org.fxmisc.richtext.CodeArea;
 import org.slf4j.event.Level;
-import software.coley.recaf.analytics.logging.DebuggingLogger;
 import software.coley.recaf.analytics.logging.LogConsumer;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.services.file.RecafDirectoriesConfig;
@@ -27,7 +30,6 @@ import software.coley.recaf.ui.control.richtext.linegraphics.LineGraphicFactory;
 import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.StringUtil;
-import software.coley.recaf.util.threading.ThreadPoolFactory;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -35,8 +37,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Queue;
-import java.util.Random;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Pane for displaying logger calls.
@@ -47,47 +47,44 @@ import java.util.concurrent.TimeUnit;
 public class LoggingPane extends BorderPane implements LogConsumer<String> {
 	private final List<LogCallInfo> infos = Collections.synchronizedList(new ArrayList<>());
 	private final Queue<String> messageQueue = new ArrayDeque<>();
-	private final Editor editor = new Editor();
-	private final CodeArea codeArea = editor.getCodeArea();
+	private final ObservableValue<Boolean> showing = sceneProperty().flatMap(Scene::windowProperty)
+			.flatMap(Window::showingProperty).orElse(false);
+	private CodeArea codeArea;
+	// Guarded by messageQueue, which also preserves log order across producer threads.
+	private boolean displayed;
+	private boolean flushScheduled;
 
 	@Inject
-	public LoggingPane(@Nonnull RecafDirectoriesConfig config, @Nonnull SearchBar searchBar) {
+	public LoggingPane(@Nonnull RecafDirectoriesConfig config, @Nonnull Instance<SearchBar> searchBar) {
+		accept("", Level.TRACE, "Current log will write to: " + StringUtil.pathToAbsoluteString(config.getCurrentLogPath()));
 		Logging.addLogConsumer(this);
-		codeArea.setEditable(false);
-		searchBar.install(editor);
-		editor.getRootLineGraphicFactory().addLineGraphicFactory(new LoggingLineFactory());
-		setCenter(editor);
+		showing.subscribe(visible -> {
+			if (visible && codeArea == null) {
+				Editor editor = new Editor();
+				codeArea = editor.getCodeArea();
+				codeArea.setEditable(false);
+				searchBar.get().install(editor);
+				editor.getRootLineGraphicFactory().addLineGraphicFactory(new LoggingLineFactory());
+				setCenter(editor);
+			}
+			synchronized (messageQueue) {
+				displayed = visible;
+			}
+			if (visible)
+				flushMessages();
+		});
+	}
 
-		// Initial line
-		infos.add(new LogCallInfo(Level.TRACE, null));
-		codeArea.appendText("Current log will write to: " + StringUtil.pathToAbsoluteString(config.getCurrentLogPath()));
-
-		// We want to reduce the calls to the FX thread, so we will chunk log-appends into groups
-		// occurring every 500ms, which shouldn't be too noticeable, and save us some CPU time.
-		ThreadPoolFactory.newScheduledThreadPool("logging-pane", 1, true)
-				.scheduleAtFixedRate(() -> {
-					try {
-						StringBuilder messageBuilder = new StringBuilder();
-						synchronized (messageQueue) {
-							if (messageQueue.isEmpty())
-								return;
-							String message;
-							while ((message = messageQueue.poll()) != null)
-								messageBuilder.append(message).append('\n');
-						}
-						if (messageBuilder.length() > 1) {
-							String collectedMessage = messageBuilder.substring(0, messageBuilder.length() - 1);
-							FxThreadUtil.run(() -> {
-								codeArea.appendText("\n" + collectedMessage);
-								codeArea.showParagraphAtBottom(codeArea.getParagraphs().size() - 1);
-							});
-						}
-					} catch (Throwable t) {
-						// We don't want to cause infinite loops by causing uncaught exceptions to trigger another
-						// logger call, so we will just print the trace here and move on.
-						t.printStackTrace();
-					}
-				}, 100, 500, TimeUnit.MILLISECONDS);
+	private void flushMessages() {
+		String text;
+		synchronized (messageQueue) {
+			if (!displayed || messageQueue.isEmpty())
+				return;
+			text = String.join("\n", messageQueue);
+			messageQueue.clear();
+		}
+		codeArea.appendText(codeArea.getLength() == 0 ? text : "\n" + text);
+		codeArea.showParagraphAtBottom(codeArea.getParagraphs().size() - 1);
 	}
 
 	@Override
@@ -102,10 +99,19 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 				return;
 			messageContent = Objects.requireNonNullElse(throwable.getMessage(), throwable.getClass().getSimpleName());
 		}
-		infos.add(new LogCallInfo(level, throwable));
 		synchronized (messageQueue) {
+			infos.add(new LogCallInfo(level, throwable));
 			messageQueue.add(messageContent);
+			if (!displayed || flushScheduled)
+				return;
+			flushScheduled = true;
 		}
+		FxThreadUtil.delayedRun(500, () -> {
+			synchronized (messageQueue) {
+				flushScheduled = false;
+			}
+			flushMessages();
+		});
 	}
 
 	private record LogCallInfo(
@@ -173,9 +179,4 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 		}
 	}
 
-	private static class PruneError extends RuntimeException {
-		private PruneError() {
-			super(null, null, false, false);
-		}
-	}
 }

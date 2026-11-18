@@ -4,15 +4,12 @@ import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import org.objectweb.asm.ClassReader;
 import org.slf4j.Logger;
-import software.coley.collections.tree.Tree;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.builder.JvmClassInfoBuilder;
 import software.coley.recaf.info.properties.BasicPropertyContainer;
 import software.coley.recaf.util.ClasspathUtil;
 import software.coley.recaf.util.io.IOUtil;
-import software.coley.recaf.util.StringUtil;
-import software.coley.recaf.util.threading.ThreadPoolFactory;
 import software.coley.recaf.workspace.model.bundle.AndroidClassBundle;
 import software.coley.recaf.workspace.model.bundle.BasicFileBundle;
 import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
@@ -27,9 +24,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 
 /**
  * Implementation of a workspace resource sourced from runtime classes.
@@ -42,8 +37,6 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 	private static final Logger logger = Logging.get(RuntimeWorkspaceResource.class);
 	private static final Map<String, JvmClassInfo> cache = new ConcurrentHashMap<>();
 	private static final Set<String> stubClasses = ConcurrentHashMap.newKeySet();
-	private static final Tree<String, String> systemClassTree = ClasspathUtil.getSystemClassTree();
-	private static final Tree<String, String> classpathClassTree = ClasspathUtil.getClasspathClassTree();
 	private final JvmClassBundle classes;
 	private final FileBundle files;
 
@@ -83,6 +76,15 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 	private RuntimeWorkspaceResource() {
 		classes = new BasicJvmClassBundle() {
 			private final byte[] loadBuffer = IOUtil.newByteBuffer();
+			private boolean systemClassesLoaded;
+
+			// Point lookups parse only the requested class. Bulk Map views still include
+			// every readable system class, plus any classpath classes already looked up.
+			private synchronized void loadSystemClasses() {
+				if (systemClassesLoaded) return;
+				ClasspathUtil.getSystemClassSet().forEach(this::get);
+				systemClassesLoaded = true;
+			}
 
 			@Override
 			public JvmClassInfo get(@Nonnull Object name) {
@@ -99,8 +101,8 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 				if (stubClasses.contains(key))
 					return null;
 
-				// Check if the class exists in either the system or classpath trees.
-				if (!hasSystemClass(key) && !hasClasspathClass(key)) {
+				// Check if the class exists in either name index.
+				if (!isSystemClass(key) && !ClasspathUtil.getClasspathClassSet().contains(key)) {
 					stubClasses.add(key);
 					return null;
 				}
@@ -115,8 +117,8 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 				// Try and parse the class and yield the result.
 				try {
 					JvmClassInfo info = new JvmClassInfoBuilder(classBytes, ClassReader.SKIP_CODE).build();
-					cache.put(key, info);
-					return info;
+					JvmClassInfo existing = cache.putIfAbsent(key, info);
+					return existing == null ? info : existing;
 				} catch (Throwable t) {
 					// There are some weird auto-generated classes in the VM like 'accessibility_ja'
 					// which have invalid constant pools and kill our class parser. Ignore those.
@@ -155,16 +157,19 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 
 			@Override
 			public Set<String> keySet() {
+				loadSystemClasses();
 				return cache.keySet();
 			}
 
 			@Override
 			public Collection<JvmClassInfo> values() {
+				loadSystemClasses();
 				return cache.values();
 			}
 
 			@Override
 			public Set<Entry<String, JvmClassInfo>> entrySet() {
+				loadSystemClasses();
 				return cache.entrySet();
 			}
 
@@ -195,6 +200,7 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 
 			@Override
 			public int size() {
+				loadSystemClasses();
 				return cache.size();
 			}
 
@@ -204,14 +210,6 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 			}
 		};
 		files = new BasicFileBundle();
-
-		// Populate the system classes in the background.
-		try (ExecutorService ex = ThreadPoolFactory.newSingleThreadExecutor("runtime-class-population")) {
-			CompletableFuture.runAsync(() -> {
-				for (String name : ClasspathUtil.getSystemClassSet())
-					classes.get(name);
-			}, ex);
-		}
 	}
 
 	@Nonnull
@@ -302,25 +300,7 @@ public class RuntimeWorkspaceResource extends BasicPropertyContainer implements 
 	 * @return {@code true} when the class belongs to the Java runtime image, as opposed to Recaf's own classpath.
 	 */
 	public static boolean isSystemClass(@Nonnull String className) {
-		return hasSystemClass(className);
-	}
-
-	private static boolean hasSystemClass(@Nonnull String key) {
-		return hasClass(systemClassTree, key);
-	}
-
-	private static boolean hasClasspathClass(@Nonnull String key) {
-		return hasClass(classpathClassTree, key);
-	}
-
-	private static boolean hasClass(@Nonnull Tree<String, String> tree, @Nonnull String key) {
-		Tree<String, String> path = tree;
-		for (String section : StringUtil.fastSplit(key, false, '/')) {
-			path = path.get(section);
-			if (path == null)
-				return false;
-		}
-		return true;
+		return ClasspathUtil.getSystemClassSet().contains(className);
 	}
 
 	/** Statically initialized inner class used as a lightweight alternative to double-sync block. */
