@@ -1,6 +1,5 @@
 package software.coley.recaf.ui.pane.editing.assembler;
 
-import atlantafx.base.controls.Spacer;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
@@ -225,12 +224,13 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 		LabelQueryResult labelQuery = AssemblyQueries.labels(astMethod, CONTEXTS);
 		Map<String, LabelData> labels = new LinkedHashMap<>();
 		for (LabelInfo declaration : labelQuery.declarations()) {
+			List<ASTElement> references = labelQuery.usagesOf(declaration.name()).stream()
+					.<ASTElement>map(LabelUsage::reference).toList();
 			labels.putIfAbsent(declaration.name(), new LabelData(
 					declaration.name(),
 					declaration.declaration(),
-					labelQuery.usagesOf(declaration.name()).stream()
-							.<ASTElement>map(LabelUsage::reference)
-							.toList(),
+					references,
+					LabelData.lineRange(declaration.declaration(), references),
 					new Int2IntMap(),
 					new IntBox(-1),
 					new Box<>()
@@ -315,10 +315,11 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 		public void apply(@Nonnull LineContainer container, int paragraph) {
 			List<LabelData> localModel = model;
 
-			if (!drawLines.getValue() || localModel.isEmpty()) {
-				container.addHorizontal(new Spacer(0));
+			if (!drawLines.getValue() || localModel.isEmpty())
 				return;
-			}
+			if (config.getConnectionMode().getValue() == ControlFlowLinesConfig.ConnectionMode.CURRENT_CONNECTION
+					&& currentInstructionSelection.getValue() == null)
+				return;
 
 			super.apply(container, paragraph);
 		}
@@ -559,6 +560,8 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 	 * 		The AST element where the label is declared.
 	 * @param references
 	 * 		The AST elements that reference the label.
+	 * @param range
+	 * 		Line range spanned by the label and its references.
 	 * @param linesOnLinesMap
 	 * 		Cached count of how many times this label is referenced on a given line. Key is line number, value is count.
 	 * @param lineSlot
@@ -569,6 +572,7 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 	private record LabelData(@Nonnull String name,
 	                         @Nonnull ASTLabel declaration,
 	                         @Nonnull List<ASTElement> references,
+	                         @Nullable Range range,
 	                         @Nonnull Int2IntMap linesOnLinesMap,
 	                         @Nonnull IntBox lineSlot,
 	                         @Nonnull Box<List<LabelData>> overlapping) {
@@ -577,12 +581,21 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 			return Stream.concat(Stream.of(declaration), references.stream());
 		}
 
-		@Nonnull
-		public Range range() {
-			var summary = allElements()
-					.mapToInt(element -> Objects.requireNonNull(element.location()).line())
-					.summaryStatistics();
-			return new Range(summary.getMin(), summary.getMax());
+		@Nullable
+		private static Range lineRange(@Nonnull ASTLabel declaration, @Nonnull List<ASTElement> references) {
+			Location declarationLocation = declaration.location();
+			if (declarationLocation == null)
+				return null;
+			int start = declarationLocation.line();
+			int end = start;
+			for (ASTElement reference : references) {
+				Location location = reference.location();
+				if (location != null) {
+					start = Math.min(start, location.line());
+					end = Math.max(end, location.line());
+				}
+			}
+			return new Range(start, end);
 		}
 
 		public int countRefsOnLine(int line) {
@@ -594,14 +607,15 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 
 		public List<LabelData> computeOverlapping(@Nonnull Collection<LabelData> labelDatum) {
 			return overlapping.computeIfAbsent(() -> {
-				Range range = range();
+				if (range == null)
+					return List.of();
 				List<LabelData> overlap = new ArrayList<>();
 				for (LabelData data : labelDatum) {
 					if (name.equals(data.name)) continue;
 					if (data.references().isEmpty()) continue;
 
 					Range otherRange = data.range();
-					if (Math.max(range.start(), otherRange.start()) <= Math.min(range.end(), otherRange.end()))
+					if (otherRange != null && Math.max(range.start(), otherRange.start()) <= Math.min(range.end(), otherRange.end()))
 						overlap.add(data);
 				}
 				return overlap;
@@ -609,22 +623,7 @@ public class ControlFlowLines extends AstBuildConsumerComponent {
 		}
 
 		public boolean isInRange(int line) {
-			Location declarationLoc = declaration.location();
-			if (declarationLoc == null) return false;
-			int declarationLine = declarationLoc.line();
-			if (declarationLine == line) return true;
-
-			for (ASTElement referrer : references) {
-				Location referrerLoc = referrer.location();
-				if (referrerLoc == null) continue;
-				int referrerLine = referrerLoc.line();
-
-				if (referrerLine == line) return true;
-				if ((declarationLine > referrerLine) ?
-						(line > referrerLine && line < declarationLine) :
-						(line > declarationLine && line < referrerLine)) return true;
-			}
-			return false;
+			return range != null && line >= range.start() && line <= range.end();
 		}
 
 		@Override

@@ -3,12 +3,17 @@ package software.coley.recaf.services.deobfuscation;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
+import software.coley.recaf.services.transform.TransformationParameters;
 import software.coley.recaf.util.StringUtil;
 
 import java.util.List;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -452,6 +457,71 @@ public class StaticValueInliningTest extends TransformerTestBase {
 			assertEquals(1, StringUtil.count("pop2", dis));
 			assertTrue(StringUtil.count("bipush 9", dis) >= 1, "Expected the merged array to retain its value");
 		});
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void initializerReadsTheDefaultValueBeforeTheLaterAssignment(boolean autoResolve) {
+		compile("""
+				private static String[] a = new String[Example.at];
+				private static int at = 10;
+				public static int example() { return a.length; }
+				""");
+		assertEquals(0, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+
+		var parameters = new TransformationParameters(Map.of(StaticValueInliningTransformer.KEY_AUTO_RESOLVE_VARIABLES, autoResolve));
+		var result = assertDoesNotThrow(() -> newApplier().transformJvm(List.of(StaticValueInliningTransformer.class), parameters));
+		assertTrue(result.getTransformerFailures().isEmpty(), () -> result.getTransformerFailures().toString());
+		result.apply();
+
+		assertEquals(0, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		String disassembly = disassemble(true);
+		assertEquals(!autoResolve, disassembly.contains("getstatic Example.at I"), disassembly);
+	}
+
+	@Test
+	void initializerDoesNotReuseValuesAcrossCallsOrBranches() {
+		compile("""
+				private static int at = 10;
+				private static int size = 2;
+				private static String[] a;
+				static {
+				    overwrite();
+				    if (size == 0) at = 100;
+				    a = new String[Example.at];
+				}
+				private static void overwrite() { at = 1; }
+				public static int example() { return a.length; }
+				""");
+		assertEquals(1, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+
+		transformAndApply(List.of(StaticValueInliningTransformer.class));
+
+		assertEquals(1, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		String disassembly = disassemble(true);
+		assertTrue(disassembly.contains("getstatic Example.size I"), disassembly);
+		assertTrue(disassembly.contains("getstatic Example.at I"), disassembly);
+	}
+
+	@Test
+	void initializerMayObserveAWriteFromTheSuperclassInitializer() {
+		compileFull(CLASS_NAME, """
+				class Parent {
+				    static { Example.setSize(); }
+				}
+				class Example extends Parent {
+				    private static String[] a = new String[Example.at];
+				    private static int at = 10;
+				    static void setSize() { at = 3; }
+				    public static int example() { return a.length; }
+				}
+				""");
+		assertEquals(3, invokeStatic(CLASS_NAME, "example", CLASS_NAME, "Parent"));
+
+		transformAndApply(List.of(StaticValueInliningTransformer.class));
+		assertEquals(3, invokeStatic(CLASS_NAME, "example", CLASS_NAME, "Parent"));
+		String disassembly = disassemble(true);
+		assertTrue(disassembly.contains("getstatic Example.at I"), disassembly);
 	}
 
 	@Test

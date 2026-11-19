@@ -29,7 +29,6 @@ import software.coley.collections.Lists;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.FileInfo;
-import software.coley.recaf.path.IncompletePathException;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.path.WorkspacePathNode;
@@ -341,18 +340,6 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 		tree.contextSourceObjectPropertyProperty().set(SearchContextSource.SEARCH_INSTANCE);
 		tree.contextMenuExtensionProperty().set(path ->
 				SearchResultsPane.stringValueMenuItems(configurationService, liveStringValues.get(path)));
-		tree.setOnMousePressed(e -> {
-			if (e.getClickCount() == 2 && e.isPrimaryButtonDown()) {
-				var item = tree.getSelectionModel().getSelectedItem();
-				if (item != null && item.isLeaf()) {
-					try {
-						actions.gotoDeclaration(item.getValue());
-					} catch (IncompletePathException ignored) {
-						// ignored
-					}
-				}
-			}
-		});
 		return tree;
 	}
 
@@ -389,6 +376,12 @@ public abstract class AbstractSearchPane extends BorderPane implements Navigable
 	protected final void searchLive() {
 		if (liveResults.get())
 			search();
+	}
+
+	/** Runs a prefilled search when the live input listeners will not start it. */
+	public final void searchPrefilled() {
+		if (!liveResults.get())
+			searchManual();
 	}
 
 	/**

@@ -27,6 +27,7 @@ import me.darknet.assembler.query.VariableQueryResult;
 import me.darknet.assembler.query.resolution.ClassAnnotationResolution;
 import me.darknet.assembler.query.resolution.ClassExtends;
 import me.darknet.assembler.query.resolution.ClassImplements;
+import me.darknet.assembler.query.resolution.ClassResolution;
 import me.darknet.assembler.query.resolution.FieldAnnotationResolution;
 import me.darknet.assembler.query.resolution.FieldResolution;
 import me.darknet.assembler.query.resolution.IndependentAnnotationResolution;
@@ -76,6 +77,7 @@ import java.util.Map;
 import java.util.Objects;
 
 import static org.kordamp.ikonli.carbonicons.CarbonIcons.ARROW_RIGHT;
+import static org.kordamp.ikonli.carbonicons.CarbonIcons.CODE_REFERENCE;
 import static org.kordamp.ikonli.carbonicons.CarbonIcons.HEALTH_CROSS;
 import static org.kordamp.ikonli.carbonicons.CarbonIcons.LIST_BOXES;
 import static software.coley.recaf.util.Menus.*;
@@ -115,11 +117,20 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 			if (resolution instanceof InstructionResolution instructionResolution) {
 				addInstructionContextMenu(this, menu, editor, workspace, targetContext, instructionResolution);
 			} else if (resolution instanceof VariableDeclarationResolution declaration) {
-				addUsageMenu(menu, editor, variableUsageTargets(declaration.method(), targetContext, declaration.variable().identity().name()));
+				addUsageMenu(menu, editor, "menu.search.find-usages",
+						variableUsageTargets(declaration.method(), targetContext, declaration.variable().identity().name()));
 			} else if (resolution instanceof VariableReferenceResolution reference) {
-				addUsageMenu(menu, editor, variableUsageTargets(reference.method(), targetContext, reference.usage().name()));
+				addUsageMenu(menu, editor, "menu.search.find-usages", variableUsageTargets(reference.method(), targetContext, reference.usage().name()));
 			} else if (resolution instanceof LabelDeclarationResolution declaration) {
-				addUsageMenu(menu, editor, labelUsageTargets(declaration.method(), targetContext, declaration.label().name()));
+				addUsageMenu(menu, editor, "assembler.variables.usage", labelUsageTargets(declaration.method(), targetContext, declaration.label().name()));
+			} else if (resolution instanceof ClassResolution declaration) {
+				addClassUsages(menu, actions, declaration.klass().getName().literal());
+			} else if (resolution instanceof FieldResolution declaration) {
+				String owner = declaration.parentClass() == null ? declaringClass.getName() : declaration.parentClass().getName().literal();
+				addMemberUsages(menu, actions, owner, declaration.field().getName().literal(), declaration.field().getDescriptor().literal());
+			} else if (resolution instanceof MethodResolution declaration) {
+				String owner = declaration.parentClass() == null ? declaringClass.getName() : declaration.parentClass().getName().literal();
+				addMemberUsages(menu, actions, owner, declaration.method().getName().literal(), declaration.method().getDescriptor().literal());
 			} else {
 				ResolutionMenuFiller<Resolution> filler = fillers.get(resolution.getClass());
 				if (filler != null) filler.accept(this, menu, editor, workspace, resolution);
@@ -166,6 +177,7 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 				overrideAction.setDisable(true);
 			}
 			menu.getItems().addAll(gotoAction, overrideAction);
+			addClassUsages(menu, provider.actions, resolution.implemented().literal());
 		});
 		register(ClassExtends.class, (provider, menu, editor, workspace, resolution) -> {
 			ClassPathNode classPath = workspace.findClass(resolution.superName().literal());
@@ -189,6 +201,7 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 				overrideAction.setDisable(true);
 			}
 			menu.getItems().addAll(gotoAction, overrideAction);
+			addClassUsages(menu, provider.actions, resolution.superName().literal());
 		});
 		register(ClassAnnotationResolution.class, (provider, menu, editor, workspace, resolution) -> {
 			// No items
@@ -205,12 +218,6 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 		register(InnerClassResolution.class, (provider, menu, editor, workspace, resolution) -> {
 			// No items
 		});
-		register(FieldResolution.class, (provider, menu, editor, workspace, resolution) -> {
-			// No items
-		});
-		register(MethodResolution.class, (provider, menu, editor, workspace, resolution) -> {
-			// No items
-		});
 		register(LabelReferenceResolution.class, (provider, menu, editor, workspace, resolution) -> {
 			String target = resolution.reference().content();
 			if (target != null)
@@ -218,7 +225,12 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 						gotoLabelDeclaration(resolution.method(), editor.getCodeArea(), target)));
 		});
 		register(TypeReferenceResolution.class, (provider, menu, editor, workspace, resolution) -> {
-			ClassPathNode classPath = workspace.findClass(resolution.type().literal());
+			String name = resolution.type().literal();
+			String typeName = name.startsWith("[") || (name.startsWith("L") && name.endsWith(";"))
+					? Descriptors.internalName(name) : name;
+			if (typeName == null)
+				return;
+			ClassPathNode classPath = workspace.findClass(typeName);
 			ActionMenuItem action = action("menu.goto.class", ARROW_RIGHT, () -> {
 				try {
 					provider.actions.gotoDeclaration(Objects.requireNonNull(classPath));
@@ -228,6 +240,7 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 			});
 			if (classPath == null) action.setDisable(true);
 			menu.getItems().add(action);
+			addClassUsages(menu, provider.actions, typeName);
 		});
 	}
 
@@ -292,6 +305,7 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 		});
 		if (typePath == null) gotoAction.setDisable(true);
 		menu.getItems().add(gotoAction);
+		addClassUsages(menu, provider.actions, typeName);
 	}
 
 	private static void addMemberReferenceAction(@Nonnull AbstractContextMenuProviderFactory provider, @Nonnull ContextMenu menu,
@@ -316,6 +330,17 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 		});
 		if (memberPath == null) gotoAction.setDisable(true);
 		menu.getItems().add(gotoAction);
+		String owner = memberPath == null ? memberReference.owner() : memberPath.getParent().getValue().getName();
+		addMemberUsages(menu, provider.actions, owner, memberReference.name(), memberReference.descriptor());
+	}
+
+	private static void addClassUsages(@Nonnull ContextMenu menu, @Nonnull Actions actions, @Nonnull String name) {
+		menu.getItems().add(action("menu.search.find-usages", CODE_REFERENCE, () -> actions.findClassUsages(name)));
+	}
+
+	private static void addMemberUsages(@Nonnull ContextMenu menu, @Nonnull Actions actions, @Nonnull String owner,
+	                                    @Nonnull String name, @Nonnull String descriptor) {
+		menu.getItems().add(action("menu.search.find-usages", CODE_REFERENCE, () -> actions.findMemberUsages(owner, name, descriptor)));
 	}
 
 	private static void addIntegerConversionActions(@Nonnull ContextMenu menu, @Nonnull CodeArea area,
@@ -413,11 +438,12 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 				.toList();
 	}
 
-	private static void addUsageMenu(@Nonnull ContextMenu menu, @Nonnull Editor editor, @Nonnull List<UsageTarget> usages) {
+	private static void addUsageMenu(@Nonnull ContextMenu menu, @Nonnull Editor editor, @Nonnull String label,
+	                                 @Nonnull List<UsageTarget> usages) {
 		if (usages.isEmpty())
 			return;
 
-		Menu usageMenu = menu("assembler.variables.usage", LIST_BOXES);
+		Menu usageMenu = menu(label, LIST_BOXES);
 		CodeArea area = editor.getCodeArea();
 		for (UsageTarget usage : usages) {
 			usageMenu.getItems().add(new ActionMenuItem(
@@ -443,7 +469,7 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 		if (location == null)
 			return;
 		area.selectRange(range.start(), range.end());
-		area.showParagraphAtCenter(location.line());
+		area.showParagraphAtCenter(area.getCurrentParagraph());
 	}
 
 	private static void gotoLabelDeclaration(@Nonnull ASTMethod method, @Nonnull CodeArea area, @Nonnull String target) {

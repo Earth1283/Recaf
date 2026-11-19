@@ -7,6 +7,7 @@ import software.coley.bentofx.control.canvas.PixelCanvas;
 import software.coley.bentofx.control.canvas.PixelPainter;
 import software.coley.bentofx.control.canvas.PixelPainterIntArgb;
 import software.coley.recaf.ui.control.richtext.linegraphics.AbstractTextBoundLineGraphicFactory;
+import software.coley.recaf.ui.control.richtext.linegraphics.LineContainer;
 import software.coley.recaf.ui.control.richtext.linegraphics.LineGraphicFactory;
 import software.coley.recaf.util.Colors;
 
@@ -27,8 +28,15 @@ public class ProblemSquiggleGraphicFactory extends AbstractTextBoundLineGraphicF
 	}
 
 	@Override
+	public void apply(@Nonnull LineContainer container, int paragraph) {
+		ProblemTracking tracking = editor.getProblemTracking();
+		if (tracking != null && tracking.getFirstItemOnLine(paragraph + 1) != null)
+			super.apply(container, paragraph);
+	}
+
+	@Override
 	protected void apply(@Nonnull StackPane pane, int paragraph) {
-		if (editor.getProblemTracking() == null)
+		if (editor == null || editor.getProblemTracking() == null)
 			return;
 
 		List<Problem> problems = editor.getProblemTracking().getItemsOnLine(paragraph + 1);

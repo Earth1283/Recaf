@@ -45,15 +45,20 @@ import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.info.member.FieldMember;
 import software.coley.recaf.info.member.LocalVariable;
 import software.coley.recaf.info.member.MethodMember;
+import software.coley.recaf.path.AndroidInstructionPathNode;
+import software.coley.recaf.path.AnnotationPathNode;
+import software.coley.recaf.path.CatchPathNode;
 import software.coley.recaf.path.ClassMemberPathNode;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.DirectoryPathNode;
 import software.coley.recaf.path.FilePathNode;
 import software.coley.recaf.path.IncompletePathException;
+import software.coley.recaf.path.JvmInstructionPathNode;
 import software.coley.recaf.path.LineNumberPathNode;
 import software.coley.recaf.path.LocalVariablePathNode;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.path.PathNodes;
+import software.coley.recaf.path.ThrowsPathNode;
 import software.coley.recaf.services.Service;
 import software.coley.recaf.services.analysis.structure.AreaAnalysisResult;
 import software.coley.recaf.services.cell.CellConfigurationService;
@@ -291,16 +296,16 @@ public class Actions implements Service {
 				navigable.requestFocus(classMemberPath.getValue());
 				return navigable;
 			}
-			case LocalVariablePathNode variablePath -> {
-				ClassMemberPathNode parent = variablePath.getParent();
-				if (parent == null)
+			case LocalVariablePathNode _, JvmInstructionPathNode _, AndroidInstructionPathNode _, CatchPathNode _, ThrowsPathNode _ -> {
+				if (!(path.getParent() instanceof ClassMemberPathNode member))
 					throw new IncompletePathException(ClassMember.class);
-				ClassPathNode classPath = parent.getParent();
-				if (classPath == null)
-					throw new IncompletePathException(ClassInfo.class);
-				ClassNavigable navigable = gotoDeclaration(classPath);
-				navigable.requestFocus(parent.getValue());
-				return navigable;
+				return gotoDeclaration(member);
+			}
+			case AnnotationPathNode annotation -> {
+				PathNode<?> parent = annotation.getParent();
+				if (parent == null)
+					throw new IncompletePathException(Annotated.class);
+				return gotoDeclaration(parent);
 			}
 			case LineNumberPathNode lineNumberPath -> {
 				FilePathNode parent = lineNumberPath.getParent();
@@ -2601,6 +2606,18 @@ public class Actions implements Service {
 	@Nonnull
 	public ClassReferenceSearchPane openNewClassReferenceSearch() {
 		return openPaneAdjacent(SEARCH_PANE_TYPES, "menu.search.class.type-references", CarbonIcons.CODE_REFERENCE, classReferenceSearchPaneProvider);
+	}
+
+	/** Opens a workspace search for uses of the given class and its members. */
+	public void findClassUsages(@Nonnull String className) {
+		openPaneAdjacent(SEARCH_PANE_TYPES, "menu.search.find-usages", CarbonIcons.CODE_REFERENCE, classReferenceSearchPaneProvider)
+				.findUsages(className);
+	}
+
+	/** Opens a workspace search for a field or method with the given JVM signature. */
+	public void findMemberUsages(@Nonnull String owner, @Nonnull String name, @Nonnull String descriptor) {
+		openPaneAdjacent(SEARCH_PANE_TYPES, "menu.search.find-usages", CarbonIcons.CODE_REFERENCE, memberReferenceSearchPaneProvider)
+				.findUsages(owner, name, descriptor);
 	}
 
 	/**

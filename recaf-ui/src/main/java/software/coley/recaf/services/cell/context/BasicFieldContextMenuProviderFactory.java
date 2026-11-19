@@ -18,9 +18,7 @@ import software.coley.recaf.services.cell.icon.IconProviderService;
 import software.coley.recaf.services.cell.text.TextProvider;
 import software.coley.recaf.services.cell.text.TextProviderService;
 import software.coley.recaf.services.navigation.Actions;
-import software.coley.recaf.services.search.match.StringPredicateProvider;
 import software.coley.recaf.ui.contextmenu.ContextMenuBuilder;
-import software.coley.recaf.ui.pane.search.MemberReferenceSearchPane;
 import software.coley.recaf.ui.pane.search.SearchContextSource;
 import software.coley.recaf.util.ClipboardUtil;
 import software.coley.recaf.workspace.model.Workspace;
@@ -99,15 +97,8 @@ public class BasicFieldContextMenuProviderFactory extends AbstractContextMenuPro
 			}
 
 			// Search actions
-			builder.item("menu.search.field-references", CODE_REFERENCE, () -> {
-				MemberReferenceSearchPane pane = actions.openNewMemberReferenceSearch();
-				pane.ownerPredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
-				pane.namePredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
-				pane.descPredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
-				pane.ownerValueProperty().setValue(declaringClass.getName());
-				pane.nameValueProperty().setValue(field.getName());
-				pane.descValueProperty().setValue(field.getDescriptor());
-			});
+			builder.item("menu.search.find-usages", CODE_REFERENCE,
+					() -> actions.findMemberUsages(declaringClass.getName(), field.getName(), field.getDescriptor()));
 
 			// Copy path
 			builder.item("menu.tab.copypath", COPY_LINK, () -> ClipboardUtil.copyString(declaringClass, field));

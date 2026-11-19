@@ -1,9 +1,7 @@
 package software.coley.recaf.ui.control.richtext.linegraphics;
 
 import jakarta.annotation.Nonnull;
-import javafx.scene.control.Label;
-import javafx.scene.layout.HBox;
-import javafx.scene.layout.Priority;
+import javafx.scene.text.Text;
 import org.fxmisc.richtext.CodeArea;
 import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.util.StringUtil;
@@ -37,14 +35,10 @@ public class LineNumberFactory extends AbstractLineGraphicFactory {
 	public void apply(@Nonnull LineContainer container, int paragraph) {
 		if (codeArea == null) return;
 
-		Label label = new Label(format(paragraph + 1, computeDigits(codeArea.getParagraphs().size())));
-		HBox.setHgrow(label, Priority.ALWAYS);
-		container.addHorizontal(label);
-	}
-
-	@Nonnull
-	private static String format(int line, int digits) {
-		return String.format(StringUtil.fillLeft(digits, " ", String.valueOf(line)));
+		int digits = computeDigits(codeArea.getParagraphs().size());
+		Text number = new Text(StringUtil.fillLeft(digits, " ", String.valueOf(paragraph + 1)));
+		number.getStyleClass().add("text");
+		container.addHorizontal(number);
 	}
 
 	private static int computeDigits(int size) {

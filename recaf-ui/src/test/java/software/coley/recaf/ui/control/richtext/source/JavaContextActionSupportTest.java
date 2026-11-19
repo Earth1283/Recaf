@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -187,6 +188,83 @@ class JavaContextActionSupportTest extends TestBase {
 		assertEquals(42L, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("42L")));
 		assertEquals(1.5F, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("1.5F")));
 		assertEquals(2.5D, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("2.5")));
+	}
+
+	@Test
+	void findsLocalReferencesWithoutMixingSameNamedFieldsMethodsOrSiblingLocals() {
+		String source = """
+				class Example {
+				    String value;
+				    void value(String text) {}
+				    void find() {
+				        {
+				            String /* value */ value = "first";
+				            value = value.trim();
+				            value(value);
+				        }
+				        {
+				            String value = "second";
+				            value(value);
+				        }
+				        value(this.value);
+				        value(value);
+				    }
+				}
+				""";
+		CompilationUnitModel unit = parse(source);
+		int declaration = source.indexOf("value = \"first\"");
+		int assignment = source.indexOf("value = value.trim");
+		int argument = source.indexOf("value(value)") + "value(".length();
+		var variable = JavaVariableUsages.resolveAt(unit, declaration);
+		assertNotNull(variable);
+		var usages = JavaVariableUsages.find(variable);
+		assertEquals(List.of(assignment, assignment + "value = ".length(), argument),
+				usages.stream().map(range -> range.begin()).toList());
+		assertSame(variable, JavaVariableUsages.resolveAt(unit, argument));
+		assertNull(JavaVariableUsages.resolveAt(unit, source.indexOf("value(value)")));
+		assertNull(JavaVariableUsages.resolveAt(unit, source.lastIndexOf("value(value)") + "value(".length()));
+		assertNull(JavaVariableUsages.resolveAt(unit, source.indexOf("this.value") + "this.".length()));
+	}
+
+	@Test
+	void findsParameterReferencesIncludingLambdaCaptures() {
+		String source = """
+				class Example {
+				    void find(String text) {
+				        Runnable child = () -> System.out.println(text);
+				        text.trim();
+				    }
+				}
+				""";
+		CompilationUnitModel unit = parse(source);
+		var parameter = JavaVariableUsages.resolveAt(unit, source.indexOf("text)"));
+		assertNotNull(parameter);
+		var usages = JavaVariableUsages.find(parameter);
+		assertEquals(List.of(source.lastIndexOf("text)"), source.indexOf("text.trim")),
+				usages.stream().map(range -> range.begin()).toList());
+	}
+
+	@Test
+	void findsUsagesOfAnImplicitLambdaParameter() {
+		String source = """
+				class Example {
+				    void find() {
+				        java.util.function.Function<String, String> trim = value -> value.trim();
+				    }
+				}
+				""";
+		CompilationUnitModel unit = parse(source);
+		var parameter = JavaVariableUsages.resolveAt(unit, source.indexOf("value ->"));
+		assertNotNull(parameter);
+		assertSame(parameter, JavaVariableUsages.resolveAt(unit, source.indexOf("value.trim")));
+		assertEquals(1, JavaVariableUsages.find(parameter).size());
+	}
+
+	private static CompilationUnitModel parse(String source) {
+		var parser = recaf.get(AstService.class).getSharedJavaParser();
+		synchronized (parser) {
+			return parser.parse(source);
+		}
 	}
 
 	private void assertLambdaTarget(String source, JvmClassInfo classInfo, String lambdaBody, String callerName, int siteIndex) {

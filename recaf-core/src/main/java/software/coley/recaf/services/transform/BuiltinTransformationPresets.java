@@ -50,6 +50,7 @@ public final class BuiltinTransformationPresets {
 
 	/**
 	 * Folds known integer and long expressions, including reverse, rotations, shifts, and masks.
+	 * Combines adjacent literal bitwise assignments to the same local variable.
 	 * Static constants are collected and inlined first, then bitwise and variable folding are repeated
 	 * up to five times to simplify chains through local variables. Unknown inputs remain unevaluated.
 	 */

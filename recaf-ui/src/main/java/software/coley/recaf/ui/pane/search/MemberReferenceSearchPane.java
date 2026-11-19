@@ -30,6 +30,17 @@ public class MemberReferenceSearchPane extends AbstractMemberSearchPane {
 		super(workspaceManager, searchService, configurationService, actions, stringPredicateProvider);
 	}
 
+	/** Prefills an exact search for the selected field or method. */
+	public void findUsages(@Nonnull String owner, @Nonnull String name, @Nonnull String descriptor) {
+		ownerPredicateIdProperty().set(StringPredicateProvider.KEY_EQUALS);
+		namePredicateIdProperty().set(StringPredicateProvider.KEY_EQUALS);
+		descPredicateIdProperty().set(StringPredicateProvider.KEY_EQUALS);
+		ownerValueProperty().set(owner);
+		nameValueProperty().set(name);
+		descValueProperty().set(descriptor);
+		searchPrefilled();
+	}
+
 	@Nonnull
 	@Override
 	protected Query newQuery(@Nullable StringPredicate ownerPredicate,

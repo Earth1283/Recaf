@@ -50,7 +50,6 @@ import software.coley.recaf.services.cell.context.ContextSource;
 import software.coley.recaf.services.cell.icon.IconProviderService;
 import software.coley.recaf.services.cell.text.TextProviderService;
 import software.coley.recaf.services.navigation.Actions;
-import software.coley.recaf.services.navigation.ClassNavigable;
 import software.coley.recaf.services.navigation.Navigable;
 import software.coley.recaf.services.navigation.UnsupportedContentException;
 import software.coley.recaf.ui.control.FontIconView;
@@ -162,18 +161,11 @@ public class CellConfigurationService implements Service {
 	@Nullable
 	private Navigable openPath(@Nonnull PathNode<?> item) {
 		try {
-			if (item instanceof ClassPathNode classPathNode) {
-				return actions.gotoDeclaration(classPathNode);
-			} else if (item instanceof ClassMemberPathNode classMemberPathNode) {
-				ClassPathNode parent = classMemberPathNode.getParent();
-				if (parent != null) {
-					ClassNavigable classNavigable = actions.gotoDeclaration(parent);
-					classNavigable.requestFocus(classMemberPathNode.getValue());
-					return classNavigable;
-				}
-			} else if (item instanceof FilePathNode filePathNode) {
-				return actions.gotoDeclaration(filePathNode);
-			}
+			return switch (item) {
+				case ClassPathNode _, ClassMemberPathNode _, FilePathNode _, LineNumberPathNode _, LocalVariablePathNode _, AnnotationPathNode _,
+				     JvmInstructionPathNode _, AndroidInstructionPathNode _, CatchPathNode _, ThrowsPathNode _ -> actions.gotoDeclaration(item);
+				default -> null;
+			};
 		} catch (IncompletePathException ex) {
 			logger.error("Cannot open incomplete path", ex);
 		} catch (UnsupportedContentException ex) {

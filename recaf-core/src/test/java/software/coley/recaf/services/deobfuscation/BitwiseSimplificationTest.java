@@ -145,6 +145,84 @@ class BitwiseSimplificationTest extends TransformerTestBase {
 	}
 
 	@Test
+	void combinesConsecutiveLongXorAssignments() {
+		compile("""
+				public static long example() {
+				    return update(123L);
+				}
+				private static long update(long value) {
+				    value ^= 17L;
+				    value ^= 8135461919177038215L;
+				    return value;
+				}
+				""");
+		long expected = 123L ^ 17L ^ 8135461919177038215L;
+		assertEquals(expected, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+
+		applyProfile();
+
+		assertEquals(expected, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		String disassembly = disassemble(true);
+		assertEquals(1, disassembly.lines().map(String::strip).filter("lxor"::equals).count(), disassembly);
+		assertTrue(disassembly.contains("ldc 8135461919177038230L"), disassembly);
+	}
+
+	@Test
+	void combinesRunsOfIntBitwiseAssignmentsInOnePass() {
+		compile("""
+				public static int example() {
+				    return update(123);
+				}
+				private static int update(int value) {
+				    value ^= 3;
+				    value ^= -17;
+				    value ^= 32768;
+				    value &= 511;
+				    value &= -2;
+				    value |= 64;
+				    value |= 1024;
+				    return value;
+				}
+				""");
+		int expected = ((123 ^ 3 ^ -17 ^ 32768) & 511 & -2) | 64 | 1024;
+		TransformationApplier applier = newApplier(1);
+		JvmTransformResult result = assertDoesNotThrow(() -> applier.transformJvm(List.of(BitwiseFoldingTransformer.class)));
+		assertTrue(result.getTransformerFailures().isEmpty(), () -> result.getTransformerFailures().toString());
+		result.apply();
+
+		assertEquals(expected, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		String disassembly = disassemble(true);
+		for (String opcode : List.of("ixor", "iand", "ior"))
+			assertEquals(1, disassembly.lines().map(String::strip).filter(opcode::equals).count(), disassembly);
+	}
+
+	@Test
+	void preservesXorAssignmentsWithAnAlternateEntry() {
+		validateNoTransformation("""
+				.method public static example (JI)J {
+				    parameters: { value, skipFirst },
+				    code: {
+				    A:
+				        iload skipFirst
+				        ifne B
+				        lload value
+				        ldc 17L
+				        lxor
+				        lstore value
+				    B:
+				        lload value
+				        ldc 8135461919177038215L
+				        lxor
+				        lstore value
+				        lload value
+				        lreturn
+				    C:
+				    }
+				}
+				""", List.of(BitwiseFoldingTransformer.class));
+	}
+
+	@Test
 	void foldsChainThroughStaticFieldAndLocal() {
 		compile("""
 				private static int seed = 0x12345678;
@@ -165,6 +243,22 @@ class BitwiseSimplificationTest extends TransformerTestBase {
 		assertFalse(disassembly.contains("getstatic"), disassembly);
 		assertFalse(disassembly.contains("lushr"), disassembly);
 		assertFalse(disassembly.contains("land"), disassembly);
+	}
+
+	@Test
+	void resolvesArraySizeFromEarlierFoldedFieldAssignment() {
+		compile("""
+				private static int at = Integer.reverse(0x50000000);
+				private static String[] a = new String[Example.at];
+				public static int example() { return a.length; }
+				""");
+		assertEquals(10, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+
+		applyProfile();
+
+		assertEquals(10, invokeStatic(CLASS_NAME, "example", CLASS_NAME));
+		String decompiled = decompile(get(CLASS_NAME));
+		assertTrue(decompiled.contains("new String[10]"), decompiled);
 	}
 
 	@Test

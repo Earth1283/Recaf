@@ -27,7 +27,6 @@ import me.darknet.assembler.query.AssemblyQueries;
 import me.darknet.assembler.query.VariableAccessKind;
 import me.darknet.assembler.query.VariableQueryResult;
 import me.darknet.assembler.query.VariableUsage;
-import me.darknet.assembler.util.Location;
 import me.darknet.assembler.util.Range;
 import org.fxmisc.richtext.CodeArea;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
@@ -53,6 +52,7 @@ import software.coley.recaf.util.SVG;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -211,6 +211,10 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 	 * 		Caret pos change.
 	 */
 	private void onCaretMove(Change<Integer> caretChange) {
+		updateHighlightedVariable(caretChange.getNewValue());
+	}
+
+	private void updateHighlightedVariable(int position) {
 		// Skip if the user is selecting text.
 		if (editor.getCodeArea().getSelection().getLength() > 0) {
 			varHighlighter.setSelectedVariable(null);
@@ -218,11 +222,10 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 		}
 
 		// Determine which variable is at the caret position
-		int pos = caretChange.getNewValue();
 		VariableData currentVarSelection = null;
 		for (VariableData item : table.getItems()) {
 			ASTElement matchedAst = item.references()
-					.filter(element -> element.range().within(pos))
+					.filter(element -> element.range() != null && element.range().within(position))
 					.findFirst().orElse(null);
 			if (matchedAst != null) {
 				currentVarSelection = item;
@@ -245,8 +248,10 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 
 		// Skip if we cannot resolve the current method in the AST.
 		ASTMethod astMethod = findCurrentAstMethod();
-		if (astMethod == null)
+		if (astMethod == null) {
+			varHighlighter.setSelectedVariable(null);
 			return;
+		}
 
 		// Add variables to the table.
 		VariableQueryResult queryResult = AssemblyQueries.variables(astMethod, JvmTargetContext.INSTANCE);
@@ -261,6 +266,8 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 				items.add(new VariableData(name, type, queryResult));
 			}
 		}
+		if (editor != null)
+			updateHighlightedVariable(editor.getCodeArea().getCaretPosition());
 	}
 
 	@Nullable
@@ -290,7 +297,10 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 	}
 
 	private void clearData() {
-		FxThreadUtil.run(() -> table.getItems().clear());
+		FxThreadUtil.run(() -> {
+			table.getItems().clear();
+			varHighlighter.setSelectedVariable(null);
+		});
 		currentMethod = null;
 	}
 
@@ -298,7 +308,10 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 	 * Highlighter which shows read and write access of a {@link VariableData}.
 	 */
 	private class VarHighlightLineFactory extends AbstractLineGraphicFactory {
+		private static final int[] NO_LINES = new int[0];
 		private VariableData variable;
+		private int[] readLines = NO_LINES;
+		private int[] writeLines = NO_LINES;
 
 		private VarHighlightLineFactory() {
 			super(AbstractLineGraphicFactory.P_LINE_NUMBERS + 1);
@@ -309,15 +322,19 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 		 * 		New selected variable.
 		 */
 		public void setSelectedVariable(@Nullable VariableData variable) {
-			VariableData existing = this.variable;
-			if (existing == variable)
-				return;
-			if (existing != null && !existing.matchesNameType(variable))
+			if (this.variable == variable)
 				return;
 
 			this.variable = variable;
+			readLines = variable == null ? NO_LINES : toParagraphs(variable.readers());
+			writeLines = variable == null ? NO_LINES : toParagraphs(variable.writers());
+			if (editor != null)
+				editor.redrawParagraphGraphics();
+		}
 
-			editor.redrawParagraphGraphics();
+		private static int[] toParagraphs(@Nonnull List<ASTElement> elements) {
+			return elements.stream().map(ASTElement::location).filter(Objects::nonNull)
+					.mapToInt(location -> location.line() - 1).sorted().toArray();
 		}
 
 		@Override
@@ -333,26 +350,12 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 		@Override
 		public void apply(@Nonnull LineContainer container, int paragraph) {
 			Node graphic;
-			createGraphic:
-			{
-				if (variable != null) {
-					for (ASTElement reader : variable.readers()) {
-						Location location = reader.location();
-						if (location != null && location.line() - 1 == paragraph) {
-							graphic = SVG.ofIconFile(SVG.REF_READ);
-							break createGraphic;
-						}
-					}
-					for (ASTElement writer : variable.writers()) {
-						Location location = writer.location();
-						if (location != null && location.line() - 1 == paragraph) {
-							graphic = SVG.ofIconFile(SVG.REF_WRITE);
-							break createGraphic;
-						}
-					}
-				}
+			if (Arrays.binarySearch(readLines, paragraph) >= 0)
+				graphic = SVG.ofIconFile(SVG.REF_READ);
+			else if (Arrays.binarySearch(writeLines, paragraph) >= 0)
+				graphic = SVG.ofIconFile(SVG.REF_WRITE);
+			else
 				graphic = new Spacer(IconView.DEFAULT_ICON_SIZE);
-			}
 			graphic.setCursor(Cursor.HAND);
 			container.addHorizontal(graphic);
 		}
@@ -370,10 +373,6 @@ public class JvmVariablesPane extends AstBuildConsumerComponent {
 	 * 		Query result containing all variable usages and declarations for the current method.
 	 */
 	private record VariableData(@Nonnull String name, @Nonnull Type type, @Nonnull VariableQueryResult queryResult) {
-		public boolean matchesNameType(@Nullable VariableData other) {
-			return other != null && name.equals(other.name) && type.equals(other.type);
-		}
-
 		@Nonnull
 		public List<ASTElement> readers() {
 			return queryResult.usagesOf(name).stream()

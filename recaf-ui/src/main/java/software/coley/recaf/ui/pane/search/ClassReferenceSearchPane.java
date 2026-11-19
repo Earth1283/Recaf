@@ -44,6 +44,7 @@ public class ClassReferenceSearchPane extends AbstractSearchPane {
 	private final StringProperty typePredicateId = new SimpleStringProperty();
 	private final StringProperty typeValue;
 	private final StringPredicateProvider stringPredicateProvider;
+	private boolean includeMemberOwners;
 
 	@Inject
 	public ClassReferenceSearchPane(@Nonnull WorkspaceManager workspaceManager,
@@ -99,6 +100,14 @@ public class ClassReferenceSearchPane extends AbstractSearchPane {
 		return typeValue;
 	}
 
+	/** Prefills an exact usage search including references to members of the selected class. */
+	public void findUsages(@Nonnull String className) {
+		includeMemberOwners = true;
+		typePredicateId.set(KEY_EQUALS);
+		typeValue.set(className);
+		searchPrefilled();
+	}
+
 	@Nullable
 	@Override
 	protected Query buildQuery() {
@@ -118,6 +127,6 @@ public class ClassReferenceSearchPane extends AbstractSearchPane {
 		if (predicate == null)
 			return null;
 
-		return new ReferenceQuery(predicate);
+		return new ReferenceQuery(predicate, includeMemberOwners);
 	}
 }

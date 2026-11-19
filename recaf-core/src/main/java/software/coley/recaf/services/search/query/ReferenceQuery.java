@@ -91,6 +91,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 	private final StringPredicate namePredicate;
 	private final StringPredicate descriptorPredicate;
 	private final boolean classRefOnly;
+	private final boolean includeMemberOwners;
 
 	/**
 	 * Class reference query.
@@ -99,10 +100,21 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 	 * 		String matching predicate for comparison against reference owners.
 	 */
 	public ReferenceQuery(@Nonnull StringPredicate ownerPredicate) {
+		this(ownerPredicate, false);
+	}
+
+	/**
+	 * @param ownerPredicate
+	 * 		Predicate matching the referenced class name.
+	 * @param includeMemberOwners
+	 * 		Whether a reference to a field or method also counts as a reference to its symbolic owner.
+	 */
+	public ReferenceQuery(@Nonnull StringPredicate ownerPredicate, boolean includeMemberOwners) {
 		this.ownerPredicate = ownerPredicate;
 		this.namePredicate = null;
 		this.descriptorPredicate = null;
 		classRefOnly = true;
+		this.includeMemberOwners = includeMemberOwners;
 	}
 
 	/**
@@ -129,11 +141,19 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 		this.namePredicate = namePredicate;
 		this.descriptorPredicate = descriptorPredicate;
 		classRefOnly = false;
+		includeMemberOwners = false;
 	}
 
 	private boolean isClassRefMatch(@Nullable String className) {
 		if (!classRefOnly || className == null || ownerPredicate == null) return false;
-		return StringUtil.isNullOrEmpty(className) || ownerPredicate.match(className);
+		if (className.isEmpty() || ownerPredicate.match(className))
+			return true;
+		if (includeMemberOwners && className.charAt(0) == '[' && className.endsWith(";")) {
+			int element = className.lastIndexOf('[') + 1;
+			if (className.charAt(element) == 'L')
+				return ownerPredicate.match(className.substring(element + 1, className.length() - 1));
+		}
+		return false;
 	}
 
 	private boolean isMemberRefMatch(@Nullable String owner, @Nullable String name, @Nullable String desc) {
@@ -154,13 +174,15 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 		return false;
 	}
 
-	private void visitAsmMemberReference(@Nonnull String owner,
+	private void visitMemberReference(@Nonnull String owner,
 	                                     @Nonnull String name,
 	                                     @Nonnull String descriptor,
 	                                     @Nonnull ResultSink resultSink,
 	                                     @Nonnull PathNode<?> location) {
 		if (isMemberRefMatch(owner, name, descriptor))
 			resultSink.accept(location, mref(owner, name, descriptor));
+		if (includeMemberOwners && isClassRefMatch(owner))
+			resultSink.accept(location, cref(owner));
 	}
 
 	private void visitAsmType(@Nonnull Type type,
@@ -171,7 +193,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 			return;
 		}
 
-		String internalName = type.getInternalName();
+		String internalName = getAsmClassReferenceName(type);
 		if (isClassRefMatch(internalName))
 			resultSink.accept(location, cref(internalName));
 	}
@@ -187,14 +209,14 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 	private void visitFirstAsmMethodTypeMatch(@Nonnull Type methodType,
 	                                          @Nonnull ResultSink resultSink,
 	                                          @Nonnull PathNode<?> location) {
-		String returnType = methodType.getReturnType().getInternalName();
+		String returnType = getAsmClassReferenceName(methodType.getReturnType());
 		if (isClassRefMatch(returnType)) {
 			resultSink.accept(location, cref(returnType));
 			return;
 		}
 
 		for (Type argumentType : methodType.getArgumentTypes()) {
-			String internalName = argumentType.getInternalName();
+			String internalName = getAsmClassReferenceName(argumentType);
 			if (isClassRefMatch(internalName)) {
 				resultSink.accept(location, cref(internalName));
 				return;
@@ -205,7 +227,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 	private void visitAsmHandle(@Nonnull Handle handle,
 	                            @Nonnull ResultSink resultSink,
 	                            @Nonnull PathNode<?> location) {
-		visitAsmMemberReference(handle.getOwner(), handle.getName(), handle.getDesc(), resultSink, location);
+		visitMemberReference(handle.getOwner(), handle.getName(), handle.getDesc(), resultSink, location);
 		visitAsmType(Type.getType(handle.getDesc()), resultSink, location);
 	}
 
@@ -293,8 +315,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 	                            @Nonnull PathNode<?> location) {
 		String owner = handle.owner().internalName();
 		String desc = handle.type().descriptor();
-		if (isMemberRefMatch(owner, handle.name(), desc))
-			resultSink.accept(location, mref(owner, handle.name(), desc));
+		visitMemberReference(owner, handle.name(), desc, resultSink, location);
 
 		visitDexType(handle.type(), resultSink, location);
 	}
@@ -302,6 +323,12 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 	@Nonnull
 	private static String getInternalName(@Nonnull String classDesc) {
 		return Type.getType(classDesc).getInternalName();
+	}
+
+	@Nullable
+	private String getAsmClassReferenceName(@Nonnull Type type) {
+		// Single-letter class names can be the same text as primitive descriptors.
+		return includeMemberOwners && type.getSort() < Type.ARRAY ? null : type.getInternalName();
 	}
 
 	@Nullable
@@ -537,8 +564,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 					PathNode<?> instructionPath = memberPath.childInsn(instruction, insnIndex);
 					String owner = instruction.owner().internalName();
 					String desc = instruction.type().descriptor();
-					if (isMemberRefMatch(owner, instruction.name(), desc))
-						resultSink.accept(instructionPath, mref(owner, instruction.name(), desc));
+					visitMemberReference(owner, instruction.name(), desc, resultSink, instructionPath);
 
 					visitDexMethodType(instruction.type(), resultSink, instructionPath);
 					super.visitInvokeInstruction(instruction);
@@ -557,8 +583,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 					PathNode<?> instructionPath = memberPath.childInsn(instruction, insnIndex);
 					String owner = instruction.owner().internalName();
 					String desc = instruction.type().descriptor();
-					if (isMemberRefMatch(owner, instruction.name(), desc))
-						resultSink.accept(instructionPath, mref(owner, instruction.name(), desc));
+					visitMemberReference(owner, instruction.name(), desc, resultSink, instructionPath);
 
 					visitDexClassType(instruction.type(), resultSink, instructionPath);
 					super.visitInstanceFieldInstruction(instruction);
@@ -569,8 +594,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 					PathNode<?> instructionPath = memberPath.childInsn(instruction, insnIndex);
 					String owner = instruction.owner().internalName();
 					String desc = instruction.type().descriptor();
-					if (isMemberRefMatch(owner, instruction.name(), desc))
-						resultSink.accept(instructionPath, mref(owner, instruction.name(), desc));
+					visitMemberReference(owner, instruction.name(), desc, resultSink, instructionPath);
 
 					visitDexClassType(instruction.type(), resultSink, instructionPath);
 					super.visitStaticFieldInstruction(instruction);
@@ -742,8 +766,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 			String owner = constant.owner().internalName();
 			String name = constant.field().name();
 			String desc = constant.field().descriptor();
-			if (isMemberRefMatch(owner, name, desc))
-				resultSink.accept(currentLocation, mref(owner, name, desc));
+			visitMemberReference(owner, name, desc, resultSink, currentLocation);
 		}
 
 		@Override
@@ -759,8 +782,7 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 			String owner = constant.owner().internalName();
 			String name = constant.member().name();
 			String desc = constant.member().descriptor();
-			if (isMemberRefMatch(owner, name, desc))
-				resultSink.accept(currentLocation, mref(owner, name, desc));
+			visitMemberReference(owner, name, desc, resultSink, currentLocation);
 		}
 
 		@Override
@@ -851,36 +873,70 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 
 		@Override
 		public void visitTypeInsn(int opcode, String type) {
-			TypeInsnNode insn = new TypeInsnNode(opcode, type);
-			visitAsmType(Type.getObjectType(type), resultSink, memberPath.childInsn(insn, index));
+			if (isClassRefMatch(type))
+				resultSink.accept(memberPath.childInsn(new TypeInsnNode(opcode, type), index), cref(type));
 			super.visitTypeInsn(opcode, type);
 		}
 
 		@Override
 		public void visitFieldInsn(int opcode, String owner, String name, String desc) {
-			FieldInsnNode insn = new FieldInsnNode(opcode, owner, name, desc);
-			PathNode<?> instructionPath = memberPath.childInsn(insn, index);
-			visitAsmMemberReference(owner, name, desc, resultSink, instructionPath);
-			visitAsmType(Type.getType(desc), resultSink, instructionPath);
+			if (classRefOnly) {
+				boolean ownerMatches = includeMemberOwners && isClassRefMatch(owner);
+				String fieldType = getAsmClassReferenceName(Type.getType(desc));
+				boolean typeMatches = isClassRefMatch(fieldType);
+				if (ownerMatches || typeMatches) {
+					PathNode<?> location = memberPath.childInsn(new FieldInsnNode(opcode, owner, name, desc), index);
+					if (ownerMatches)
+						resultSink.accept(location, cref(owner));
+					if (typeMatches)
+						resultSink.accept(location, cref(fieldType));
+				}
+			} else if (isMemberRefMatch(owner, name, desc)) {
+				resultSink.accept(memberPath.childInsn(new FieldInsnNode(opcode, owner, name, desc), index), mref(owner, name, desc));
+			}
 
 			super.visitFieldInsn(opcode, owner, name, desc);
 		}
 
 		@Override
 		public void visitMethodInsn(int opcode, String owner, String name, String desc, boolean isInterface) {
-			MethodInsnNode insn = new MethodInsnNode(opcode, owner, name, desc, isInterface);
-			PathNode<?> instructionPath = memberPath.childInsn(insn, index);
-			visitAsmMemberReference(owner, name, desc, resultSink, instructionPath);
-			visitAsmMethodType(Type.getMethodType(desc), resultSink, instructionPath);
+			if (classRefOnly) {
+				visitMethodInsnTypes(opcode, owner, name, desc, isInterface);
+			} else if (isMemberRefMatch(owner, name, desc)) {
+				resultSink.accept(memberPath.childInsn(new MethodInsnNode(opcode, owner, name, desc, isInterface), index), mref(owner, name, desc));
+			}
 
 			super.visitMethodInsn(opcode, owner, name, desc, isInterface);
+		}
+
+		private void visitMethodInsnTypes(int opcode, String owner, String name, String desc, boolean isInterface) {
+			boolean ownerMatches = includeMemberOwners && isClassRefMatch(owner);
+			String returnType = getAsmClassReferenceName(Type.getReturnType(desc));
+			boolean returnMatches = isClassRefMatch(returnType);
+			PathNode<?> location = null;
+			if (ownerMatches || returnMatches) {
+				location = memberPath.childInsn(new MethodInsnNode(opcode, owner, name, desc, isInterface), index);
+				if (ownerMatches)
+					resultSink.accept(location, cref(owner));
+				if (returnMatches)
+					resultSink.accept(location, cref(returnType));
+			}
+			for (Type argument : Type.getArgumentTypes(desc)) {
+				String argumentName = getAsmClassReferenceName(argument);
+				if (!isClassRefMatch(argumentName))
+					continue;
+				if (location == null)
+					location = memberPath.childInsn(new MethodInsnNode(opcode, owner, name, desc, isInterface), index);
+				resultSink.accept(location, cref(argumentName));
+			}
 		}
 
 		@Override
 		public void visitInvokeDynamicInsn(String name, String desc, Handle bsmHandle, Object... bsmArgs) {
 			InvokeDynamicInsnNode insn = new InvokeDynamicInsnNode(name, desc, bsmHandle, bsmArgs);
 			PathNode<?> instructionPath = memberPath.childInsn(insn, index);
-			visitAsmMemberReference(ownerType, name, desc, resultSink, instructionPath);
+			if (isMemberRefMatch(ownerType, name, desc))
+				resultSink.accept(instructionPath, mref(ownerType, name, desc));
 			visitAsmMethodType(Type.getMethodType(desc), resultSink, instructionPath);
 			visitAsmBootstrap(bsmHandle, bsmArgs, resultSink, instructionPath);
 
@@ -889,17 +945,16 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 
 		@Override
 		public void visitLdcInsn(Object value) {
-			LdcInsnNode insn = new LdcInsnNode(value);
-			visitAsmConstant(insn.cst, resultSink, memberPath.childInsn(insn, index));
+			if (value instanceof Type || value instanceof Handle || value instanceof ConstantDynamic)
+				visitAsmConstant(value, resultSink, memberPath.childInsn(new LdcInsnNode(value), index));
 
 			super.visitLdcInsn(value);
 		}
 
 		@Override
 		public void visitMultiANewArrayInsn(String desc, int numDimensions) {
-			if (Types.isValidDesc(desc))
-				visitAsmType(Type.getType(desc), resultSink,
-						memberPath.childInsn(new MultiANewArrayInsnNode(desc, numDimensions), index));
+			if (classRefOnly && Types.isValidDesc(desc) && isClassRefMatch(desc))
+				resultSink.accept(memberPath.childInsn(new MultiANewArrayInsnNode(desc, numDimensions), index), cref(desc));
 			super.visitMultiANewArrayInsn(desc, numDimensions);
 		}
 
@@ -1051,6 +1106,8 @@ public class ReferenceQuery implements AndroidClassQuery, JvmClassQuery {
 			String owner = getInternalName(descriptor);
 			if (isMemberRefMatch(owner, descriptor, value))
 				resultSink.accept(currentAnnoLocation, mref(owner, value, descriptor));
+			if (includeMemberOwners && isClassRefMatch(owner))
+				resultSink.accept(currentAnnoLocation, cref(owner));
 		}
 	}
 }

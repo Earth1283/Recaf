@@ -7,9 +7,15 @@ import jakarta.annotation.Nullable;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
+import javafx.collections.FXCollections;
 import javafx.scene.control.Button;
 import javafx.scene.control.ContextMenu;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.TextArea;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
 import javafx.scene.layout.VBox;
 import org.fxmisc.richtext.CharacterHit;
 import org.fxmisc.richtext.CodeArea;
@@ -33,6 +39,7 @@ import software.coley.recaf.info.member.ClassMember;
 import software.coley.recaf.info.member.MethodMember;
 import software.coley.recaf.path.ClassMemberPathNode;
 import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.path.LocalVariablePathNode;
 import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.cell.context.ContextMenuProviderService;
@@ -66,6 +73,7 @@ import software.coley.recaf.util.EscapeUtil;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Handles;
 import software.coley.recaf.util.Lang;
+import software.coley.recaf.util.Menus;
 import software.coley.recaf.util.threading.ThreadPoolFactory;
 import software.coley.recaf.util.threading.ThreadUtil;
 import software.coley.recaf.workspace.model.Workspace;
@@ -750,6 +758,66 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		return index + offset;
 	}
 
+	@Nullable
+	private MenuItem createLocalUsagesAction(@Nonnull CodeArea area, int position, double screenX, double screenY) {
+		CompilationUnitModel snapshot = unit;
+		if (snapshot == null)
+			return null;
+		String source = snapshot.getInputSource();
+		if (!source.equals(area.getText()))
+			return null;
+		VariableModel declaration = JavaVariableUsages.resolveAt(snapshot, position);
+		if (declaration == null)
+			return null;
+		return Menus.action("menu.search.find-usages", CarbonIcons.CODE_REFERENCE, () -> {
+			if (source.equals(area.getText()))
+				showLocalUsages(area, source, JavaVariableUsages.find(declaration), screenX, screenY);
+		});
+	}
+
+	private void showLocalUsages(@Nonnull CodeArea area, @Nonnull String source, @Nonnull List<Range> usages,
+	                            double screenX, double screenY) {
+		ListView<Range> locations = new ListView<>(FXCollections.observableList(usages));
+		locations.setPlaceholder(new BoundLabel(Lang.getBinding("menu.search.find-usages.empty")));
+		locations.setPrefSize(560, Math.clamp(usages.size() * 28 + 8, 64, 330));
+		locations.setCellFactory(ignored -> new ListCell<>() {
+			@Override
+			protected void updateItem(Range range, boolean empty) {
+				super.updateItem(range, empty);
+				if (empty || range == null || range.begin() >= area.getLength()) {
+					setText(null);
+					return;
+				}
+				var location = area.offsetToPosition(range.begin(), TwoDimensional.Bias.Forward);
+				String line = area.getParagraph(location.getMajor()).getText().strip();
+				setText(Lang.get("menu.search.find-usages.location").formatted(location.getMajor() + 1, location.getMinor() + 1, line));
+			}
+		});
+		Popover popup = new Popover(locations);
+		popup.setAutoHide(true);
+		Runnable navigate = () -> {
+			Range range = locations.getSelectionModel().getSelectedItem();
+			if (range != null && editor != null && source.equals(area.getText())) {
+				popup.hide();
+				selectRange(range);
+				area.requestFocus();
+			}
+		};
+		locations.setOnKeyPressed(event -> {
+			if (event.getCode() == KeyCode.ENTER) {
+				navigate.run();
+				event.consume();
+			}
+		});
+		locations.setOnMouseClicked(event -> {
+			if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2)
+				navigate.run();
+		});
+		popup.show(area, screenX, screenY);
+		locations.getSelectionModel().selectFirst();
+		locations.requestFocus();
+	}
+
 	@Override
 	public void install(@Nonnull Editor editor) {
 		this.editor = editor;
@@ -804,13 +872,20 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 				menu = cellConfigurationService.contextMenuOfConstant(literalValue);
 			} else {
 				AstResolveResult result = resolvePosition(offsetHitIndex, false);
+				MenuItem localUsages = createLocalUsagesAction(area, hit.getInsertionIndex(), e.getScreenX(), e.getScreenY());
 				if (result != null) {
 					PathNode<?> path = result.path();
 					logger.debugging(l -> l.info("Path at offset '{}' = {}", offsetHitIndex, path));
 
 					// Map the result's declaration state to a context-source.
 					ContextSource source = result.isDeclaration() ? ContextSource.DECLARATION : ContextSource.REFERENCE;
-					menu = cellConfigurationService.contextMenuOf(source, path);
+					if (localUsages == null || path instanceof LocalVariablePathNode)
+						menu = cellConfigurationService.contextMenuOf(source, path);
+				}
+				if (localUsages != null) {
+					if (menu == null)
+						menu = new ContextMenu();
+					menu.getItems().add(localUsages);
 				}
 			}
 

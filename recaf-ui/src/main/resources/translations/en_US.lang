@@ -270,6 +270,9 @@ menu.search.class-similar.scope.self_resource=Same resource
 menu.search.class-similar.scope.all_non_internal=All resources
 menu.search.class-similar.scope.target_resources=Explicit targets
 menu.search.field-references=Field references
+menu.search.find-usages=Find Usages
+menu.search.find-usages.location=Line %d, column %d   %s
+menu.search.find-usages.empty=No usages found
 menu.search.noresults=No results
 menu.mappings=Mappings
 menu.mappings.apply=Apply
@@ -885,6 +888,7 @@ deobf.peephole.data.exceptioncollect=Exception metadata collection
 deobf.peephole.data.staticcollect=Static value collection
 deobf.peephole.data.staticcollect.max-steps=Maximum evaluation steps
 deobf.peephole.data.staticinline=Static value inlining
+deobf.peephole.data.staticinline.auto-resolve-variables=Auto resolve variables
 deobf.peephole.data.indyinline=Invokedynamic inlining
 deobf.peephole.data.indyinline.max-steps=Maximum evaluation steps
 deobf.peephole.data.constfold=Opaque constant folding
@@ -1927,7 +1931,7 @@ tutorial.5.class=This class is obfuscated! If you try to save using [Control + S
 tutorial.5.main=In this chapter you will need to open the assembler on the obfuscated method.\n\nUse the 'Fields & Methods' tab and right click on the obfuscated method, then open the assembler.\n\nThe obfuscated method is currently not implemented properly. The correct implementation can be found in the comment below in the next method.\n\nCopy the code in that comment.\n\nIn the assembler for the obfuscated method click 'Java to bytecode'. On the left side is an editor which takes in Java source code. On the right side is an editor which will show you the equivalent Java bytecode. Paste the code you have copied into the left hand side (replacing the existing code in there, and removing the '*' before each line).\n\nWhen done correctly you should see the right side display a method that contains the bytecode generated from compiling the code on the left side. You can copy the instructions in this generated method and paste it into the assembler above. To be clear, you are only copying the instructions, not the whole generated method. If you have correctly copied the decryption logic and saved the changes in the assembler the next chapter will be revealed.
 tutorial.5.decrypt=int key = Thread.currentThread().getStackTrace()[1].getMethodName().hashCode();\nchar[] chars = text.toCharArray();\nfor (int i = 0; i < chars.length; i++) chars[i] ^= key;\nreturn String.valueOf(chars);
 tutorial.5.finished=Right click on this method's return type "Chapter6" and select 'Go to class'.\n\nYou can alternatively use [Control + Click] on references to avoid having to go through the context menu every time.
-tutorial.6.class=When you right click on a class, field, or method you can use see what other code references the thing you've selected.\n\n - Classes: Search > Type/member references\n - Fields: Field references\n - Methods: Method references\n\nYou can find these search options in the menu bar's 'Search' menu at the top of the UI, along with other things like searching for Strings and number literals.
+tutorial.6.class=Right-click a class, field, or method and choose Find Usages to find its references in the workspace. Right-click a local variable in the editor to jump to its uses.\n\nThe Search menu also lets you search by type or member name, or look for strings and number literals.
 tutorial.6.method=Try searching for what references this method.
 tutorial.7.class=Congrats, this is the end of the tutorial!\n\nPress [Control + S] one last time to mark the tutorial as completed.\n\nMore will be added to the tutorial later, but this should cover all of the most important features for your average use case. In the meantime, feel free to explore other features on your own!
 

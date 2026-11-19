@@ -9,6 +9,7 @@ import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.path.ClassMemberPathNode;
@@ -76,12 +77,19 @@ public class InheritanceGutterGraphicFactory extends AbstractLineGraphicFactory 
 		int line = paragraph + 1;
 
 		// Skip if there are no inheritance items at all.
-		int directions = (int) inheritanceTracking.getAllItems().stream().map(Inheritance::getClass).distinct().count();
+		int directions = inheritanceTracking.getDirectionCount();
 		if (directions == 0)
 			return;
 
 		// Separate by type.
 		List<Inheritance> items = inheritanceTracking.getItemsOnLine(line);
+		int gutterWidth = 6 + directions * 16;
+		if (items.isEmpty()) {
+			Region spacer = new Region();
+			spacer.setMinWidth(gutterWidth);
+			container.addHorizontal(spacer);
+			return;
+		}
 		List<Inheritance.Parent> parents = items.stream()
 				.filter(Inheritance.Parent.class::isInstance)
 				.map(Inheritance.Parent.class::cast).toList();
@@ -95,7 +103,7 @@ public class InheritanceGutterGraphicFactory extends AbstractLineGraphicFactory 
 		box.setAlignment(Pos.CENTER_LEFT);
 		box.setSpacing(2);
 		box.setPadding(new Insets(0, 0, 0, 4));
-		box.setMinWidth(6 + directions * 16);
+		box.setMinWidth(gutterWidth);
 
 		// Add inheritance icons.
 		if (!parents.isEmpty()) {

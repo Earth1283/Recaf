@@ -10,6 +10,7 @@ import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
@@ -126,6 +127,7 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 	                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
 	                      @Nonnull JvmClassInfo initialClassState) throws TransformationException {
 		boolean dirty = false;
+		boolean assignmentsFolded = false;
 		String className = initialClassState.getName();
 		ClassNode node = context.getNode(bundle, initialClassState);
 		for (MethodNode method : node.methods) {
@@ -163,11 +165,13 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 				// Now that we are done, we'll prune any NOP instructions if we made changes.
 				if (dirty)
 					removeNops(instructions);
+
+				assignmentsFolded |= foldRepeatedBitwiseAssignments(method);
 			} catch (Throwable t) {
 				throw new TransformationException("Error encountered when folding constants", t);
 			}
 		}
-		if (dirty) {
+		if (dirty || assignmentsFolded) {
 			context.setRecomputeFrames(className);
 			context.setNode(bundle, initialClassState, node);
 		}
@@ -902,6 +906,91 @@ public class OpaqueConstantFoldingTransformer implements JvmClassTransformer {
 			insn = next;
 		}
 	}
+
+	/** Folds adjacent literal updates to the same local even when its initial value is unknown. */
+	private static boolean foldRepeatedBitwiseAssignments(@Nonnull MethodNode method) {
+		InsnList instructions = method.instructions;
+		if (instructions.size() < 8)
+			return false;
+		int bitwiseOperations = 0;
+		for (AbstractInsnNode insn : instructions) {
+			if (insn.getOpcode() >= IAND && insn.getOpcode() <= LXOR && ++bitwiseOperations == 2)
+				break;
+		}
+		if (bitwiseOperations < 2)
+			return false;
+
+		// Debug labels can appear between statements. Branch targets and exception ranges are boundaries.
+		Set<LabelNode> boundaries = getControlFlowBoundaries(method);
+
+		boolean dirty = false;
+		for (AbstractInsnNode insn = instructions.getFirst(); insn != null; ) {
+			LocalBitwiseAssignment first = readBitwiseAssignment(insn, boundaries);
+			if (first == null) {
+				insn = insn.getNext();
+				continue;
+			}
+
+			insn = first.store().getNext();
+			LocalBitwiseAssignment second = readBitwiseAssignment(nextInBlock(first.store(), boundaries), boundaries);
+			int opcode = first.operation().getOpcode();
+			if (second == null || second.load().var != first.load().var || second.operation().getOpcode() != opcode)
+				continue;
+
+			long mask = switch (opcode) {
+				case IAND, LAND -> first.mask() & second.mask();
+				case IOR, LOR -> first.mask() | second.mask();
+				case IXOR, LXOR -> first.mask() ^ second.mask();
+				default -> throw new IllegalStateException("Unexpected bitwise opcode: " + opcode);
+			};
+			instructions.set(second.literal(), second.load().getOpcode() == LLOAD ? longToInsn(mask) : intToInsn((int) mask));
+			instructions.remove(first.load());
+			instructions.remove(first.literal());
+			instructions.remove(first.operation());
+			instructions.remove(first.store());
+			// Revisit the surviving assignment so runs longer than two fold in the same pass.
+			insn = second.load();
+			dirty = true;
+		}
+		return dirty;
+	}
+
+	@Nullable
+	private static LocalBitwiseAssignment readBitwiseAssignment(@Nullable AbstractInsnNode insn, Set<LabelNode> boundaries) {
+		if (!(insn instanceof VarInsnNode load) || (load.getOpcode() != ILOAD && load.getOpcode() != LLOAD))
+			return null;
+		AbstractInsnNode literal = nextInBlock(load, boundaries);
+		if (literal == null)
+			return null;
+		boolean wide = load.getOpcode() == LLOAD;
+		Number mask = getNumericLiteral(literal);
+		if (wide ? !(mask instanceof Long) : !(mask instanceof Integer))
+			return null;
+		AbstractInsnNode operation = nextInBlock(literal, boundaries);
+		if (operation == null)
+			return null;
+		int opcode = operation.getOpcode();
+		if (wide ? opcode != LAND && opcode != LOR && opcode != LXOR : opcode != IAND && opcode != IOR && opcode != IXOR)
+			return null;
+		if (!(nextInBlock(operation, boundaries) instanceof VarInsnNode store)
+				|| store.getOpcode() != (wide ? LSTORE : ISTORE) || store.var != load.var)
+			return null;
+		return new LocalBitwiseAssignment(load, literal, operation, store, mask.longValue());
+	}
+
+	@Nullable
+	private static AbstractInsnNode nextInBlock(AbstractInsnNode insn, Set<LabelNode> boundaries) {
+		AbstractInsnNode next = insn.getNext();
+		while (next != null && isMetaData(next)) {
+			if (next instanceof FrameNode || (next instanceof LabelNode label && boundaries.contains(label)))
+				return null;
+			next = next.getNext();
+		}
+		return next;
+	}
+
+	private record LocalBitwiseAssignment(VarInsnNode load, AbstractInsnNode literal, AbstractInsnNode operation,
+	                                      VarInsnNode store, long mask) {}
 
 	private static boolean hasBitwiseOperation(@Nonnull InsnList instructions) {
 		for (AbstractInsnNode insn = instructions.getFirst(); insn != null; insn = insn.getNext())

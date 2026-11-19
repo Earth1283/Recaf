@@ -168,6 +168,7 @@ public class BasicClassContextMenuProviderFactory extends AbstractContextMenuPro
 		}
 
 		// Search actions
+		builder.item("menu.search.find-usages", CODE_REFERENCE, () -> actions.findClassUsages(info.getName()));
 		var search = builder.submenu("menu.search", SEARCH);
 		search.item("menu.search.class.member-references", CODE_REFERENCE, () -> {
 			MemberReferenceSearchPane pane = actions.openNewMemberReferenceSearch();
@@ -267,6 +268,7 @@ public class BasicClassContextMenuProviderFactory extends AbstractContextMenuPro
 		}
 
 		// Search actions
+		builder.item("menu.search.find-usages", CODE_REFERENCE, () -> actions.findClassUsages(info.getName()));
 		var search = builder.submenu("menu.search", SEARCH);
 		search.item("menu.search.class.member-references", CODE_REFERENCE, () -> {
 			MemberReferenceSearchPane pane = actions.openNewMemberReferenceSearch();

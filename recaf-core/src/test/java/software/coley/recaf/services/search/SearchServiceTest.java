@@ -307,6 +307,41 @@ public class SearchServiceTest extends TestBase {
 		}
 
 		@Test
+		void findsClassUsagesThroughItsFieldOwners() {
+			var owner = strMatchProvider.newEqualPredicate("java/lang/System");
+			assertEquals(0, searchService.search(classesWorkspace, new ReferenceQuery(owner)).size());
+
+			Results usages = searchService.search(classesWorkspace, new ReferenceQuery(owner, true));
+			assertEquals(2, usages.size());
+			assertTrue(usages.stream().allMatch(result -> result.getPath() instanceof JvmInstructionPathNode));
+		}
+
+		@Test
+		void findsClassUsagesAsArrayElementType() {
+			var arrayHolder = createClass("sample/ArrayHolder", node ->
+					node.visitField(ACC_PRIVATE, "items", "[[Lsample/Element;", null, null).visitEnd());
+			Workspace workspace = fromBundle(fromClasses(arrayHolder));
+			var element = strMatchProvider.newEqualPredicate("sample/Element");
+			Results usages = searchService.search(workspace, new ReferenceQuery(element, true));
+			assertEquals(1, usages.size());
+			assertInstanceOf(ClassMemberPathNode.class, usages.getFirst().getPath());
+		}
+
+		@Test
+		void distinguishesSingleLetterClassNamesFromPrimitiveDescriptors() {
+			var holder = createClass("Holder", node -> {
+				node.visitField(ACC_PRIVATE, "primitive", "I", null, null).visitEnd();
+				node.visitField(ACC_PRIVATE, "reference", "LI;", null, null).visitEnd();
+			});
+			Workspace workspace = fromBundle(fromClasses(holder));
+			var name = strMatchProvider.newEqualPredicate("I");
+			Results usages = searchService.search(workspace, new ReferenceQuery(name, true));
+			assertEquals(1, usages.size());
+			var path = assertInstanceOf(ClassMemberPathNode.class, usages.getFirst().getPath());
+			assertEquals("reference", path.getValue().getName());
+		}
+
+		@Test
 		void testClassReferenceToNumberFormatException() throws IOException {
 			Workspace workspace = fromBundle(fromClasses(
 					fromRuntimeClass(ClassWithExceptions.class)

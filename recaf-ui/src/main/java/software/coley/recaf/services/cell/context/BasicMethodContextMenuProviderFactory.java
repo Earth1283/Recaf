@@ -21,11 +21,9 @@ import software.coley.recaf.services.cell.text.TextProviderService;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
 import software.coley.recaf.services.navigation.Actions;
-import software.coley.recaf.services.search.match.StringPredicateProvider;
 import software.coley.recaf.services.stub.StubStrategy;
 import software.coley.recaf.services.stub.StubbingService;
 import software.coley.recaf.ui.contextmenu.ContextMenuBuilder;
-import software.coley.recaf.ui.pane.search.MemberReferenceSearchPane;
 import software.coley.recaf.ui.pane.search.SearchContextSource;
 import software.coley.recaf.util.ClipboardUtil;
 import software.coley.recaf.workspace.model.Workspace;
@@ -136,15 +134,8 @@ public class BasicMethodContextMenuProviderFactory extends AbstractContextMenuPr
 			//  - Simulate with SSVM (Virtualize > Run)
 
 			// Search actions
-			builder.item("menu.search.method-references", CODE_REFERENCE, () -> {
-				MemberReferenceSearchPane pane = actions.openNewMemberReferenceSearch();
-				pane.ownerPredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
-				pane.namePredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
-				pane.descPredicateIdProperty().setValue(StringPredicateProvider.KEY_EQUALS);
-				pane.ownerValueProperty().setValue(declaringClass.getName());
-				pane.nameValueProperty().setValue(method.getName());
-				pane.descValueProperty().setValue(method.getDescriptor());
-			});
+			builder.item("menu.search.find-usages", CODE_REFERENCE,
+					() -> actions.findMemberUsages(declaringClass.getName(), method.getName(), method.getDescriptor()));
 			if (declaringClass.isJvmClass()) {
 				builder.item("menu.search.method-similar", CODE_REFERENCE,
 						() -> actions.openSimilarMethodSearch(PathNodes.memberPath(workspace, resource, bundle, declaringClass, method)));

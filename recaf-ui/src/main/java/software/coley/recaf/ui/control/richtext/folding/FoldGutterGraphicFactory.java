@@ -6,6 +6,7 @@ import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
 import javafx.scene.text.Text;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import software.coley.recaf.ui.control.FontIconView;
@@ -59,6 +60,12 @@ public class FoldGutterGraphicFactory extends AbstractLineGraphicFactory {
 		// Scale the arrow and gutter with the editor font size.
 		int iconSize = resolveIconSize();
 		double gutterWidth = resolveGutterWidth(iconSize);
+		if (!collapsedHeader && region == null) {
+			Region spacer = new Region();
+			spacer.setMinWidth(gutterWidth);
+			container.addHorizontal(spacer);
+			return;
+		}
 
 		HBox box = new HBox();
 		box.setAlignment(Pos.CENTER_LEFT);
@@ -79,7 +86,7 @@ public class FoldGutterGraphicFactory extends AbstractLineGraphicFactory {
 				editor.unfoldParagraphs(paragraph);
 				editor.redrawParagraphGraphics();
 			});
-		} else if (region != null) {
+		} else {
 			FontIconView icon = new FontIconView(CarbonIcons.CHEVRON_DOWN, iconSize);
 			icon.setOpacity(0.3);
 			box.getChildren().add(icon);

@@ -372,6 +372,27 @@ public class AsmInsnUtil implements Opcodes {
 	}
 
 	/**
+	 * @param insn
+	 * 		Instruction to inspect.
+	 * @return Numeric literal pushed by the instruction, or {@code null} for other instructions.
+	 */
+	@Nullable
+	public static Number getNumericLiteral(@Nullable AbstractInsnNode insn) {
+		if (insn == null)
+			return null;
+		int opcode = insn.getOpcode();
+		return switch (opcode) {
+			case ICONST_M1, ICONST_0, ICONST_1, ICONST_2, ICONST_3, ICONST_4, ICONST_5 -> opcode - ICONST_0;
+			case BIPUSH, SIPUSH -> ((IntInsnNode) insn).operand;
+			case LCONST_0, LCONST_1 -> (long) (opcode - LCONST_0);
+			case FCONST_0, FCONST_1, FCONST_2 -> (float) (opcode - FCONST_0);
+			case DCONST_0, DCONST_1 -> (double) (opcode - DCONST_0);
+			case LDC -> ((LdcInsnNode) insn).cst instanceof Number number ? number : null;
+			default -> null;
+		};
+	}
+
+	/**
 	 * @param type
 	 * 		Type to push.
 	 *
@@ -811,6 +832,35 @@ public class AsmInsnUtil implements Opcodes {
 				op == MONITORENTER || op == MONITOREXIT ||
 				// ArithmeticException
 				op == IDIV || op == IREM || op == LDIV || op == LREM;
+	}
+
+	/**
+	 * @param method
+	 * 		Method to inspect.
+	 * @return Labels that are branch targets, exception handlers, or the boundaries of protected ranges.
+	 */
+	@Nonnull
+	public static Set<LabelNode> getControlFlowBoundaries(@Nonnull MethodNode method) {
+		Set<LabelNode> labels = Collections.newSetFromMap(new IdentityHashMap<>());
+		for (AbstractInsnNode insn : method.instructions) {
+			if (insn instanceof JumpInsnNode jump) {
+				labels.add(jump.label);
+			} else if (insn instanceof TableSwitchInsnNode table) {
+				labels.add(table.dflt);
+				labels.addAll(table.labels);
+			} else if (insn instanceof LookupSwitchInsnNode lookup) {
+				labels.add(lookup.dflt);
+				labels.addAll(lookup.labels);
+			}
+		}
+		if (method.tryCatchBlocks != null) {
+			for (TryCatchBlockNode block : method.tryCatchBlocks) {
+				labels.add(block.start);
+				labels.add(block.end);
+				labels.add(block.handler);
+			}
+		}
+		return labels;
 	}
 
 	/**

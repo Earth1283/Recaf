@@ -1,13 +1,20 @@
 package software.coley.recaf.services.deobfuscation.transform.generic;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
+import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.LabelNode;
+import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.analysis.Frame;
@@ -18,6 +25,7 @@ import software.coley.recaf.services.transform.ClassTransformer;
 import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.transform.JvmTransformerContext;
 import software.coley.recaf.services.transform.TransformationException;
+import software.coley.recaf.services.transform.TransformationParameter;
 import software.coley.recaf.util.analysis.ReAnalyzer;
 import software.coley.recaf.util.analysis.ReInterpreter;
 import software.coley.recaf.util.analysis.value.ArrayValue;
@@ -32,11 +40,19 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer.toInsn;
+import static software.coley.recaf.util.AsmInsnUtil.getControlFlowBoundaries;
+import static software.coley.recaf.util.AsmInsnUtil.getDefaultValue;
+import static software.coley.recaf.util.AsmInsnUtil.getNumericLiteral;
+import static software.coley.recaf.util.AsmInsnUtil.intToInsn;
 import static software.coley.recaf.util.AsmInsnUtil.isArrayLoad;
+import static software.coley.recaf.util.AsmInsnUtil.isFlowControl;
+import static software.coley.recaf.util.AsmInsnUtil.isMetaData;
+import static software.coley.recaf.util.AsmInsnUtil.isReturn;
 
 /**
  * A transformer that inlines values from {@link StaticValueCollectionTransformer}.
@@ -46,6 +62,9 @@ import static software.coley.recaf.util.AsmInsnUtil.isArrayLoad;
 @Dependent
 public class StaticValueInliningTransformer implements JvmClassTransformer {
 	public static final String IDENTIFIER = "peephole.data.staticinline";
+	public static final String KEY_AUTO_RESOLVE_VARIABLES = IDENTIFIER + ".auto-resolve-variables";
+	private static final TransformationParameter<Boolean> AUTO_RESOLVE_VARIABLES =
+			new TransformationParameter<>(KEY_AUTO_RESOLVE_VARIABLES, boolean.class, true);
 
 	private final InheritanceGraphService graphService;
 	private InheritanceGraph inheritanceGraph;
@@ -65,13 +84,19 @@ public class StaticValueInliningTransformer implements JvmClassTransformer {
 	                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
 	                      @Nonnull JvmClassInfo initialClassState) throws TransformationException {
 		var staticValueCollector = context.getTransformer(StaticValueCollectionTransformer.class);
+		boolean autoResolve = context.getParameters().getBoolean(KEY_AUTO_RESOLVE_VARIABLES, AUTO_RESOLVE_VARIABLES.defaultValue());
 
 		boolean dirty = false;
 		ClassNode node = context.getNode(bundle, initialClassState);
 		Set<String> initializationMethods = collectInitializationMethods(node);
 		for (MethodNode method : node.methods) {
-			// Skip abstract methods, and anything that can run while the class is still initializing.
-			// Those may read fields before the initializer has assigned the values we would inline.
+			// Resolve reads in the initializer using values at the point of each read.
+			if (autoResolve && method.name.equals("<clinit>") && method.desc.equals("()V")
+					&& (method.access & Opcodes.ACC_STATIC) != 0) {
+				dirty |= resolveInitializerVariables(node, method);
+				continue;
+			}
+			// Methods reachable during initialization may observe earlier field values.
 			if (method.instructions == null || initializationMethods.contains(method.name + method.desc))
 				continue;
 
@@ -150,6 +175,92 @@ public class StaticValueInliningTransformer implements JvmClassTransformer {
 			context.setNode(bundle, initialClassState, node);
 	}
 
+	/** Tracks primitive fields in straight-line initializer code using literal stores and JVM initial values. */
+	private static boolean resolveInitializerVariables(@Nonnull ClassNode node, @Nonnull MethodNode method) {
+		if (method.instructions == null || method.instructions.size() == 0)
+			return false;
+		// Parent or default-method interface initializers may call back into this class before <clinit> starts.
+		boolean canUseInitialValues = "java/lang/Object".equals(node.superName) && node.interfaces.isEmpty();
+		Map<FieldKey, FieldNode> declaredFields = new HashMap<>();
+		Map<FieldNode, AbstractInsnNode> knownValues = new HashMap<>();
+		for (FieldNode field : node.fields) {
+			if ((field.access & Opcodes.ACC_STATIC) == 0)
+				continue;
+			declaredFields.put(new FieldKey(field.name, field.desc), field);
+			if (!canUseInitialValues || !isTrackable(field))
+				continue;
+			AbstractInsnNode initialValue = field.value == null ? getDefaultValue(Type.getType(field.desc))
+					: primitiveFieldLiteral(field.desc, new LdcInsnNode(field.value));
+			if (initialValue != null)
+				knownValues.put(field, initialValue);
+		}
+
+		Set<LabelNode> boundaries = getControlFlowBoundaries(method);
+		AbstractInsnNode previous = null;
+		boolean dirty = false;
+		for (AbstractInsnNode instruction : method.instructions) {
+			int opcode = instruction.getOpcode();
+			boolean flowBoundary = instruction instanceof FrameNode || (instruction instanceof LabelNode label && boundaries.contains(label))
+					|| isFlowControl(instruction) || isReturn(opcode);
+			boolean canRunOtherCode = (opcode >= Opcodes.INVOKEVIRTUAL && opcode <= Opcodes.INVOKEDYNAMIC)
+					|| opcode == Opcodes.NEW || (instruction instanceof LdcInsnNode ldc && ldc.cst instanceof ConstantDynamic);
+			if (flowBoundary || canRunOtherCode) {
+				knownValues.clear();
+				previous = null;
+				continue;
+			}
+			if (isMetaData(instruction) || opcode == Opcodes.NOP)
+				continue;
+			if (instruction instanceof FieldInsnNode access && (opcode == Opcodes.GETSTATIC || opcode == Opcodes.PUTSTATIC)) {
+				FieldNode field = access.owner.equals(node.name) ? declaredFields.get(new FieldKey(access.name, access.desc)) : null;
+				if (field == null) {
+					// Resolving a foreign or inherited static field can run another initializer.
+					knownValues.clear();
+				} else if (opcode == Opcodes.PUTSTATIC && isTrackable(field)) {
+					AbstractInsnNode literal = primitiveFieldLiteral(field.desc, previous);
+					if (literal == null)
+						knownValues.remove(field);
+					else
+						knownValues.put(field, literal);
+				} else if (opcode == Opcodes.GETSTATIC) {
+					AbstractInsnNode literal = knownValues.get(field);
+					if (literal != null) {
+						previous = literal.clone(Map.of());
+						method.instructions.set(instruction, previous);
+						dirty = true;
+						continue;
+					}
+				}
+			}
+			previous = instruction;
+		}
+		return dirty;
+	}
+
+	private static boolean isTrackable(@Nonnull FieldNode field) {
+		return (field.access & Opcodes.ACC_VOLATILE) == 0 && field.desc.length() == 1
+				&& "ZBCSIJFD".indexOf(field.desc.charAt(0)) >= 0;
+	}
+
+	@Nullable
+	private static AbstractInsnNode primitiveFieldLiteral(@Nonnull String descriptor, @Nullable AbstractInsnNode literal) {
+		Number value = getNumericLiteral(literal);
+		// The JVM narrows int stack values when storing into boolean, byte, char, or short fields.
+		return switch (descriptor) {
+			case "Z" -> value instanceof Integer integer ? intToInsn(integer & 1) : null;
+			case "B" -> value instanceof Integer integer ? intToInsn(integer.byteValue()) : null;
+			case "C" -> value instanceof Integer integer ? intToInsn((char) integer.intValue()) : null;
+			case "S" -> value instanceof Integer integer ? intToInsn(integer.shortValue()) : null;
+			case "I" -> value instanceof Integer ? literal : null;
+			case "J" -> value instanceof Long ? literal : null;
+			case "F" -> value instanceof Float ? literal : null;
+			case "D" -> value instanceof Double ? literal : null;
+			default -> null;
+		};
+	}
+
+	private record FieldKey(String name, String descriptor) {}
+
 	/**
 	 * @param node
 	 * 		Class to check.
@@ -192,6 +303,12 @@ public class StaticValueInliningTransformer implements JvmClassTransformer {
 	@Override
 	public String identifier() {
 		return IDENTIFIER;
+	}
+
+	@Nonnull
+	@Override
+	public List<TransformationParameter<?>> getParameterDefinitions() {
+		return List.of(AUTO_RESOLVE_VARIABLES);
 	}
 
 	@Nonnull
