@@ -49,6 +49,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.LanguageStylesheets;
 import software.coley.recaf.ui.config.KeybindingConfig;
 import software.coley.recaf.ui.control.richtext.Editor;
+import software.coley.recaf.ui.control.richtext.VariableValueHover;
 import software.coley.recaf.ui.control.richtext.bracket.SelectedBracketTracking;
 import software.coley.recaf.ui.control.richtext.highlight.SelectedWordHighlighting;
 import software.coley.recaf.ui.control.richtext.problem.Problem;
@@ -95,6 +96,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	private final WorkspaceSaveService saveService;
 	private final ProblemTracking problemTracking = new ProblemTracking();
 	private final Editor editor = new Editor();
+	private final VariableValueHover variableHover = new VariableValueHover(this::resolveVariableValue);
 	private final AtomicBoolean updateLock = new AtomicBoolean();
 	private AssemblerPipeline<? extends ClassInfo, ? extends ClassResult<?>, ?> pipeline;
 	private AssemblerTabCompleter tabCompleter;
@@ -102,6 +104,8 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	private Object lastAssembledClassRepresentation;
 	private ClassInfo lastAssembledClass;
 	private List<ASTElement> lastConcreteAst;
+	private long hoverBuildRequest;
+	private HoverAnalysis hoverAnalysis;
 
 	@Inject
 	public AssemblerPane(@Nonnull AssemblerPipelineManager pipelineManager,
@@ -146,6 +150,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 				.addObserver(e -> assemble());
 
 		contextActionSupport.install(editor);
+		variableHover.install(editor);
 		searchBar.install(editor);
 
 		// Context action should be passed along path updates
@@ -308,6 +313,9 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	@Override
 	public void disable() {
 		super.disable();
+		hoverBuildRequest++;
+		hoverAnalysis = null;
+		variableHover.uninstall(editor);
 		editor.close();
 	}
 
@@ -403,6 +411,9 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 
 		// Update UI state.
 		if (!updateLock.get()) {
+			hoverBuildRequest++;
+			hoverAnalysis = null;
+			variableHover.hide();
 			pipeline = pipelineManager.getPipeline(path);
 
 			// Setup from existing class data from the path.
@@ -461,9 +472,9 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	 * @return Future of parse completion.
 	 */
 	@Nonnull
-	private CompletableFuture<Outcome<List<ASTElement>>> parseAST() {
+	private CompletableFuture<Outcome<List<ASTElement>>> parseAST(@Nonnull String source) {
 		// Nothing to parse
-		if (editor.getText().isBlank()) return CompletableFuture.completedFuture(null);
+		if (source.isBlank()) return CompletableFuture.completedFuture(null);
 
 		// Clear lint errors since we are running the linter again.
 		if (problemTracking.removeByPhase(ProblemPhase.LINT))
@@ -471,7 +482,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 
 		return CompletableFuture.supplyAsync(() -> {
 			// Tokenization remains separate so token warnings/errors can update lint tracking immediately.
-			Outcome<List<Token>> tokenResult = pipeline.tokenize(editor.getText(), "<assembler>");
+			Outcome<List<Token>> tokenResult = pipeline.tokenize(source, "<assembler>");
 			tokenResult.onPartial(partial -> processErrors(partial.errors(), ProblemPhase.LINT))
 					.onFailure(failure -> processErrors(failure.errors(), ProblemPhase.LINT));
 			if (tokenResult.hasWarnings())
@@ -538,15 +549,18 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	 */
 	@Nonnull
 	private CompletableFuture<Void> assemble() {
+		String source = editor.getText();
+		long request = ++hoverBuildRequest;
 		// Ensure the AST is up-to-date before moving onto build stage.
-		return parseAST().thenAccept(astResult -> {
+		return parseAST(source).thenAccept(astResult -> {
 			// If the parse finished, clear old build errors.
 			if (problemTracking.removeByPhase(ProblemPhase.BUILD))
 				FxThreadUtil.run(editor::redrawParagraphGraphics);
 
 			// Skip if any problems remain in the AST
-			if (!problemTracking.getProblemsByPhase(ProblemPhase.LINT).isEmpty() || lastConcreteAst == null)
+			if (astResult == null || !astResult.isSuccess() || !problemTracking.getProblemsByPhase(ProblemPhase.LINT).isEmpty())
 				return;
+			List<ASTElement> concreteAst = astResult.requireValue();
 
 			// Clear build errors since we are running the build process again.
 			problemTracking.removeByPhase(ProblemPhase.BUILD);
@@ -574,7 +588,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 					throw new IllegalStateException("Unsupported assembler path type: " + path);
 				}
 
-				Outcome<? extends ClassResult<?>> assemblyOutcome = pipeline.assemble(lastConcreteAst, localPath);
+				Outcome<? extends ClassResult<?>> assemblyOutcome = pipeline.assemble(concreteAst, localPath);
 				assemblyOutcome.onPartial(partial -> processErrors(partial.errors(), ProblemPhase.BUILD))
 						.onFailure(failure -> processErrors(failure.errors(), ProblemPhase.BUILD));
 				if (assemblyOutcome.isSuccess()) {
@@ -643,6 +657,12 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 						updateLock.set(false);
 					}
 					eachChild(AssemblerBuildConsumer.class, c -> c.consumeClass(result, lastAssembledClass));
+					FxThreadUtil.run(() -> {
+						if (request == hoverBuildRequest && source.equals(editor.getText())) {
+							variableHover.hide();
+							hoverAnalysis = new HoverAnalysis(source, concreteAst, result);
+						}
+					});
 				}
 				if (assemblyOutcome.hasWarnings())
 					processErrors(assemblyOutcome.warnings(), ProblemLevel.WARN, ProblemPhase.BUILD);
@@ -652,6 +672,16 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 			}
 		});
 	}
+
+	@Nullable
+	private VariableValueHover.Preview resolveVariableValue(int offset) {
+		HoverAnalysis snapshot = hoverAnalysis;
+		if (snapshot == null || !snapshot.source().equals(editor.getText()))
+			return null;
+		return AssemblerVariableValues.resolve(snapshot.ast(), snapshot.result(), offset);
+	}
+
+	private record HoverAnalysis(String source, List<ASTElement> ast, ClassResult<?> result) {}
 
 	/**
 	 * Assemble the current editor's text and update the workspace when successful.

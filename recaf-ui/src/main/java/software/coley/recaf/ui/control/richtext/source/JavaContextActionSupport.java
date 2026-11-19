@@ -58,6 +58,7 @@ import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.ui.control.BoundLabel;
 import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.control.richtext.Editor;
+import software.coley.recaf.ui.control.richtext.VariableValueHover;
 import software.coley.recaf.ui.control.richtext.EditorComponent;
 import software.coley.recaf.ui.control.richtext.folding.FoldGutterGraphicFactory;
 import software.coley.recaf.ui.control.richtext.folding.FoldRegion;
@@ -126,6 +127,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 	private final AstAvailabilityButton astAvailabilityButton = new AstAvailabilityButton();
 	private final InheritanceTracking inheritanceTracking = new InheritanceTracking();
 	private final FoldTracking foldTracking = new FoldTracking();
+	private final VariableValueHover variableHover = new VariableValueHover(this::resolveVariableValue);
 	private final FoldGutterGraphicFactory foldGutterGraphicFactory = new FoldGutterGraphicFactory();
 	private final InheritanceGutterGraphicFactory inheritanceGutterGraphicFactory;
 	private final CellConfigurationService cellConfigurationService;
@@ -135,7 +137,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 	private final Workspace workspace;
 	private final Parser parser;
 	private Future<?> lastFuture;
-	private int lastSourceHash;
+	private String lastParsedSource;
 	private long lastTextChangeTimestamp;
 	private ClassPathNode path;
 	private Runnable queuedSelectionTask;
@@ -143,6 +145,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 	private String className;
 	private CompilationUnitModel unit;
 	private ResolverAdapter resolver;
+	private volatile HoverSource hoverSource;
 	private Editor editor;
 	private ContextMenu menu;
 
@@ -529,12 +532,11 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 
 			// Skip if the source hasn't changed since the last time.
 			// This may occur when the user inserts some text, then removes it, resulting in the original text again.
-			int textHash = text.hashCode();
-			if (lastSourceHash == textHash) {
-				logger.debugging(l -> l.info("Skipping AST parse, source hash has not changed"));
+			if (text.equals(lastParsedSource)) {
+				logger.debugging(l -> l.info("Skipping AST parse, source has not changed"));
 				return;
 			}
-			lastSourceHash = textHash;
+			lastParsedSource = text;
 
 			// When code changes are made we want to notify users that while an existing unit is available
 			// an up-to-date one is still pending.
@@ -555,6 +557,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 				if (resultingUnit.getDeclaredClasses().isEmpty()) {
 					unit = null;
 					resolver = null;
+					hoverSource = null;
 
 					logger.warn("Could not create Java AST model from source of: {} after {}ms", classNameEsc, diffMs);
 					astAvailabilityButton.setUnavailable();
@@ -565,7 +568,9 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 					FxThreadUtil.run(() -> editor.redrawParagraphGraphics());
 				} else {
 					unit = resultingUnit;
-					resolver = astService.newJavaResolver(workspace, getPath(), resultingUnit);
+					ResolverAdapter newResolver = astService.newJavaResolver(workspace, getPath(), resultingUnit);
+					resolver = newResolver;
+					hoverSource = new HoverSource(resultingUnit, newResolver);
 
 					logger.debugging(l -> l.info("AST parsed successfully, took {}ms", diffMs));
 					astAvailabilityButton.setAvailable();
@@ -775,6 +780,16 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		});
 	}
 
+	@Nullable
+	private VariableValueHover.Preview resolveVariableValue(int offset) {
+		HoverSource snapshot = hoverSource;
+		if (snapshot == null || parseThreadPool.isShutdown() || !snapshot.unit().getInputSource().equals(editor.getText()))
+			return null;
+		return JavaVariableValues.resolve(snapshot.unit(), snapshot.resolver(), offset);
+	}
+
+	private record HoverSource(CompilationUnitModel unit, ResolverAdapter resolver) {}
+
 	private void showLocalUsages(@Nonnull CodeArea area, @Nonnull String source, @Nonnull List<Range> usages,
 	                            double screenX, double screenY) {
 		ListView<Range> locations = new ListView<>(FXCollections.observableList(usages));
@@ -821,6 +836,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 	@Override
 	public void install(@Nonnull Editor editor) {
 		this.editor = editor;
+		variableHover.install(editor);
 
 		// Setup inheritance and fold tracking first. They will receive text change events before us.
 		inheritanceTracking.install(editor);
@@ -903,6 +919,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 
 	@Override
 	public void uninstall(@Nonnull Editor editor) {
+		variableHover.uninstall(editor);
 		inheritanceTracking.uninstall(editor);
 		foldTracking.uninstall(editor);
 		editor.getRootLineGraphicFactory().removeLineGraphicFactory(inheritanceGutterGraphicFactory);
@@ -937,6 +954,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 
 	@Override
 	public void close() {
+		FxThreadUtil.run(variableHover::hide);
 		if (!parseThreadPool.isShutdown())
 			parseThreadPool.shutdownNow();
 	}

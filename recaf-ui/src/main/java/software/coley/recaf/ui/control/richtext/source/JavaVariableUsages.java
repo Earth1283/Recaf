@@ -22,6 +22,7 @@ import software.coley.sourcesolver.model.TypeModel;
 import software.coley.sourcesolver.model.VariableModel;
 import software.coley.sourcesolver.util.Range;
 
+import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,12 +50,15 @@ final class JavaVariableUsages {
 	/** @return References to the given local declaration, ordered by source position. */
 	@Nonnull
 	static List<Range> find(@Nonnull VariableModel declaration) {
+		return findReferences(declaration).stream().map(Model::getRange).distinct().toList();
+	}
+
+	@Nonnull
+	static List<NameExpressionModel> findReferences(@Nonnull VariableModel declaration) {
 		Map<Model, List<VariableModel>> declarationsByScope = new IdentityHashMap<>();
 		return declaration.getParent().getRecursiveChildrenOfType(NameExpressionModel.class).stream()
 				.filter(name -> name.getName().equals(declaration.getName()) && resolveLocal(name, declarationsByScope) == declaration)
-				.map(Model::getRange)
-				.distinct()
-				.sorted()
+				.sorted(Comparator.comparing(Model::getRange))
 				.toList();
 	}
 
@@ -109,7 +113,7 @@ final class JavaVariableUsages {
 	}
 
 	@Nonnull
-	private static Range declarationNameRange(@Nonnull String source, @Nonnull VariableModel variable) {
+	static Range declarationNameRange(@Nonnull String source, @Nonnull VariableModel variable) {
 		Range declaration = variable.getRange();
 		if (declaration.isUnknown())
 			return Range.UNKNOWN;

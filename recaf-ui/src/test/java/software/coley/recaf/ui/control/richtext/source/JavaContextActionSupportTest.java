@@ -5,6 +5,7 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -188,6 +189,55 @@ class JavaContextActionSupportTest extends TestBase {
 		assertEquals(42L, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("42L")));
 		assertEquals(1.5F, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("1.5F")));
 		assertEquals(2.5D, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("2.5")));
+	}
+
+	@Test
+	void previewsValuesAtTheHoveredReference() {
+		String source = """
+				class Example {
+				    static final String LABEL = "hello\\nworld";
+				    int values(boolean input) {
+				        int count = 2;
+				        int total = count + 3;
+				        count = 7;
+				        return count + total;
+				    }
+				    int branch(boolean input) {
+				        int count = 2;
+				        if (input) count = 4;
+				        return count;
+				    }
+				    void loop() {
+				        for (int i = 0; i < 10; i++) System.out.println(i);
+				    }
+				}
+				""";
+		CompilationUnitModel unit = parse(source);
+		assertEquals("\"hello\\nworld\"", JavaVariableValues.resolve(unit, null, source.indexOf("LABEL")).value());
+		assertEquals("2", JavaVariableValues.resolve(unit, null, source.indexOf("count + 3")).value());
+		assertEquals("5", JavaVariableValues.resolve(unit, null, source.indexOf("total;")).value());
+		assertEquals("7", JavaVariableValues.resolve(unit, null, source.indexOf("count = 7")).value());
+		assertEquals("7", JavaVariableValues.resolve(unit, null, source.indexOf("count + total")).value());
+		assertNull(JavaVariableValues.resolve(unit, null, source.lastIndexOf("count;")));
+		assertNull(JavaVariableValues.resolve(unit, null, source.indexOf("input)")));
+		assertNull(JavaVariableValues.resolve(unit, null, source.indexOf("i < 10")));
+		assertNull(JavaVariableValues.resolve(unit, null, source.indexOf("count + total") + "count".length()));
+	}
+
+	@Test
+	void previewsTheEditedSourceValueForAFieldReference() {
+		String source = """
+				class Example {
+				    static final int LIMIT = 9;
+				    int read() { return Example.LIMIT; }
+				}
+				""";
+		JvmClassInfo classInfo = TestClassUtils.createClass("Example",
+				node -> node.fields.add(new FieldNode(ACC_STATIC | ACC_FINAL, "LIMIT", "I", null, 5)));
+		Workspace workspace = TestClassUtils.fromBundle(TestClassUtils.fromClasses(classInfo));
+		CompilationUnitModel unit = parse(source);
+		ResolverAdapter resolver = recaf.get(AstService.class).newJavaResolver(workspace, workspace.findClass("Example"), unit);
+		assertEquals("9", JavaVariableValues.resolve(unit, resolver, source.lastIndexOf("LIMIT")).value());
 	}
 
 	@Test

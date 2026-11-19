@@ -42,6 +42,22 @@
     -fx-font-family: 'JetBrains Mono';
 }
 
+.variable-value-hover {
+    -fx-background-color: -color-border-default, -color-bg-overlay;
+    -fx-background-insets: 0, 1px;
+    -fx-padding: 8px 11px;
+}
+.variable-value-hover .label {
+    -fx-font-family: 'JetBrains Mono';
+    -fx-font-size: 12px;
+}
+.variable-value-hover .variable-value-declaration {
+    -fx-text-fill: -color-fg-muted;
+}
+.variable-value-hover .variable-value-content {
+    -fx-text-fill: -color-fg-default;
+}
+
 /* Clearly separates filter from the workspace tree */
 .workspace-filter-pane {
     -fx-border-color: -color-border-muted;
