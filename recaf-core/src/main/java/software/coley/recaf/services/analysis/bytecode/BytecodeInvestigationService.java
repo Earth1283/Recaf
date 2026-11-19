@@ -7,6 +7,7 @@ import jakarta.inject.Inject;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.*;
+import org.objectweb.asm.tree.analysis.AnalyzerException;
 import org.objectweb.asm.util.Printer;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassMemberPathNode;
@@ -22,6 +23,7 @@ import software.coley.recaf.util.EscapeUtil;
 import software.coley.recaf.util.analysis.eval.*;
 import software.coley.recaf.util.analysis.value.ReValue;
 import software.coley.recaf.util.analysis.value.StringValue;
+import software.coley.recaf.util.visitors.MemberFilteringVisitor;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
@@ -222,6 +224,21 @@ public class BytecodeInvestigationService implements Service {
 		return text.toString();
 	}
 
+	@Nonnull
+	public MethodAnalysis.Result analyzeMethod(@Nonnull ClassMemberPathNode path, @Nonnull BooleanSupplier cancelled) throws AnalyzerException {
+		JvmClassInfo original = path.getParent().getValue().asJvmClass();
+		JvmClassBundle bundle = path.getValueOfType(JvmClassBundle.class);
+		if (bundle == null || bundle.get(original.getName()) != original)
+			throw new IllegalStateException("The selected method changed. Rescan the resource before analyzing it.");
+		JvmEvidenceScanner.checkCancelled(cancelled);
+		ClassNode node = new ClassNode();
+		original.getClassReader().accept(new MemberFilteringVisitor(node, path.getValue()), ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+		MethodAnalysis.Result result = MethodAnalysis.analyze(original.getName(), method(node, path), cancelled);
+		if (bundle.get(original.getName()) != original)
+			throw new IllegalStateException("The selected method changed during analysis. Rescan the resource.");
+		return result;
+	}
+
 	/** Recover arguments at a selected static call and interpret the target with a fresh, bounded state. */
 	@Nonnull
 	public Evaluation evaluate(@Nonnull Workspace workspace, @Nonnull CallSite site, int maxSteps, boolean initializeClasses) {
@@ -351,7 +368,7 @@ public class BytecodeInvestigationService implements Service {
 		return String.valueOf(value);
 	}
 
-	private static String instruction(AbstractInsnNode insn) {
+	static String instruction(AbstractInsnNode insn) {
 		String opcode = Printer.OPCODES[insn.getOpcode()].toLowerCase(Locale.ROOT);
 		return opcode + switch (insn) {
 			case MethodInsnNode call -> " " + call.owner + "." + call.name + call.desc;
@@ -359,6 +376,7 @@ public class BytecodeInvestigationService implements Service {
 			case FieldInsnNode field -> " " + field.owner + "." + field.name + " " + field.desc;
 			case LdcInsnNode ldc -> " " + literal(ldc.cst);
 			case VarInsnNode var -> " " + var.var;
+			case IincInsnNode iinc -> " " + iinc.var + " " + iinc.incr;
 			case IntInsnNode integer -> " " + integer.operand;
 			case TypeInsnNode type -> " " + type.desc;
 			default -> "";

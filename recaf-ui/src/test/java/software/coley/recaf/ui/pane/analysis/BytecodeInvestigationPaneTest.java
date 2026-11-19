@@ -3,6 +3,7 @@ package software.coley.recaf.ui.pane.analysis;
 import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.input.Clipboard;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Execution;
@@ -111,6 +112,7 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 		final Actions actions = mock(Actions.class);
 		final ReadableWorkspaceService readability = mock(ReadableWorkspaceService.class);
 		final ObfuscatorFingerprinting fingerprinting = spy(new ObfuscatorFingerprinting());
+		final ObfuscationTechnologyDetector technologyDetector = spy(new ObfuscationTechnologyDetector());
 		final JvmClassInfo original = TestClassUtils.createClass("Fixture", node -> {
 			var helper = node.visitMethod(ACC_PRIVATE | ACC_STATIC, "decode", "(Ljava/lang/String;B)Ljava/lang/String;", null, null);
 			helper.visitVarInsn(ALOAD, 0); helper.visitInsn(ARETURN); helper.visitMaxs(1, 2); helper.visitEnd();
@@ -133,7 +135,7 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 			when(workspaces.getCurrent()).thenReturn(workspace);
 			pane = onFx(() -> {
 				var view = new BytecodeInvestigationPane(workspaces, new BytecodeInvestigationService(new BytecodeInvestigationConfig()),
-						readability, fingerprinting, actions);
+						readability, fingerprinting, technologyDetector, actions);
 				new Scene(view, 1300, 850); view.applyCss(); view.layout();
 				return view;
 			});
@@ -149,7 +151,7 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 		try (Fixture fixture = new Fixture()) {
 			await(() -> onFx(() -> !fixture.tabs().isDisabled()));
 			Tab tab = onFx(() -> {
-				Tab fingerprints = fixture.tabs().getTabs().getLast();
+				Tab fingerprints = fixture.tabs().getTabs().get(5);
 				fixture.tabs().getSelectionModel().select(fingerprints);
 				fixture.button("rescan").fire();
 				return fingerprints;
@@ -160,10 +162,79 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 				((Button) tab.getContent().lookup("#investigate-fingerprint-run")).fire();
 				return null;
 			});
-			await(() -> onFx(() -> ((TextArea) tab.getContent().lookup("#investigate-fingerprint-report"))
-					.getText().contains("Skidfuscator · Possible match")));
+			TextArea report = onFx(() -> (TextArea) tab.getContent().lookup("#investigate-fingerprint-report"));
+			await(() -> onFx(() -> report.getText().contains("Skidfuscator · 35% · Possible match")));
+			String output = onFx(report::getText);
+			for (var family : ObfuscatorFingerprinting.Family.values()) {
+				int score = family == ObfuscatorFingerprinting.Family.SKIDFUSCATOR ? 35 : 0;
+				assertTrue(output.contains(family.displayName() + " · " + score + "%"));
+			}
+			assertTrue(output.contains("lock/driver-macos.skid"));
 			verify(fixture.fingerprinting).scan(same(fixture.workspace.getPrimaryResource()), any());
+			verifyNoInteractions(fixture.technologyDetector);
 			verifyNoInteractions(fixture.readability);
+			assertSame(fixture.original, fixture.workspace.getPrimaryResource().getJvmClassBundle().get("Fixture"));
+		}
+	}
+
+	@Test
+	void runsAndCopiesTheSeparateTechniqueReport() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			await(() -> onFx(() -> !fixture.tabs().isDisabled()));
+			Tab tab = onFx(() -> {
+				Tab techniques = fixture.tabs().getTabs().getLast();
+				fixture.tabs().getSelectionModel().select(techniques);
+				return techniques;
+			});
+			verifyNoInteractions(fixture.technologyDetector, fixture.fingerprinting);
+			TextArea report = onFx(() -> {
+				assertEquals("Potential obfuscator technologies used", tab.getText());
+				assertFalse(((CheckBox) tab.getContent().lookup("#investigate-technology-control-flow")).isSelected());
+				((Button) tab.getContent().lookup("#investigate-technology-run")).fire();
+				return (TextArea) tab.getContent().lookup("#investigate-technology-report");
+			});
+			await(() -> onFx(() -> report.getText().contains("Native code")));
+			onFx(() -> {
+				assertTrue(report.getText().contains("Fixture.nativeSeed(Ljava/lang/String;)I"));
+				assertFalse(report.getText().contains("In-depth control flow"));
+				((CheckBox) tab.getContent().lookup("#investigate-technology-control-flow")).setSelected(true);
+				((Button) tab.getContent().lookup("#investigate-technology-run")).fire();
+				return null;
+			});
+			await(() -> onFx(() -> report.getText().contains("In-depth control flow ·")));
+			onFx(() -> {
+				((Button) tab.getContent().lookup("#investigate-technology-copy")).fire();
+				assertEquals(report.getText(), Clipboard.getSystemClipboard().getString());
+				fixture.button("rescan").fire();
+				assertTrue(report.getText().isEmpty());
+				return null;
+			});
+			verify(fixture.technologyDetector).scan(same(fixture.workspace.getPrimaryResource()), any());
+			verify(fixture.technologyDetector).scan(same(fixture.workspace.getPrimaryResource()), eq(true), any());
+			verifyNoInteractions(fixture.fingerprinting, fixture.readability);
+		}
+	}
+
+	@Test
+	void inspectsSelectedMethodAndChangesTheSliceSink() throws Exception {
+		try (Fixture fixture = new Fixture()) {
+			await(() -> onFx(() -> fixture.table(3).getItems().size() == 1));
+			TextArea details = onFx(() -> {
+				fixture.tabs().getSelectionModel().select(3);
+				fixture.table(3).getSelectionModel().selectFirst();
+				fixture.button("method-analysis").fire();
+				return (TextArea) fixture.pane.lookup("#bytecode-investigation-details");
+			});
+			await(() -> onFx(() -> details.getText().contains("@ 2  invokestatic")));
+			onFx(() -> {
+				assertTrue(details.getText().contains("Definitions consumed  [@0, @1]"));
+				assertTrue(details.getText().contains("May exit through an uncaught exception"));
+				Spinner<?> instruction = (Spinner<?>) fixture.pane.lookup("#investigate-method-instruction");
+				instruction.increment();
+				return null;
+			});
+			await(() -> onFx(() -> details.getText().contains("@ 3  areturn")));
+			assertTrue(onFx(() -> details.getText().contains("Definitions consumed  [@2]")));
 			assertSame(fixture.original, fixture.workspace.getPrimaryResource().getJvmClassBundle().get("Fixture"));
 		}
 	}

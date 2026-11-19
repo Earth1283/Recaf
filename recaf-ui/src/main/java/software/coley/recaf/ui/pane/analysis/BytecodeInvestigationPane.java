@@ -27,6 +27,8 @@ import software.coley.recaf.path.PathNodes;
 import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationReport;
 import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationReport.*;
 import software.coley.recaf.services.analysis.bytecode.BytecodeInvestigationService;
+import software.coley.recaf.services.analysis.bytecode.MethodAnalysis;
+import software.coley.recaf.services.analysis.bytecode.ObfuscationTechnologyDetector;
 import software.coley.recaf.services.analysis.bytecode.ObfuscatorFingerprinting;
 import software.coley.recaf.services.analysis.bytecode.ReadableWorkspaceService;
 import software.coley.recaf.services.navigation.Actions;
@@ -43,6 +45,7 @@ import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
 /** Resource-aware investigation of obfuscation, bootstrap families, and string-helper call sites. */
@@ -51,13 +54,13 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private final Workspace workspace;
 	private final BytecodeInvestigationService service;
 	private final ObfuscatorFingerprinting fingerprinting;
+	private final ObfuscationTechnologyDetector technologyDetector;
 	private final ReadableWorkspaceService readability;
 	private final WorkspaceManager workspaces;
 	private final Actions actions;
 	private final ExecutorService worker = ThreadPoolFactory.newSingleThreadExecutor("bytecode-investigation");
 	private final AtomicInteger generation = new AtomicInteger();
 	private final AtomicInteger detailGeneration = new AtomicInteger();
-	private final AtomicInteger fingerprintGeneration = new AtomicInteger();
 	private final ComboBox<ResourceChoice> resource = new ComboBox<>();
 	private final TextField search = new TextField();
 	private final CheckBox includeStandard = new CheckBox();
@@ -65,8 +68,10 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private final Label status = new Label();
 	private final TextArea details = new TextArea();
 	private final TextArea evaluation = new TextArea();
-	private final TextArea fingerprintReport = new TextArea();
-	private final Button fingerprintScan = button("fingerprint.run", this::scanFingerprints);
+	private final Spinner<Integer> methodInstruction = new Spinner<>();
+	private final HBox methodControls = new HBox(8, new Label(text("method-analysis.instruction")), methodInstruction);
+	private final ScanReport fingerprints = new ScanReport("fingerprint", (selection, _, cancelled) -> scanFingerprints(selection, cancelled), null);
+	private final ScanReport technologies = new ScanReport("technology", this::scanTechnologies, new CheckBox(text("technology.control-flow")));
 	private final TabPane tabs = new TabPane();
 	private final TableView<MethodProfile> methods = new TableView<>();
 	private final TableView<CallSite> dynamicCalls = new TableView<>();
@@ -98,15 +103,17 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private boolean rebuilding;
 	private volatile boolean disabled;
 	private boolean evaluating;
+	private MethodAnalysis.Result analyzedMethod;
 
 	@Inject
 	public BytecodeInvestigationPane(@Nonnull WorkspaceManager workspaces, @Nonnull BytecodeInvestigationService service,
 	                                 @Nonnull ReadableWorkspaceService readability, @Nonnull ObfuscatorFingerprinting fingerprinting,
-	                                 @Nonnull Actions actions) {
+	                                 @Nonnull ObfuscationTechnologyDetector technologyDetector, @Nonnull Actions actions) {
 		workspace = Objects.requireNonNull(workspaces.getCurrent(), "No workspace is open");
 		this.service = service;
 		this.readability = readability;
 		this.fingerprinting = fingerprinting;
+		this.technologyDetector = technologyDetector;
 		this.workspaces = workspaces;
 		this.actions = actions;
 		setPadding(new Insets(8));
@@ -140,7 +147,8 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		FlowPane readabilityTools = new FlowPane(8, 8, readableCopy, readableAliases, button("cancel", () -> {
 			generation.incrementAndGet();
 			detailGeneration.incrementAndGet();
-			resetFingerprintScan();
+			fingerprints.reset();
+			technologies.reset();
 			tabs.setDisable(false);
 			status.setText(text("cancelled"));
 		}));
@@ -160,11 +168,14 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		Button openTarget = button("open-target", () -> open(selectedTarget.get(), false));
 		Button bytecode = button("bytecode", () -> open(selectedCaller.get(), true));
 		Button graph = button("callgraph", this::openGraph);
+		Button analyzeMethod = button("method-analysis.run", this::analyzeSelectedMethod);
+		analyzeMethod.setId("investigate-method-analysis");
 		openCaller.disableProperty().bind(selectedCaller.isNull());
 		openTarget.disableProperty().bind(selectedTarget.isNull());
 		bytecode.disableProperty().bind(selectedCaller.isNull());
 		graph.disableProperty().bind(selectedCaller.isNull());
-		FlowPane navigation = new FlowPane(8, 8, openCaller, openTarget, bytecode, graph,
+		analyzeMethod.disableProperty().bind(selectedCaller.isNull());
+		FlowPane navigation = new FlowPane(8, 8, openCaller, openTarget, bytecode, graph, analyzeMethod,
 				button("copy-details", () -> copy(details.getText() + "\n\n" + evaluation.getText())), familySites);
 		familySites.setDisable(true);
 		initializeClasses.setText(text("initializers"));
@@ -172,7 +183,14 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		budget.setPrefWidth(125);
 		FlowPane evaluationControls = new FlowPane(8, 8, evaluate, new Label(text("budget")), budget, initializeClasses);
 		evaluate.setDisable(true);
-		VBox inspector = new VBox(8, navigation, details, evaluationControls, evaluation);
+		methodInstruction.setId("investigate-method-instruction");
+		methodInstruction.setEditable(true);
+		methodInstruction.getEditor().setTextFormatter(new TextFormatter<>(change -> change.getControlNewText().matches("[0-9]{0,9}") ? change : null));
+		methodInstruction.setPrefWidth(100);
+		methodInstruction.valueProperty().addListener((_, _, value) -> { if (value != null) showMethodAnalysis(value); });
+		methodControls.managedProperty().bind(methodControls.visibleProperty());
+		methodControls.setVisible(false);
+		VBox inspector = new VBox(8, navigation, methodControls, details, evaluationControls, evaluation);
 		VBox.setVgrow(details, Priority.ALWAYS);
 		SplitPane split = new SplitPane(tabs, inspector);
 		split.setDividerPositions(0.57);
@@ -244,7 +262,7 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		installItems(nativeMethods, nativeItems);
 		nativeMethods.getSelectionModel().selectedItemProperty().addListener((_, _, item) -> { if (!rebuilding && item != null) select(item); });
 		tabs.getTabs().addAll(tab("hotspots", methods), tab("dynamic", dynamicCalls), tab("families", bootstraps),
-				tab("strings", stringCalls), tab("native", nativeMethods), fingerprintTab());
+				tab("strings", stringCalls), tab("native", nativeMethods), fingerprints.tab, technologies.tab);
 		tabs.getSelectionModel().selectedItemProperty().addListener((_, _, tab) -> {
 			clearSelection();
 			detailGeneration.incrementAndGet();
@@ -264,7 +282,8 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 
 	private void rescan() {
 		if (disabled || resource.getValue() == null) return;
-		resetFingerprintScan();
+		fingerprints.reset();
+		technologies.reset();
 		int version = generation.incrementAndGet();
 		detailGeneration.incrementAndGet();
 		familyFilter = null;
@@ -304,59 +323,50 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		});
 	}
 
-	private Tab fingerprintTab() {
-		fingerprintScan.setId("investigate-fingerprint-run");
-		fingerprintReport.setId("investigate-fingerprint-report");
-		fingerprintReport.setEditable(false);
-		fingerprintReport.setWrapText(true);
-		fingerprintReport.setPromptText(text("fingerprint.idle"));
-		Button copy = button("fingerprint.copy", () -> copy(fingerprintReport.getText()));
-		copy.disableProperty().bind(fingerprintReport.textProperty().isEmpty().or(fingerprintScan.disableProperty()));
-		VBox content = new VBox(8, new HBox(8, fingerprintScan, copy), fingerprintReport);
-		content.setPadding(new Insets(8));
-		VBox.setVgrow(fingerprintReport, Priority.ALWAYS);
-		return tab("fingerprint.tab", content);
+	private String scanFingerprints(ResourceChoice selection, BooleanSupplier cancelled) {
+		return formatFingerprints(selection.name(), fingerprinting.scan(selection.resource(), cancelled));
 	}
 
-	private void resetFingerprintScan() {
-		fingerprintGeneration.incrementAndGet();
-		fingerprintReport.clear();
-		fingerprintScan.setDisable(false);
-	}
-
-	private void scanFingerprints() {
-		ResourceChoice selection = resource.getValue();
-		if (disabled || selection == null) return;
-		int version = fingerprintGeneration.incrementAndGet();
-		fingerprintScan.setDisable(true);
-		fingerprintReport.setText(text("fingerprint.scanning"));
-		worker.execute(() -> {
-			String output;
-			try {
-				var result = fingerprinting.scan(selection.resource(), () -> disabled || version != fingerprintGeneration.get());
-				output = formatFingerprints(selection.name(), result);
-			} catch (CancellationException ignored) {
-				return;
-			} catch (RuntimeException error) {
-				output = text("fingerprint.failed") + "\n" + error.getMessage();
+	private String scanTechnologies(ResourceChoice selection, boolean inDepthControlFlow, BooleanSupplier cancelled) {
+		var result = inDepthControlFlow ? technologyDetector.scan(selection.resource(), true, cancelled)
+				: technologyDetector.scan(selection.resource(), cancelled);
+		String root = selection.name();
+		StringBuilder report = new StringBuilder(root).append('\n')
+				.append(String.format(text("fingerprint.summary"), result.classesRead(), result.classesSkipped()));
+		if (inDepthControlFlow) report.append('\n').append(String.format(text("technology.control-flow-summary"),
+				result.controlFlow().methodsAnalyzed(), result.controlFlow().methodsSkipped()));
+		report.append("\n\n").append(text("technology.note"));
+		if (result.matches().isEmpty()) return report.append("\n\n").append(text("technology.unknown")).toString();
+		String previousResource = null;
+		for (var match : result.matches()) {
+			if (!match.resource().equals(previousResource)) {
+				previousResource = match.resource();
+				report.append("\n\n").append(previousResource.isEmpty() ? root : root + " > " + previousResource);
 			}
-			String report = output;
-			Platform.runLater(() -> {
-				if (disabled || version != fingerprintGeneration.get()) return;
-				fingerprintReport.setText(report);
-				fingerprintScan.setDisable(false);
-			});
-		});
+			report.append('\n').append(match.occurrences()).append(" × ")
+					.append(text("technology.evidence." + match.technology().name().toLowerCase(Locale.ROOT)));
+			for (String example : match.examples()) report.append("\n    ").append(example);
+		}
+		return report.toString();
 	}
 
 	private static String formatFingerprints(String root, ObfuscatorFingerprinting.Result result) {
 		StringBuilder report = new StringBuilder(root).append('\n')
-				.append(String.format(text("fingerprint.summary"), result.classesRead(), result.classesSkipped()));
+				.append(String.format(text("fingerprint.summary"), result.classesRead(), result.classesSkipped()))
+				.append("\n\n").append(text("fingerprint.scores"));
+		result.confidenceScores().entrySet().stream()
+				.sorted(Map.Entry.<ObfuscatorFingerprinting.Family, Integer>comparingByValue().reversed()
+						.thenComparing(Map.Entry.comparingByKey()))
+				.forEach(score -> report.append('\n').append(score.getKey().displayName()).append(" · ")
+						.append(score.getValue()).append('%'));
+		report.append("\n\n").append(text("fingerprint.score-note"));
 		if (result.matches().isEmpty())
 			return report.append("\n\n").append(text("fingerprint.unknown")).toString();
+		report.append("\n\n").append(text("fingerprint.details"));
 		for (var match : result.matches()) {
 			String location = match.resource().isEmpty() ? root : root + " > " + match.resource();
 			report.append("\n\n").append(match.family().displayName()).append(" · ")
+					.append(match.confidencePercent()).append("% · ")
 					.append(text("fingerprint.confidence." + match.confidence().name().toLowerCase(Locale.ROOT)))
 					.append('\n').append(location);
 			for (var evidence : match.evidence()) {
@@ -365,10 +375,76 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 				for (String example : evidence.examples())
 					report.append("\n    ").append(example);
 			}
-			report.append('\n').append(text("fingerprint.cleanup")).append(" · ")
-					.append(text("fingerprint.recommend." + match.family().name().toLowerCase(Locale.ROOT)));
+			String cleanup = "fingerprint.recommend." + match.family().name().toLowerCase(Locale.ROOT);
+			if (Lang.has("investigate." + cleanup)) report.append('\n').append(text("fingerprint.cleanup")).append(" · ").append(text(cleanup));
 		}
 		return report.toString();
+	}
+
+	@FunctionalInterface
+	private interface ReportScan {
+		String scan(ResourceChoice selection, boolean inDepthControlFlow, BooleanSupplier cancelled);
+	}
+
+	private final class ScanReport {
+		private final AtomicInteger scanGeneration = new AtomicInteger();
+		private final TextArea output = new TextArea();
+		private final Button run;
+		private final Tab tab;
+
+		private ScanReport(String key, ReportScan scan, @Nullable CheckBox option) {
+			run = button(key + ".run", () -> start(key, scan, option != null && option.isSelected()));
+			run.setId("investigate-" + key + "-run");
+			output.setId("investigate-" + key + "-report");
+			output.setEditable(false);
+			output.setWrapText(true);
+			output.setPromptText(text(key + ".idle"));
+			Button copy = button(key + ".copy", () -> copy(output.getText()));
+			copy.setId("investigate-" + key + "-copy");
+			copy.disableProperty().bind(output.textProperty().isEmpty().or(run.disableProperty()));
+			FlowPane controls = new FlowPane(8, 8, run, copy);
+			controls.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+			if (option != null) {
+				option.setId("investigate-" + key + "-control-flow");
+				option.disableProperty().bind(run.disableProperty());
+				controls.getChildren().add(option);
+			}
+			VBox content = new VBox(8, controls, output);
+			content.setPadding(new Insets(8));
+			VBox.setVgrow(output, Priority.ALWAYS);
+			tab = tab(key + ".tab", content);
+		}
+
+		private void reset() {
+			scanGeneration.incrementAndGet();
+			output.clear();
+			run.setDisable(false);
+		}
+
+		private void start(String key, ReportScan scan, boolean inDepthControlFlow) {
+			ResourceChoice selection = resource.getValue();
+			if (disabled || selection == null) return;
+			int version = scanGeneration.incrementAndGet();
+			BooleanSupplier cancelled = () -> disabled || version != scanGeneration.get();
+			run.setDisable(true);
+			output.setText(text(key + ".scanning"));
+			worker.execute(() -> {
+				String result;
+				try {
+					result = scan.scan(selection, inDepthControlFlow, cancelled);
+				} catch (CancellationException ignored) {
+					return;
+				} catch (RuntimeException error) {
+					result = text(key + ".failed") + "\n" + error.getMessage();
+				}
+				String report = result;
+				Platform.runLater(() -> {
+					if (cancelled.getAsBoolean()) return;
+					output.setText(report);
+					run.setDisable(false);
+				});
+			});
+		}
 	}
 
 	private void filter() {
@@ -392,6 +468,8 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	}
 
 	private void clearSelection() {
+		analyzedMethod = null;
+		methodControls.setVisible(false);
 		selectedCaller.set(null);
 		selectedTarget.set(null);
 		selectedCall.set(null);
@@ -400,6 +478,50 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		evaluate.setDisable(true);
 		details.clear();
 		evaluation.clear();
+	}
+
+	private void analyzeSelectedMethod() {
+		ClassMemberPathNode path = selectedCaller.get();
+		if (path == null || disabled) return;
+		int preferred = selectedCall.get() == null ? -1 : selectedCall.get().instruction();
+		int request = detailGeneration.incrementAndGet();
+		analyzedMethod = null;
+		methodControls.setVisible(false);
+		details.setText(text("method-analysis.scanning"));
+		worker.execute(() -> {
+			try {
+				MethodAnalysis.Result result = service.analyzeMethod(path, () -> disabled || detailGeneration.get() != request);
+				Platform.runLater(() -> {
+					if (disabled || detailGeneration.get() != request) return;
+					int initial = preferred >= 0 && preferred < result.instructions().size() ? preferred
+							: result.summary().returns().isEmpty() ? 0 : result.summary().returns().getLast();
+					methodInstruction.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(0, result.instructions().size() - 1, initial));
+					analyzedMethod = result;
+					methodControls.setVisible(true);
+					showMethodAnalysis(initial);
+				});
+			} catch (CancellationException ignored) {
+			} catch (Exception error) {
+				Platform.runLater(() -> {
+					if (!disabled && detailGeneration.get() == request)
+						details.setText(text("method-analysis.failed") + "\n" + error.getMessage());
+				});
+			}
+		});
+	}
+
+	private void showMethodAnalysis(int index) {
+		ClassMemberPathNode path = selectedCaller.get();
+		MethodAnalysis.Result result = analyzedMethod;
+		if (disabled || path == null || result == null) return;
+		int request = detailGeneration.incrementAndGet();
+		worker.execute(() -> {
+			if (disabled || detailGeneration.get() != request) return;
+			String content = MethodAnalysisText.format(path, result, index);
+			Platform.runLater(() -> {
+				if (!disabled && detailGeneration.get() == request) details.setText(content);
+			});
+		});
 	}
 
 	private void select(MethodProfile method) {

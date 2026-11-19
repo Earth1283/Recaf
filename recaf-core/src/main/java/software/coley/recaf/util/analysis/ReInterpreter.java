@@ -54,13 +54,19 @@ import java.util.Set;
  */
 public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 	private static final DebuggingLogger logger = Logging.get(ReInterpreter.class);
+	@Nullable
 	private final InheritanceGraph inheritanceGraph;
 	private GetStaticLookup getStaticLookup;
 	private GetFieldLookup getFieldLookup;
 	private InvokeStaticLookup invokeStaticLookup;
 	private InvokeVirtualLookup invokeVirtualLookup;
 
-	public ReInterpreter(@Nonnull InheritanceGraph inheritanceGraph) {
+	/**
+	 * @param inheritanceGraph
+	 * 		Hierarchy for reference analysis. Pass {@code null} for lightweight value analysis with conservative
+	 * 		reference merges and without tracking array contents.
+	 */
+	public ReInterpreter(@Nullable InheritanceGraph inheritanceGraph) {
 		super(RecafConstants.getAsmVersion());
 		this.inheritanceGraph = inheritanceGraph;
 	}
@@ -76,6 +82,8 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 	 * @return {@code true} when {@code parent} can be assigned from {@code child}.
 	 */
 	public boolean isAssignableFrom(@Nonnull String parent, @Nonnull String child) {
+		if (inheritanceGraph == null)
+			return parent.equals(child) || "java/lang/Object".equals(parent);
 		return inheritanceGraph.isAssignableFrom(parent, child);
 	}
 
@@ -87,6 +95,8 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 	 */
 	@Nonnull
 	public Set<String> getAssignableSupertypes(@Nonnull String child) {
+		if (inheritanceGraph == null)
+			return "java/lang/Object".equals(child) ? Set.of(child) : Set.of(child, "java/lang/Object");
 		return inheritanceGraph.getAssignableSupertypes(child);
 	}
 
@@ -341,7 +351,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 			}
 			case NEWARRAY:
 				int arrayKind = ((IntInsnNode) insn).operand;
-				if (value instanceof IntValue length) {
+				if (inheritanceGraph != null && value instanceof IntValue length) {
 					OptionalInt lengthValue = length.value();
 					if (lengthValue.isPresent()) {
 						Type type = switch (arrayKind) {
@@ -371,7 +381,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 				};
 			case ANEWARRAY: {
 				Type arrayType = Type.getType("[" + Type.getObjectType(((TypeInsnNode) insn).desc));
-				if (value instanceof IntValue iv && iv.hasKnownValue())
+				if (inheritanceGraph != null && value instanceof IntValue iv && iv.hasKnownValue())
 					return ArrayValue.of(arrayType, Nullness.NOT_NULL, iv.value().getAsInt());
 				return newValue(arrayType, Nullness.NOT_NULL);
 			}
@@ -397,7 +407,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 				if (value instanceof ObjectValue object) {
 					if (object.isNull())
 						return IntValue.VAL_0;
-					if (object.hasKnownValue() || (object.isNotNull() && (value instanceof ArrayValue || value instanceof InstancedObjectValue<?>))) {
+					if (inheritanceGraph != null && (object.hasKnownValue() || (object.isNotNull() && (value instanceof ArrayValue || value instanceof InstancedObjectValue<?>)))) {
 						String descriptor = ((TypeInsnNode) insn).desc;
 						Type target = descriptor.startsWith("[") ? Type.getType(descriptor) : Type.getObjectType(descriptor);
 						return IntValue.of(isAssignableFrom(target, value.type()) ? 1 : 0);
@@ -616,6 +626,8 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 		int opcode = insn.getOpcode();
 		if (opcode == MULTIANEWARRAY) {
 			Type type = Type.getType(((MultiANewArrayInsnNode) insn).desc);
+			if (inheritanceGraph == null)
+				return newValue(type, Nullness.NOT_NULL);
 
 			// Extract dimensions from passed values.
 			// Unknown values will be negative, which we will sanity check for.
@@ -692,6 +704,8 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 			return UninitializedValue.UNINITIALIZED_VALUE;
 		if (type2.getSort() != Type.OBJECT && type2.getSort() != Type.ARRAY)
 			return UninitializedValue.UNINITIALIZED_VALUE;
+		if (inheritanceGraph == null)
+			return ObjectValue.VAL_OBJECT_MAYBE_NULL;
 
 		// Special case for the type of the "null" literal.
 		//
@@ -766,7 +780,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 	@Nonnull
 	private Type getSuperClass(@Nonnull Type type) {
 		String name = type.getInternalName();
-		InheritanceVertex vertex = inheritanceGraph.getVertex(name);
+		InheritanceVertex vertex = inheritanceGraph == null ? null : inheritanceGraph.getVertex(name);
 		if (vertex == null)
 			return Types.OBJECT_TYPE;
 		String superName = vertex.getValue().getSuperName();
@@ -775,7 +789,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 
 	private boolean isInterface(@Nonnull Type type) {
 		String name = type.getInternalName();
-		InheritanceVertex vertex = inheritanceGraph.getVertex(name);
+		InheritanceVertex vertex = inheritanceGraph == null ? null : inheritanceGraph.getVertex(name);
 		if (vertex == null)
 			return false;
 		return vertex.getValue().hasInterfaceModifier();
@@ -820,7 +834,7 @@ public class ReInterpreter extends Interpreter<ReValue> implements Opcodes {
 			return false;
 
 		// Check the inheritance graph for assignability of object types.
-		return inheritanceGraph.isAssignableFrom(parent.getInternalName(), child.getInternalName());
+		return isAssignableFrom(parent.getInternalName(), child.getInternalName());
 	}
 
 	/**

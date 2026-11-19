@@ -1,9 +1,12 @@
 package software.coley.recaf.ui.control.richtext.source;
 
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import software.coley.recaf.info.InnerClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
@@ -26,6 +29,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.objectweb.asm.Opcodes.*;
@@ -68,15 +72,10 @@ class JavaContextActionSupportTest extends TestBase {
 	}
 
 	@Test
-	void resolvesEachLambdaBodyToItsSyntheticMethod() throws IOException {
-		ClassMemberPathNode additionPath = resolveLambdaPath(SRC_LambdaCalcExample, LambdaCalcExample.class,
-				"software/coley/recaf/test/dummy/LambdaCalcExample", "a + b");
-		ClassMemberPathNode multiplicationPath = resolveLambdaPath(SRC_LambdaCalcExample, LambdaCalcExample.class,
-				"software/coley/recaf/test/dummy/LambdaCalcExample", "a * b");
-
-		// The two source lambdas must map to their corresponding javac-generated methods, not main().
-		assertEquals("lambda$main$0", additionPath.getValue().getName());
-		assertEquals("lambda$main$1", multiplicationPath.getValue().getName());
+	void resolvesEachLambdaBodyAfterAnEarlierLambdaAndAMethodReference() throws IOException {
+		JvmClassInfo classInfo = TestClassUtils.fromRuntimeClass(LambdaCalcExample.class);
+		assertLambdaTarget(SRC_LambdaCalcExample, classInfo, "a + b", "main", 1);
+		assertLambdaTarget(SRC_LambdaCalcExample, classInfo, "a * b", "main", 2);
 	}
 
 	@Test
@@ -87,9 +86,7 @@ class JavaContextActionSupportTest extends TestBase {
 		//   Runnable runnable = () -> System.out.println("lambda");
 		//   runnable.run();
 		// }
-		ClassMemberPathNode path = resolveLambdaPath(SRC_LambdaExample, LambdaExample.class,
-				"software/coley/recaf/test/dummy/LambdaExample", "println");
-		assertEquals("lambda$main$0", path.getValue().getName());
+		assertLambdaTarget(SRC_LambdaExample, TestClassUtils.fromRuntimeClass(LambdaExample.class), "println", "main", 0);
 	}
 
 	@Test
@@ -160,18 +157,10 @@ class JavaContextActionSupportTest extends TestBase {
 	}
 
 	@Test
-	void accountsForLambdasInEarlierMethods() throws IOException {
-		// In the 'ClassWithLambda' there are multiple methods that contain lambdas.
-		// The lambdas in the later methods should be numbered after the lambdas in the earlier methods
-		// since the numbering is based on the order of the lambdas in the whole class, not per-method.
-		ClassMemberPathNode runnablePath = resolveLambdaPath(SRC_ClassWithLambda, ClassWithLambda.class,
-				"software/coley/recaf/test/dummy/ClassWithLambda", "System.out.println(\"foo\")");
-		ClassMemberPathNode predicatePath = resolveLambdaPath(SRC_ClassWithLambda, ClassWithLambda.class,
-				"software/coley/recaf/test/dummy/ClassWithLambda", "s.isBlank()");
-
-		// The println is the first lambda, the isBlank is the third lambda, so they should be [0, 2] respectively.
-		assertEquals("lambda$runnable$0", runnablePath.getValue().getName());
-		assertEquals("lambda$predicate$2", predicatePath.getValue().getName());
+	void resolvesLambdasInDifferentMethodsRegardlessOfNumbering() throws IOException {
+		JvmClassInfo classInfo = TestClassUtils.fromRuntimeClass(ClassWithLambda.class);
+		assertLambdaTarget(SRC_ClassWithLambda, classInfo, "System.out.println(\"foo\")", "runnable", 0);
+		assertLambdaTarget(SRC_ClassWithLambda, classInfo, "s.isBlank()", "predicate", 0);
 	}
 
 	@Test
@@ -200,9 +189,20 @@ class JavaContextActionSupportTest extends TestBase {
 		assertEquals(2.5D, JavaContextActionSupport.findSearchableLiteralValue(unit, source.indexOf("2.5")));
 	}
 
-	private ClassMemberPathNode resolveLambdaPath(String source, Class<?> runtimeClass,
-	                                              String className, String lambdaBody) throws IOException {
-		return resolveLambdaPath(source, TestClassUtils.fromRuntimeClass(runtimeClass), className, lambdaBody);
+	private void assertLambdaTarget(String source, JvmClassInfo classInfo, String lambdaBody, String callerName, int siteIndex) {
+		ClassNode node = new ClassNode();
+		classInfo.getClassReader().accept(node, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+		MethodNode caller = node.methods.stream().filter(method -> method.name.equals(callerName)).findFirst().orElseThrow();
+		Handle expected = StreamSupport.stream(caller.instructions.spliterator(), false)
+				.filter(InvokeDynamicInsnNode.class::isInstance)
+				.map(InvokeDynamicInsnNode.class::cast)
+				.filter(site -> Handles.META_FACTORY.equals(site.bsm))
+				.skip(siteIndex)
+				.map(site -> (Handle) site.bsmArgs[1])
+				.findFirst().orElseThrow();
+		ClassMemberPathNode path = resolveLambdaPath(source, classInfo, classInfo.getName(), lambdaBody);
+		assertEquals(expected.getName(), path.getValue().getName());
+		assertEquals(expected.getDesc(), path.getValue().getDescriptor());
 	}
 
 	private ClassMemberPathNode resolveLambdaPath(String source, JvmClassInfo classInfo,

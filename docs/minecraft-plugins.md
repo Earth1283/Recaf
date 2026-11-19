@@ -167,9 +167,10 @@ the configuration.
 
 ### The plugin navigator
 
-Open it with **Analysis → Minecraft plugin navigator**, or the button in the workspace summary. It opens as a tab with the
-editor tabs, as the security triage and name recovery do, and shows the plugin's structure grouped into sections: plugin
-entry points, commands, events, listeners, tasks, config paths, permissions, and the other keys and types listed above.
+Open it with **Analysis → Minecraft plugin → Plugin navigator**, or the button in the workspace summary. It opens as a
+tab with the editor tabs, as the security triage and name recovery do, and shows the plugin's structure grouped into
+sections for plugin entry points, commands, events, listeners, tasks, config paths, permissions, and the other keys and
+types listed above.
 Every section and group shows how many entries it holds.
 
 Sections start expanded. Their groups start expanded too, unless a section has more than 12 of them, in which case they
@@ -265,10 +266,10 @@ package becomes `HomeCommand2`.
 
 ## Security triage
 
-**Analysis → Security triage**, or the button in the workspace summary, reads the plugin's bytecode for behavior worth
-checking before you run it on a server. The summary shows the result at the top of its **Minecraft plugin** section, and
-opens the triage when you click it. The triage opens as a tab with the editor tabs. Nothing is run: the plugin's classes
-and files are only read.
+**Analysis → Minecraft plugin → Security triage**, or the button in the workspace summary, reads the plugin's bytecode
+for behavior worth checking before you run it on a server. The summary shows the result at the top of its **Minecraft
+plugin** section, and opens the triage when you click it. The triage opens as a tab with the editor tabs and only reads
+the plugin's classes and files.
 
 ### What is found
 

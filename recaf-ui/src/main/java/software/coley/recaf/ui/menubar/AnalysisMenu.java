@@ -86,50 +86,48 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 		MenuItem itemInvestigate = action("investigate.title", CarbonIcons.SEARCH, actions::openBytecodeInvestigation);
 		itemInvestigate.disableProperty().bind(hasWorkspace.not());
 		getItems().add(itemInvestigate);
-
-		ActionMenuItem itemDeobfuscation = action("menu.analysis.deobfuscation", CarbonIcons.DEVELOPMENT, this::openDeobfuscation);
-		itemDeobfuscation.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
-		getItems().add(itemDeobfuscation);
-
-		ActionMenuItem itemSimplifyBitwise = action("menu.analysis.simplify-bitwise", CarbonIcons.DEVELOPMENT,
-				() -> openPreset(BuiltinTransformationPresets.BITWISE_SIMPLIFICATION));
-		itemSimplifyBitwise.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
-		getItems().add(itemSimplifyBitwise);
-
-		ActionMenuItem itemSimplifySkid = action("menu.analysis.simplify-skid", CarbonIcons.DEVELOPMENT,
-				() -> openPreset(BuiltinTransformationPresets.SKIDFUSCATOR_SIMPLIFICATION));
-		itemSimplifySkid.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
-		getItems().add(itemSimplifySkid);
-
-		getItems().add(action("flow.simplify", CarbonIcons.DEVELOPMENT,
-				() -> openPreset(BuiltinTransformationPresets.CONTROL_FLOW_SIMPLIFICATION)));
 		getItems().add(action("flow.trace.title", CarbonIcons.SEARCH, pluginNavigation::openInfluenceTrace));
-		getItems().add(action("flow.explorer.title", CarbonIcons.CHART_CUSTOM, () -> pluginNavigation.openExecutionExplorer(null)));
-
-		Menu presetMenu = menu("menu.analysis.deobfuscation-presets", new FontIconView(CarbonIcons.SAVE));
-		presetMenu.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not().or(hasPresets.not()));
-		getItems().add(presetMenu);
-		rebuildPresetMenu(presetMenu);
-		presetManager.getPresets().addChangeListener((ob, old, cur) -> FxThreadUtil.run(() -> rebuildPresetMenu(presetMenu)));
-
-		ActionMenuItem itemCryptoTools = action("menu.analysis.crypto-tools", CarbonIcons.PASSWORD, cryptoTools::open);
-		getItems().add(itemCryptoTools);
 
 		ActionMenuItem itemListComments = action("menu.analysis.list-comments", CarbonIcons.CHAT, actions::openCommentList);
 		itemListComments.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 		getItems().add(itemListComments);
 
-		ActionMenuItem itemPluginNavigator = action("menu.analysis.plugin-navigator", CarbonIcons.CATEGORIES,
-				() -> pluginNavigation.openNavigator(null));
-		itemPluginNavigator.disableProperty().bind(hasWorkspace.not());
-		getItems().add(itemPluginNavigator);
+		getItems().addAll(separator(), createDeobfuscationMenu(), createMinecraftPluginMenu(pluginNavigation),
+				action("menu.analysis.crypto-tools", CarbonIcons.PASSWORD, cryptoTools::open));
+	}
 
-		ActionMenuItem itemPluginSecurity = action("menu.analysis.plugin-security", CarbonIcons.SECURITY,
-				pluginNavigation::openSecurityTriage);
-		itemPluginSecurity.disableProperty().bind(hasWorkspace.not());
-		getItems().add(itemPluginSecurity);
+	private Menu createDeobfuscationMenu() {
+		Menu deobfuscation = menu("menu.analysis.deobfuscation", CarbonIcons.DEVELOPMENT);
+		deobfuscation.disableProperty().bind(hasWorkspace.or(hasAgentWorkspace).not());
 
-		getItems().add(createPluginOverrideMenu());
+		Menu presets = menu("menu.analysis.deobfuscation-presets", CarbonIcons.SAVE);
+		presets.disableProperty().bind(hasPresets.not());
+		rebuildPresetMenu(presets);
+		presetManager.getPresets().addChangeListener((ob, old, cur) -> FxThreadUtil.run(() -> rebuildPresetMenu(presets)));
+
+		deobfuscation.getItems().addAll(
+				action("menu.analysis.deobfuscation.open", CarbonIcons.DEVELOPMENT, this::openDeobfuscation),
+				separator(),
+				action("menu.analysis.simplify-bitwise", CarbonIcons.DEVELOPMENT,
+						() -> openPreset(BuiltinTransformationPresets.BITWISE_SIMPLIFICATION)),
+				action("menu.analysis.simplify-skid", CarbonIcons.DEVELOPMENT,
+						() -> openPreset(BuiltinTransformationPresets.SKIDFUSCATOR_SIMPLIFICATION)),
+				action("flow.simplify", CarbonIcons.DEVELOPMENT,
+						() -> openPreset(BuiltinTransformationPresets.CONTROL_FLOW_SIMPLIFICATION)),
+				presets);
+		return deobfuscation;
+	}
+
+	private Menu createMinecraftPluginMenu(@Nonnull PluginNavigation pluginNavigation) {
+		Menu plugin = menu("mcplugin.menu", CarbonIcons.CATEGORIES);
+		plugin.disableProperty().bind(hasWorkspace.not());
+		plugin.getItems().addAll(
+				action("mcplugin.navigator.title", CarbonIcons.CATEGORIES, () -> pluginNavigation.openNavigator(null)),
+				action("menu.analysis.plugin-security", CarbonIcons.SECURITY, pluginNavigation::openSecurityTriage),
+				action("flow.explorer.title", CarbonIcons.CHART_CUSTOM, () -> pluginNavigation.openExecutionExplorer(null)),
+				separator(),
+				createPluginOverrideMenu());
+		return plugin;
 	}
 
 	/**

@@ -924,19 +924,19 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		if (lambda == null)
 			return null;
 
-		// The 'happy path' is clean javac based naming conventions.
-		// Lambdas are *generally* named 'lambda$<enclosingMethodName>$<lambdaIndex>'
-		// so first lets get the enclosing method.
 		MethodModel enclosingMethod = lambda.getParentOfType(MethodModel.class);
 		if (enclosingMethod == null)
 			return null;
 
-		// The 'lambdaIndex' portion is a per-class increment so we need to find the index of this lambda in the class.
-		// Keep only lambdas owned by this class so nested classes retain their own numbering.
 		List<LambdaExpressionModel> classLambdas = classModel.getRecursiveChildrenOfType(LambdaExpressionModel.class).stream()
 				.filter(candidate -> candidate.getParentOfType(ClassModel.class) == classModel)
 				.sorted(Comparator.comparingInt(candidate -> candidate.getRange().begin()))
 				.toList();
+		ClassPathNode classPath = getClassPath(resolver, classModel, fallbackPath);
+		ClassMemberPathNode bytecodePath = getEnclosingLambdaPathFromBytecode(resolver, classPath, enclosingMethod, lambda, classLambdas);
+		if (bytecodePath != null)
+			return bytecodePath;
+
 		int lambdaIndex = -1;
 		for (int i = 0; i < classLambdas.size(); i++) {
 			if (classLambdas.get(i) == lambda) {
@@ -947,7 +947,6 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		if (lambdaIndex < 0)
 			return null;
 
-		// Edge case name handling for static initializers and constructors.
 		String enclosingMethodName;
 		if (enclosingMethod.isStaticInitializer())
 			enclosingMethodName = "static";
@@ -956,9 +955,6 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		else
 			enclosingMethodName = enclosingMethod.getName();
 
-		// Resolve the class then the declared method by name.
-		// - Found some edge case classes where the enclosing method wasn't in the pattern, so try both.
-		ClassPathNode classPath = getClassPath(resolver, classModel, fallbackPath);
 		String namedLambdaName = "lambda$" + enclosingMethodName + "$" + lambdaIndex;
 		String unnamedLambdaName = "lambda$" + lambdaIndex;
 		for (MethodMember method : classPath.getValue().getMethods()) {
@@ -970,9 +966,7 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 			return classPath.child(methodName, method.getDescriptor());
 		}
 
-		// If there's some case where the clean javac pattern doesn't work, we'll parse the method bytecode
-		// and try and link the lambda to its implementation method that way.
-		return getEnclosingLambdaPathFromBytecode(resolver, classPath, enclosingMethod, lambda, classLambdas);
+		return null;
 	}
 
 	@Nullable
@@ -984,13 +978,10 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		if (!classPath.getValue().isJvmClass())
 			return null;
 
-		// Get the enclosing method.
 		ClassMemberPathNode sourceMethodPath = getMemberPath(resolver, enclosingMethod);
 		if (sourceMethodPath == null)
 			return null;
 
-		// Count direct lambdas in this source method.
-		// - Nested lambdas are emitted into their parent lambda method too.
 		List<LambdaExpressionModel> methodLambdas = classLambdas.stream()
 				.filter(candidate -> candidate.getParentOfType(MethodModel.class) == enclosingMethod)
 				.filter(candidate -> candidate.getParentOfType(LambdaExpressionModel.class) == null)
@@ -1005,51 +996,45 @@ public class JavaContextActionSupport implements EditorComponent, UpdatableNavig
 		if (methodLambdaIndex < 0)
 			return null;
 
-		String className = classPath.getValue().getName();
-		List<Handle> lambdaTargets = new ArrayList<>();
+		JvmClassInfo classInfo = classPath.getValue().asJvmClass();
+		String className = classInfo.getName();
+		List<MethodMember> lambdaTargets = new ArrayList<>();
 		try {
-			// The bootstrap arguments carry the implementation handle independently of its method name.
 			MethodMember sourceMethod = sourceMethodPath.getValueAsMethod();
-			JvmClassInfo classInfo = classPath.getValue().asJvmClass();
 			ClassReader reader = classInfo.getClassReader();
 			reader.accept(new ClassVisitor(RecafConstants.getAsmVersion()) {
 				@Override
 				public MethodVisitor visitMethod(int access, String name, String descriptor,
 				                                 String signature, String[] exceptions) {
-					// Skip any method that isn't the enclosing method.
 					if (!sourceMethod.getName().equals(name) || !sourceMethod.getDescriptor().equals(descriptor))
 						return null;
 
-					// Add possible lambda targets to the list.
 					return new MethodVisitor(RecafConstants.getAsmVersion()) {
 						@Override
 						public void visitInvokeDynamicInsn(String invokedName, String invokedDescriptor,
 						                                   Handle bootstrapMethodHandle, Object... bootstrapMethodArguments) {
-							if (Handles.META_FACTORY.equals(bootstrapMethodHandle)) {
-								for (Object argument : bootstrapMethodArguments) {
-									if (argument instanceof Handle implementationHandle
-											&& className.equals(implementationHandle.getOwner())) {
-										lambdaTargets.add(implementationHandle);
-										break;
-									}
-								}
-							}
+							if (!Handles.META_FACTORY.equals(bootstrapMethodHandle) || bootstrapMethodArguments.length < 2
+									|| !(bootstrapMethodArguments[1] instanceof Handle implementation)
+									|| !className.equals(implementation.getOwner()))
+								return;
+							MethodMember target = classInfo.getDeclaredMethod(implementation.getName(), implementation.getDesc());
+							if (target != null)
+								lambdaTargets.add(target);
 						}
 					};
 				}
-			}, classInfo.getClassReaderFlags());
+			}, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
 		} catch (Throwable t) {
 			logger.debugging(l -> l.warn("Failed to read bytecode for class '{}' to resolve lambda target", className, t));
 			return null;
 		}
 
-		// If the lambda index is out of bounds, we can't resolve it.
-		if (methodLambdaIndex >= lambdaTargets.size())
+		if (lambdaTargets.size() > methodLambdas.size())
+			lambdaTargets.removeIf(target -> !target.hasSyntheticModifier());
+		if (lambdaTargets.size() != methodLambdas.size())
 			return null;
 
-		// Done, build the path to the implementation method.
-		Handle implementationHandle = lambdaTargets.get(methodLambdaIndex);
-		return classPath.child(implementationHandle.getName(), implementationHandle.getDesc());
+		return classPath.child(lambdaTargets.get(methodLambdaIndex));
 	}
 
 	@Nullable

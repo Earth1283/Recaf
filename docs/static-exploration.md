@@ -4,10 +4,10 @@ Three separate tools are available under **Analysis**. They inspect JVM bytecode
 
 ## Simplify control flow
 
-**Analysis → Simplify control flow** opens a deobfuscation preview configured with constant folding, local dispatcher
-simplification, opaque predicate simplification, dead code removal, goto inlining, and variable folding, with up to
-six passes. Review the source/bytecode diff, then use **Transform workspace** to apply. **Run on preview only** allows
-inspection without committing changes.
+**Analysis → Deobfuscation → Simplify control flow** opens a deobfuscation preview configured with constant folding,
+local dispatcher simplification, opaque predicate simplification, dead code removal, goto inlining, and variable
+folding, with up to six passes. Review the source/bytecode diff, then use **Transform workspace** to apply.
+**Run on preview only** allows inspection without committing changes.
 
 For example:
 
@@ -74,10 +74,10 @@ does not create an execution edge.
 
 ## Plugin execution explorer
 
-**Analysis → Plugin execution explorer** opens an independent tab of possible method-call relationships. Choose an
-entry point, or enable **Show all methods** and search for another starting point. Recognized entries include
-supported network callbacks, annotated event handlers, Bukkit/Bungee lifecycle hooks, Bukkit command callbacks,
-and JVM `main` methods.
+**Analysis → Minecraft plugin → Plugin execution explorer** opens an independent tab of possible method-call
+relationships. Choose an entry point, or enable **Show all methods** and search for another starting point. Recognized
+entries include supported network callbacks, annotated event handlers, Bukkit/Bungee lifecycle hooks, Bukkit command
+callbacks, and JVM `main` methods.
 
 Select a graph method to expand its calls. **Collapse graph** restores the starting method's immediate calls.
 Privileged API boundaries remain visible; **Show external calls** adds other unresolved/external calls. The lower

@@ -67,12 +67,70 @@ an explanation for unknown inputs, unsupported behavior, failures, or stale scan
 Rescan after editing classes. Nested resources and multi-release class bundles retain distinct provenance.
 
 Skidfuscator reference bootstraps and private XOR helpers are also supported by readable analysis copies.
-The **Analysis → Simplify Skidfuscator bytecode** preset provides these passes with constant folding and flow cleanup;
-native predicate values remain unresolved.
+The **Analysis → Deobfuscation → Simplify Skidfuscator bytecode** preset provides these passes with constant folding and
+flow cleanup. Native predicate values remain unresolved.
 
 The scan and interpreter run on a background worker. Tables use filtered/sorted views and render instruction context
 only when a row is selected. Replaced scans and closed panes cannot publish obsolete results; short-lived evaluation
 graphs do not attach persistent listeners to source resources.
+
+## Obfuscator fingerprints
+
+In **Obfuscator fingerprints**, click **Run fingerprint scan** to score Allatori, Bozar, DashO, dProtect, JObf,
+native-obfuscator, R8, Radon, Skidfuscator, Stringer, and Zelix KlassMaster. The percentages are heuristic evidence
+ratings. A 0% means the scan found no supported fingerprint for that family. Distinct signatures and matching patterns
+across different classes can raise the score. Repeated occurrences in one class or its multi-release variants
+contribute to the evidence count.
+
+The report shows the highest score for each family across the selected resource and its embedded archives. Scores are
+calculated separately for each resource. Positive results list the matching evidence, its locations, and any available
+cleanup suggestions. **Copy fingerprints** copies both the scores and the report details.
+
+The Allatori rule looks for trial markers in renamed members. The R8 rule looks for the mapping ID and hash in JVM
+source-file metadata. The dProtect rule covers retained decoder names paired with their character transformation.
+[Allatori documentation](https://allatori.com/doc.html#version-marker), [R8 source-file template](https://r8.googlesource.com/r8.git/+/7f8c3083670f1bcfc5973c1d477c43cf2837ff3f/d8_r8/commonBuildSrc/src/main/kotlin/CreateR8LibraryTask.kt), [dProtect string encoders](https://github.com/open-obfuscator/dProtect/blob/25173cc11644679f80b0543841007e043d2f599c/base/src/main/java/dprotect/runtime/strings/StringEncoding.java)
+
+JObf and native-obfuscator have distinct loader signatures. Stringer has a stack-trace-based string decoder signature.
+[JObf packager](https://github.com/superblaubeere27/obfuscator/blob/52ff3b7c8159968d0506ce2844ac12e4b779621a/obfuscator-core/src/main/java/me/superblaubeere27/jobf/processors/packager/Packager.java), [native-obfuscator loader generation](https://github.com/radioegor146/native-obfuscator/blob/b3b3a40ac27c78e343631b078fa62f932edd09ff/obfuscator/src/main/java/by/radioegor146/NativeObfuscator.java), [Stringer decoder analysis](https://github.com/java-deobfuscator/deobfuscator/blob/e7b6eba9bfc8962968c5eb94c1588f30e309b1e1/src/main/java/com/javadeobfuscator/deobfuscator/rules/stringer/RuleStringDecryptorV3.java)
+
+Bozar can also be recognized by the malformed method in its optional watermark class.
+[Bozar watermark class generation](https://github.com/vimasig/Bozar/blob/40f06fed6ef158da3612013e9ac04c51e5cc52bd/src/main/java/io/github/vimasig/bozar/obfuscator/transformer/impl/watermark/DummyClassTransformer.java)
+
+## Potential obfuscator technologies used
+
+Open the **Potential obfuscator technologies used** tab and click **Run technique scan** to check for string concealment,
+number obfuscation, opaque branches, custom dynamic linkage, native methods, class packing, and identifiers with
+invisible characters. This scan can find techniques in an archive that has no recognized obfuscator fingerprint.
+
+The report groups counts and example locations by resource, including embedded archives and multi-release classes.
+Each count represents a matching bytecode pattern. Ordinary code can use some of the same patterns, including JNI and
+custom bootstraps. **Copy technique report** copies the findings and their example locations.
+
+Enable **In-depth control flow scan** before running the technique scan to trace integer values through local variables,
+the operand stack, and control-flow joins. The report can then flag fixed conditional branches, switches with a known
+selector or a single destination, and instructions unreachable from the method entry. It lists how many candidate
+methods were analyzed or skipped. Complex or unsupported methods retain their regular scan results.
+
+Use **Analysis → Deobfuscation → Simplify control flow** to preview bytecode changes from opaque predicate folding and
+dead-code cleanup. The technique scan provides read-only evidence to help decide where to apply those passes.
+
+## Method flow analysis
+
+Select a method or a call site in **Bytecode investigation**, then click **Analyze method flow**. Use **Instruction index**
+to select the sink for a backward slice and inspect its incoming locals and operand stack. Indices count JVM opcodes
+and omit labels, line numbers, and stack map frames. **Copy details** copies the currently displayed analysis.
+
+The report shows reaching definitions for each local or stack slot, the definitions the selected instruction consumes,
+and the instructions that use its output. Abstract values include known numbers and strings, and available nullability.
+The backward slice follows data and control dependencies, including the possible origins of caught exceptions.
+
+Dominance and postdominance use structural branch targets and modeled exception edges. The scan resolves handler types
+for integer division, remainder, array length, and monitor entry. Other typed handlers are conservative. Uncaught
+exceptions flow to a shared exit. Regions with no path to an exit are reported separately and use synthetic exit edges
+to compute conservative control dependencies.
+
+The summary lists reachable return sites and values, possible escaping exceptions, direct calls and dynamic call sites,
+field reads and writes, allocations, array writes, and monitor operations. Calls and heap effects are summarized locally.
 
 ## nLogin sample validation
 
