@@ -1,6 +1,5 @@
 package software.coley.recaf.analytics.logging;
 
-import io.jstach.rainbowgum.KeyValues;
 import io.jstach.rainbowgum.LogAppender;
 import io.jstach.rainbowgum.LogConfig;
 import io.jstach.rainbowgum.LogEncoder;
@@ -8,16 +7,17 @@ import io.jstach.rainbowgum.LogEvent;
 import io.jstach.rainbowgum.LogFormatter;
 import io.jstach.rainbowgum.LogOutput;
 import io.jstach.rainbowgum.LogRouter.Router.RouterFactory;
+import io.jstach.rainbowgum.MetaLog;
 import io.jstach.rainbowgum.RainbowGum;
 import io.jstach.rainbowgum.output.FileOutput;
 import io.jstach.rainbowgum.output.FileOutputBuilder;
 import jakarta.annotation.Nonnull;
-import jakarta.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 import software.coley.recaf.util.ExcludeFromJacocoGeneratedReport;
 
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -44,11 +44,15 @@ public class Logging {
 	private static final List<LogConsumer<String>> logConsumers = new CopyOnWriteArrayList<>();
 	private static final Map<Path, FileLogSink> fileSinks = new ConcurrentHashMap<>();
 	private static final LogConfig FILE_OUTPUT_CONFIG = LogConfig.builder().build();
-	private static final LogFormatter EVENT_FORMATTER = createEventFormatter();
-	private static final LogEncoder EVENT_ENCODER = LogEncoder.of(EVENT_FORMATTER);
+	private static final LogEncoder CONSOLE_ENCODER = createConsoleEncoder();
+	private static final LogEncoder FILE_ENCODER = LogFormatter.builder()
+			.timeStamp(DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSXXX").withZone(ZoneId.systemDefault()))
+			.text(" [").threadName().text("#").threadId().text("] ")
+			.add(LogFormatter.LevelFormatter.ofRightPadded())
+			.text(" ").loggerName().text(": ").message().newline().throwable().encoder();
 	private static volatile boolean configured;
 	private static volatile boolean consoleOnStandardError;
-	private static Level interceptLevel = Level.INFO;
+	private static volatile Level interceptLevel = Level.INFO;
 
 	/**
 	 * @return Set of the current logger keys.
@@ -110,7 +114,7 @@ public class Logging {
 	}
 
 	/**
-	 * Registers a file appender for all log calls.
+	 * Registers a file appender for Recaf log events at DEBUG and above, or TRACE with RECAF_DEBUG enabled.
 	 *
 	 * @param path
 	 * 		Path to file to append to.
@@ -120,13 +124,6 @@ public class Logging {
 		ensureConfigured();
 		Path normalized = path.toAbsolutePath().normalize();
 		fileSinks.computeIfAbsent(normalized, FileLogSink::new);
-	}
-
-	/**
-	 * Close all file appenders and remove them from the logging system.
-	 */
-	private static void closeFileAppenders() {
-		List.copyOf(fileSinks.values()).forEach(FileLogSink::close);
 	}
 
 	/**
@@ -173,20 +170,23 @@ public class Logging {
 					route.level(System.Logger.Level.TRACE);
 					route.appender("console", appender -> {
 						appender.output(consoleOnStandardError ? LogOutput.ofStandardErr() : LogOutput.ofStandardOut());
-						appender.encoder(EVENT_ENCODER);
+						appender.encoder(CONSOLE_ENCODER);
 						appender.flag(LogAppender.AppenderFlag.IMMEDIATE_FLUSH);
 					});
-					route.factory(RouterFactory.of(event ->
-							RecafLoggingFilter.allowsConsole(event.loggerName(), event.level()) ? event : null));
+					route.factory(RouterFactory.of(event -> {
+						if (!fileSinks.isEmpty() && RecafLoggingFilter.allowsFile(event.loggerName(), event.level()))
+							fileSinks.values().forEach(sink -> sink.write(event));
+						return RecafLoggingFilter.allowsConsole(event.loggerName(), event.level()) ? event : null;
+					}));
 				})
 				.build();
 	}
 
 	/**
-	 * @return Log formatting instance.
+	 * @return Console log encoder.
 	 */
 	@Nonnull
-	private static LogFormatter createEventFormatter() {
+	private static LogEncoder createConsoleEncoder() {
 		// HH:mm:ss.SSS [Class/Thread] LEVEL : MESSAGE
 		DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 				.withZone(ZoneId.systemDefault());
@@ -209,7 +209,7 @@ public class Logging {
 				.message()
 				.newline()
 				.throwable()
-				.build();
+				.encoder();
 	}
 
 	/**
@@ -239,44 +239,9 @@ public class Logging {
 	}
 
 	/**
-	 * @param level
-	 * 		Logging level.
-	 *
-	 * @return Equivalent system logging level.
-	 */
-	@Nonnull
-	private static System.Logger.Level toSystemLevel(@Nonnull Level level) {
-		return switch (level) {
-			case ERROR -> System.Logger.Level.ERROR;
-			case WARN -> System.Logger.Level.WARNING;
-			case INFO -> System.Logger.Level.INFO;
-			case DEBUG -> System.Logger.Level.DEBUG;
-			case TRACE -> System.Logger.Level.TRACE;
-		};
-	}
-
-	/**
-	 * @param loggerName
-	 * 		Logger name.
-	 * @param level
-	 * 		Logging level.
-	 * @param message
-	 * 		Optional message content.
-	 * @param throwable
-	 * 		Optional throwable.
-	 *
-	 * @return Log event representing the given log call.
-	 */
-	@Nonnull
-	private static LogEvent toEvent(@Nonnull String loggerName, @Nonnull Level level,
-	                                @Nullable String message, @Nullable Throwable throwable) {
-		return LogEvent.of(toSystemLevel(level), loggerName, String.valueOf(message), KeyValues.of(), throwable);
-	}
-
-	/**
 	 * Log sink that writes to a file.
 	 */
-	private static final class FileLogSink implements LogConsumer<String>, AutoCloseable {
+	private static final class FileLogSink implements AutoCloseable {
 		private final Path path;
 		private final FileOutput output;
 		private final Thread shutdownHook;
@@ -296,30 +261,20 @@ public class Logging {
 					.build();
 			output.start(FILE_OUTPUT_CONFIG);
 
-			// Auto-register this sink.
-			addLogConsumer(this);
-
 			// Ensure we close the file output when the JVM shuts down.
 			shutdownHook = new Thread(this::close, "recaf-log-file-" + Math.abs(path.hashCode()));
 			Runtime.getRuntime().addShutdownHook(shutdownHook);
 		}
 
-		@Override
-		public void accept(@Nonnull String loggerName, @Nonnull Level level, String messageContent) {
-			accept(loggerName, level, messageContent, null);
-		}
-
-		@Override
-		public synchronized void accept(@Nonnull String loggerName, @Nonnull Level level,
-		                                @Nullable String messageContent, @Nullable Throwable throwable) {
-			System.Logger.Level systemLevel = toSystemLevel(level);
-			if (!RecafLoggingFilter.allowsFile(loggerName, systemLevel))
+		public synchronized void write(@Nonnull LogEvent event) {
+			if (fileSinks.get(path) != this)
 				return;
-			LogEvent event = toEvent(loggerName, level, messageContent, throwable);
-			try (LogEncoder.Buffer buffer = EVENT_ENCODER.buffer(output.bufferHints())) {
-				EVENT_ENCODER.encode(event, buffer);
+			try (LogEncoder.Buffer buffer = FILE_ENCODER.buffer(output.bufferHints())) {
+				FILE_ENCODER.encode(event, buffer);
 				output.write(event, buffer);
 				output.flush();
+			} catch (UncheckedIOException ex) {
+				MetaLog.error(Logging.class, "Failed to write log file " + path, ex);
 			}
 		}
 
@@ -327,7 +282,6 @@ public class Logging {
 		public synchronized void close() {
 			if (!fileSinks.remove(path, this))
 				return;
-			removeLogConsumer(this);
 			output.close();
 			try {
 				Runtime.getRuntime().removeShutdownHook(shutdownHook);

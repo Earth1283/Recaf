@@ -54,9 +54,9 @@ public class RecafDirectoriesConfig extends BasicConfigContainer implements Conf
 	}
 
 	/**
-	 * @return Path to current log-file.
+	 * @return Path to the current log file, or {@code null} when file logging is unavailable.
 	 */
-	@Nonnull
+	@Nullable
 	public Path getCurrentLogPath() {
 		return currentLog;
 	}

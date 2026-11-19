@@ -2,6 +2,7 @@ package software.coley.recaf.ui.pane;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.Dependent;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -31,9 +32,12 @@ import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.StringUtil;
 
+import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Queue;
@@ -45,8 +49,11 @@ import java.util.Queue;
  */
 @Dependent
 public class LoggingPane extends BorderPane implements LogConsumer<String> {
-	private final List<LogCallInfo> infos = Collections.synchronizedList(new ArrayList<>());
-	private final Queue<String> messageQueue = new ArrayDeque<>();
+	private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
+			.withZone(ZoneId.systemDefault());
+	// Accessed on the FX thread alongside the editor paragraphs.
+	private final List<LogCallInfo> infos = new ArrayList<>();
+	private final Queue<LogCall> messageQueue = new ArrayDeque<>();
 	private final ObservableValue<Boolean> showing = sceneProperty().flatMap(Scene::windowProperty)
 			.flatMap(Window::showingProperty).orElse(false);
 	private CodeArea codeArea;
@@ -56,7 +63,10 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 
 	@Inject
 	public LoggingPane(@Nonnull RecafDirectoriesConfig config, @Nonnull Instance<SearchBar> searchBar) {
-		accept("", Level.TRACE, "Current log will write to: " + StringUtil.pathToAbsoluteString(config.getCurrentLogPath()));
+		Path logPath = config.getCurrentLogPath();
+		accept("Recaf", logPath == null ? Level.WARN : Level.INFO, logPath == null
+				? "File logging is unavailable"
+				: "Writing logs to " + StringUtil.pathToAbsoluteString(logPath));
 		Logging.addLogConsumer(this);
 		showing.subscribe(visible -> {
 			if (visible && codeArea == null) {
@@ -75,15 +85,35 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 		});
 	}
 
+	@PreDestroy
+	private void removeLogConsumer() {
+		Logging.removeLogConsumer(this);
+	}
+
 	private void flushMessages() {
-		String text;
+		List<LogCall> messages;
 		synchronized (messageQueue) {
 			if (!displayed || messageQueue.isEmpty())
 				return;
-			text = String.join("\n", messageQueue);
+			messages = new ArrayList<>(messageQueue);
 			messageQueue.clear();
 		}
-		codeArea.appendText(codeArea.getLength() == 0 ? text : "\n" + text);
+		StringBuilder text = new StringBuilder();
+		for (LogCall call : messages) {
+			if (!infos.isEmpty())
+				text.append('\n');
+			LogCallInfo info = call.info();
+			String name = info.loggerName();
+			String message = call.message().replace("\r\n", "\n").replace('\r', '\n');
+			text.append(TIME_FORMAT.format(info.timestamp())).append(' ')
+					.append(info.level()).append(" [")
+					.append(name, name.lastIndexOf('.') + 1, name.length())
+					.append("] ").append(message);
+			infos.add(info);
+			for (int index = message.indexOf('\n'); index >= 0; index = message.indexOf('\n', index + 1))
+				infos.add(null); // Continuation paragraphs belong to the same log call.
+		}
+		codeArea.appendText(text.toString());
 		codeArea.showParagraphAtBottom(codeArea.getParagraphs().size() - 1);
 	}
 
@@ -94,14 +124,13 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 
 	@Override
 	public void accept(@Nonnull String loggerName, @Nonnull Level level, @Nullable String messageContent, @Nullable Throwable throwable) {
-		if (messageContent == null) {
-			if (throwable == null)
-				return;
+		if (messageContent == null && throwable == null)
+			return;
+		if (messageContent == null)
 			messageContent = Objects.requireNonNullElse(throwable.getMessage(), throwable.getClass().getSimpleName());
-		}
+		LogCallInfo info = new LogCallInfo(Instant.now(), level, loggerName, Thread.currentThread().getName(), throwable);
 		synchronized (messageQueue) {
-			infos.add(new LogCallInfo(level, throwable));
-			messageQueue.add(messageContent);
+			messageQueue.add(new LogCall(messageContent, info));
 			if (!displayed || flushScheduled)
 				return;
 			flushScheduled = true;
@@ -114,8 +143,13 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 		});
 	}
 
+	private record LogCall(@Nonnull String message, @Nonnull LogCallInfo info) {}
+
 	private record LogCallInfo(
+			@Nonnull Instant timestamp,
 			@Nonnull Level level,
+			@Nonnull String loggerName,
+			@Nonnull String threadName,
 			@Nullable Throwable throwable) {}
 
 	private class LoggingLineFactory implements LineGraphicFactory {
@@ -137,6 +171,8 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 			if (paragraph >= infos.size())
 				return;
 			LogCallInfo info = infos.get(paragraph);
+			if (info == null)
+				return;
 			Shape shape;
 			switch (info.level) {
 				case ERROR -> {
@@ -160,11 +196,12 @@ public class LoggingPane extends BorderPane implements LogConsumer<String> {
 			wrapper.setAlignment(Pos.CENTER);
 			wrapper.setPadding(PADDING);
 			wrapper.setCursor(Cursor.HAND);
-			if (info.throwable != null) {
-				Tooltip tooltip = new Tooltip(StringUtil.traceToString(info.throwable));
-				tooltip.setShowDelay(Duration.ZERO);
-				Tooltip.install(wrapper, tooltip);
-			}
+			String details = info.loggerName() + "\nThread: " + info.threadName();
+			if (info.throwable() != null)
+				details += "\n\n" + StringUtil.traceToString(info.throwable());
+			Tooltip tooltip = new Tooltip(details);
+			tooltip.setShowDelay(Duration.ZERO);
+			Tooltip.install(wrapper, tooltip);
 			container.addHorizontal(wrapper);
 		}
 

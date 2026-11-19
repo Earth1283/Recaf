@@ -4,9 +4,9 @@ import jakarta.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.Marker;
 import org.slf4j.event.Level;
+import org.slf4j.helpers.FormattingTuple;
+import org.slf4j.helpers.MessageFormatter;
 import software.coley.recaf.util.ExcludeFromJacocoGeneratedReport;
-
-import java.util.regex.Matcher;
 
 /**
  * A forwarding logger that lets us intercept compiled messages.
@@ -81,7 +81,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void trace(String format, Object... arguments) {
 		backing.trace(format, arguments);
-		if (isTraceEnabled()) intercept(Level.TRACE, compile(format, arguments));
+		if (isTraceEnabled()) interceptFormatted(Level.TRACE, format, arguments);
 	}
 
 	@Override
@@ -93,7 +93,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void trace(Marker marker, String msg) {
 		backing.trace(marker, msg);
-		if (isTraceEnabled()) intercept(Level.TRACE, msg);
+		if (isTraceEnabled(marker)) intercept(Level.TRACE, msg);
 	}
 
 	@Override
@@ -109,13 +109,13 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void trace(Marker marker, String format, Object... arguments) {
 		backing.trace(marker, format, arguments);
-		if (isTraceEnabled()) intercept(Level.TRACE, compile(format, arguments));
+		if (isTraceEnabled(marker)) interceptFormatted(Level.TRACE, format, arguments);
 	}
 
 	@Override
 	public void trace(Marker marker, String msg, Throwable t) {
 		backing.trace(marker, msg, t);
-		if (isTraceEnabled()) intercept(Level.TRACE, msg, t);
+		if (isTraceEnabled(marker)) intercept(Level.TRACE, msg, t);
 	}
 
 	@Override
@@ -147,7 +147,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void debug(String format, Object... arguments) {
 		backing.debug(format, arguments);
-		if (isDebugEnabled()) intercept(Level.DEBUG, compile(format, arguments));
+		if (isDebugEnabled()) interceptFormatted(Level.DEBUG, format, arguments);
 	}
 
 	@Override
@@ -159,7 +159,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void debug(Marker marker, String msg) {
 		backing.debug(marker, msg);
-		if (isDebugEnabled()) intercept(Level.DEBUG, msg);
+		if (isDebugEnabled(marker)) intercept(Level.DEBUG, msg);
 	}
 
 	@Override
@@ -175,13 +175,13 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void debug(Marker marker, String format, Object... arguments) {
 		backing.debug(marker, format, arguments);
-		if (isDebugEnabled()) intercept(Level.DEBUG, compile(format, arguments));
+		if (isDebugEnabled(marker)) interceptFormatted(Level.DEBUG, format, arguments);
 	}
 
 	@Override
 	public void debug(Marker marker, String msg, Throwable t) {
 		backing.debug(marker, msg, t);
-		if (isDebugEnabled()) intercept(Level.DEBUG, msg, t);
+		if (isDebugEnabled(marker)) intercept(Level.DEBUG, msg, t);
 	}
 
 	@Override
@@ -213,7 +213,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void info(String format, Object... arguments) {
 		backing.info(format, arguments);
-		if (isInfoEnabled()) intercept(Level.INFO, compile(format, arguments));
+		if (isInfoEnabled()) interceptFormatted(Level.INFO, format, arguments);
 	}
 
 	@Override
@@ -225,7 +225,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void info(Marker marker, String msg) {
 		backing.info(marker, msg);
-		if (isInfoEnabled()) intercept(Level.INFO, msg);
+		if (isInfoEnabled(marker)) intercept(Level.INFO, msg);
 	}
 
 	@Override
@@ -241,13 +241,13 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void info(Marker marker, String format, Object... arguments) {
 		backing.info(marker, format, arguments);
-		if (isInfoEnabled()) intercept(Level.INFO, compile(format, arguments));
+		if (isInfoEnabled(marker)) interceptFormatted(Level.INFO, format, arguments);
 	}
 
 	@Override
 	public void info(Marker marker, String msg, Throwable t) {
 		backing.info(marker, msg, t);
-		if (isInfoEnabled()) intercept(Level.INFO, msg, t);
+		if (isInfoEnabled(marker)) intercept(Level.INFO, msg, t);
 	}
 
 	@Override
@@ -279,7 +279,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void warn(String format, Object... arguments) {
 		backing.warn(format, arguments);
-		if (isWarnEnabled()) intercept(Level.WARN, compile(format, arguments));
+		if (isWarnEnabled()) interceptFormatted(Level.WARN, format, arguments);
 	}
 
 	@Override
@@ -291,7 +291,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void warn(Marker marker, String msg) {
 		backing.warn(marker, msg);
-		if (isWarnEnabled()) intercept(Level.WARN, msg);
+		if (isWarnEnabled(marker)) intercept(Level.WARN, msg);
 	}
 
 	@Override
@@ -307,13 +307,13 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void warn(Marker marker, String format, Object... arguments) {
 		backing.warn(marker, format, arguments);
-		if (isWarnEnabled()) intercept(Level.WARN, compile(format, arguments));
+		if (isWarnEnabled(marker)) interceptFormatted(Level.WARN, format, arguments);
 	}
 
 	@Override
 	public void warn(Marker marker, String msg, Throwable t) {
 		backing.warn(marker, msg, t);
-		if (isWarnEnabled()) intercept(Level.WARN, msg, t);
+		if (isWarnEnabled(marker)) intercept(Level.WARN, msg, t);
 	}
 
 	@Override
@@ -345,7 +345,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void error(String format, Object... arguments) {
 		backing.error(format, arguments);
-		if (isErrorEnabled()) intercept(Level.ERROR, compile(format, arguments));
+		if (isErrorEnabled()) interceptFormatted(Level.ERROR, format, arguments);
 	}
 
 	@Override
@@ -357,7 +357,7 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void error(Marker marker, String msg) {
 		backing.error(marker, msg);
-		if (isErrorEnabled()) intercept(Level.ERROR, msg);
+		if (isErrorEnabled(marker)) intercept(Level.ERROR, msg);
 	}
 
 	@Override
@@ -373,27 +373,20 @@ public abstract class InterceptingLogger implements DebuggingLogger {
 	@Override
 	public void error(Marker marker, String format, Object... arguments) {
 		backing.error(marker, format, arguments);
-		if (isErrorEnabled()) intercept(Level.ERROR, compile(format, arguments));
+		if (isErrorEnabled(marker)) interceptFormatted(Level.ERROR, format, arguments);
 	}
 
 	@Override
 	public void error(Marker marker, String msg, Throwable t) {
 		backing.error(marker, msg, t);
-		if (isErrorEnabled()) intercept(Level.ERROR, msg, t);
+		if (isErrorEnabled(marker)) intercept(Level.ERROR, msg, t);
 	}
 
-	private static String compile(String message, Object[] arguments) {
-		int i = 0;
-		while (message.contains("{}")) {
-			// Failsafe, shouldn't occur if logging is written correctly
-			if (i == arguments.length)
-				return message;
-			// Replace arg in pattern
-			Object arg = arguments[i];
-			String argStr = arg == null ? "null" : arg.toString();
-			message = message.replaceFirst("\\{}", Matcher.quoteReplacement(argStr));
-			i++;
-		}
-		return message;
+	private void interceptFormatted(Level level, String format, Object[] arguments) {
+		FormattingTuple formatted = MessageFormatter.arrayFormat(format, arguments);
+		if (formatted.getThrowable() == null)
+			intercept(level, formatted.getMessage());
+		else
+			intercept(level, formatted.getMessage(), formatted.getThrowable());
 	}
 }

@@ -1,6 +1,7 @@
 package software.coley.recaf.launch;
 
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import jakarta.enterprise.inject.spi.Bean;
 import org.slf4j.Logger;
 import software.coley.recaf.Bootstrap;
@@ -22,17 +23,18 @@ import software.coley.recaf.util.threading.ThreadUtil;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -60,7 +62,17 @@ public class LaunchBootstrap {
 	 */
 	@Nonnull
 	public Recaf bootstrap() {
+		Path logFile = initFileLogging();
+		logger.info("Starting Recaf in {} mode (PID {}, Java {} from {}, {} {} {})",
+				launchCommand.isHeadless() ? "headless" : "desktop",
+				ProcessHandle.current().pid(), System.getProperty("java.runtime.version"), System.getProperty("java.vendor"),
+				System.getProperty("os.name"), System.getProperty("os.version"), System.getProperty("os.arch"));
 		recaf = Bootstrap.get();
+		if (logFile != null) {
+			RecafDirectoriesConfig directories = recaf.get(RecafDirectoriesConfig.class);
+			directories.initCurrentLogPath(logFile);
+			archiveOldLogs(logFile, directories.getLogsDirectory());
+		}
 		launchArgs = recaf.get(LaunchArguments.class);
 		launchArgs.setCommand(launchCommand);
 		launchArgs.setRawArgs(args);
@@ -90,7 +102,6 @@ public class LaunchBootstrap {
 	 * Initialize the headless runtime.
 	 */
 	public void initializeHeadless() {
-		initLogging();
 		initPlugins();
 		fireInitEvent();
 		blockIfIdle();
@@ -103,40 +114,41 @@ public class LaunchBootstrap {
 		recaf.getContainer().getBeanContainer().getEvent().fire(new InitializationEvent());
 	}
 
-	/**
-	 * Configure file logging appender and compress old logs.
-	 */
-	public void initLogging() {
-		RecafDirectoriesConfig directories = recaf.get(RecafDirectoriesConfig.class);
-
-		// Setup appender
-		String date = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-		Path logFile = directories.getBaseDirectory().resolve("log-" + date + ".txt");
-		directories.initCurrentLogPath(logFile);
-		Logging.addFileAppender(logFile);
-
-		// Set default error handler
-		Thread.setDefaultUncaughtExceptionHandler((t, e) -> logger.error("Uncaught exception on thread '{}'", t.getName(), e));
-
-		// Archive old logs
+	@Nullable
+	private static Path initFileLogging() {
+		Thread.setDefaultUncaughtExceptionHandler((thread, error) ->
+				logger.error("Uncaught exception on thread '{}' (ID {})", thread.getName(), thread.threadId(), error));
+		Path baseDirectory = RecafDirectoriesConfig.createBaseDirectory().toAbsolutePath().normalize();
+		Path logFile = baseDirectory.resolve("log-" + LocalDate.now() + ".txt");
 		try {
-			Files.createDirectories(directories.getLogsDirectory());
-			List<Path> oldLogs = Files.list(directories.getBaseDirectory())
-					.filter(p -> p.getFileName().toString().matches("log-\\d+-\\d+-\\d+\\.txt"))
-					.collect(Collectors.toList());
+			Files.createDirectories(baseDirectory);
+			Logging.addFileAppender(logFile);
+			return logFile;
+		} catch (IOException | UncheckedIOException | SecurityException ex) {
+			logger.warn("Could not open log file '{}'", logFile, ex);
+			return null;
+		}
+	}
 
-			// Do not treat the current log file as an old log file
-			oldLogs.remove(logFile);
+	private static void archiveOldLogs(@Nonnull Path logFile, @Nonnull Path logsDirectory) {
+		Path baseDirectory = logFile.getParent();
+		try {
+			Files.createDirectories(logsDirectory);
+			List<Path> oldLogs;
+			try (Stream<Path> paths = Files.list(baseDirectory)) {
+				oldLogs = paths.filter(path -> !path.equals(logFile))
+						.filter(path -> path.getFileName().toString().matches("log-\\d+-\\d+-\\d+\\.txt"))
+						.toList();
+			}
 
-			// Handling old entries
 			logger.trace("Compressing {} old log files", oldLogs.size());
 			for (Path oldLog : oldLogs) {
 				String originalFileName = oldLog.getFileName().toString();
 				String archiveFileName = originalFileName.replace(".txt", ".zip");
-				Path archivedLog = directories.getLogsDirectory().resolve(archiveFileName);
+				Path archivedLog = logsDirectory.resolve(archiveFileName);
 
 				// Compress the log into a zip
-				try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(archivedLog.toFile()))) {
+				try (ZipOutputStream zos = new ZipOutputStream(Files.newOutputStream(archivedLog))) {
 					zos.putNextEntry(new ZipEntry(originalFileName));
 					Files.copy(oldLog, zos);
 					zos.closeEntry();
@@ -145,8 +157,8 @@ public class LaunchBootstrap {
 				// Remove the old file
 				Files.delete(oldLog);
 			}
-		} catch (IOException ex) {
-			logger.warn("Failed to compress old logs", ex);
+		} catch (IOException | UncheckedIOException | SecurityException ex) {
+			logger.warn("Failed to archive old logs from '{}' to '{}'", baseDirectory, logsDirectory, ex);
 		}
 	}
 
@@ -212,37 +224,61 @@ public class LaunchBootstrap {
 	}
 
 	private void handleInputs() {
-		try {
-			File input = launchArgs.getInput();
-			if (input != null && input.exists()) {
-				ResourceImporter importer = recaf.get(ResourceImporter.class);
-				WorkspaceManager workspaceManager = recaf.get(WorkspaceManager.class);
-				workspaceManager.setCurrent(new BasicWorkspace(importer.importResource(input)));
+		File input = launchArgs.getInput();
+		if (input != null) {
+			try {
+				if (input.exists()) {
+					long start = System.nanoTime();
+					logger.info("Loading startup workspace from '{}'", input);
+					ResourceImporter importer = recaf.get(ResourceImporter.class);
+					WorkspaceManager workspaceManager = recaf.get(WorkspaceManager.class);
+					if (workspaceManager.setCurrent(new BasicWorkspace(importer.importResource(input)))) {
+						logger.info("Loaded startup workspace from '{}' in {} ms", input,
+								TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+					} else {
+						logger.warn("Recaf could not switch to the startup workspace from '{}'", input);
+					}
+				} else {
+					logger.warn("Startup workspace input '{}' does not exist", input);
+				}
+			} catch (Throwable ex) {
+				logger.error("Failed to load startup workspace from '{}'", input, ex);
 			}
-		} catch (Throwable t) {
-			logger.error("Error handling loading of launch workspace content.", t);
 		}
 
+		File requestedScript = launchArgs.getScript();
+		if (requestedScript == null)
+			return;
+		File script = requestedScript;
 		try {
-			File script = launchArgs.getScript();
-			if (script != null && !script.isFile())
+			if (!script.isFile())
 				script = launchArgs.getScriptInScriptsDirectory();
 			if (script != null && script.isFile()) {
+				long start = System.nanoTime();
+				logger.info("Running startup script '{}'", script);
 				ScriptResult result = recaf.get(ScriptEngine.class)
 						.run(Files.readString(script.toPath()))
 						.get();
-				if (!result.wasSuccess()) {
-					if (result.wasRuntimeError()) {
-						logger.error("Error encountered when executing script '{}'", script.getName());
-					} else if (result.wasCompileFailure()) {
-						logger.error("Error compiling script:\n{}", result.getCompileDiagnostics().stream()
-								.map(CompilerDiagnostic::toString)
-								.collect(Collectors.joining("\n")));
-					}
+				if (result.wasRuntimeError()) {
+					logger.error("Startup script '{}' failed at runtime", script, result.getRuntimeThrowable());
+				} else if (result.wasCompileFailure()) {
+					logger.error("Could not compile startup script '{}':\n{}", script, result.getCompileDiagnostics().stream()
+							.map(CompilerDiagnostic::toString)
+							.collect(Collectors.joining("\n")));
+				} else if (result.wasCancelled()) {
+					logger.info("Startup script '{}' was cancelled", script);
+				} else {
+					logger.info("Finished startup script '{}' in {} ms", script,
+							TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
 				}
+			} else {
+				logger.warn("Startup script '{}' was not found (also checked '{}')", requestedScript, script);
 			}
-		} catch (Throwable t) {
-			logger.error("Error handling execution of launch script.", t);
+		} catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+			logger.warn("Interrupted while waiting for startup script '{}'", script, ex);
+		} catch (Throwable ex) {
+			logger.error("Failed to run startup script '{}'", script, ex);
 		}
 	}
 

@@ -71,7 +71,6 @@ public class UIMain {
 	private static void initialize(@Nonnull Recaf recaf,
 	                               @Nonnull LaunchArguments launchArgs,
 	                               @Nonnull LaunchBootstrap launchBootstrap) {
-		launchBootstrap.initLogging();
 		initFxAccessAgent();
 		initTranslations();
 		launchBootstrap.initPlugins();

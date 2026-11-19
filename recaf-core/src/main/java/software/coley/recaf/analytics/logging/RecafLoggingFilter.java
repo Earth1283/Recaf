@@ -12,6 +12,7 @@ import java.lang.System.Logger.Level;
  */
 @ExcludeFromJacocoGeneratedReport(justification = "Logging not relevant for test coverage")
 public final class RecafLoggingFilter {
+	private static final Level FILE_LEVEL = DebuggingLogger.DEBUG ? Level.TRACE : Level.DEBUG;
 	private static volatile Level consoleLevel = Level.DEBUG;
 
 	private RecafLoggingFilter() {}
@@ -56,7 +57,7 @@ public final class RecafLoggingFilter {
 	 * @return {@code true} when the file sink should emit the log event.
 	 */
 	public static boolean allowsFile(@Nonnull String loggerName, @Nonnull Level level) {
-		return level != Level.OFF && isRecafLogger(loggerName);
+		return level != Level.OFF && level.getSeverity() >= FILE_LEVEL.getSeverity() && isRecafLogger(loggerName);
 	}
 
 	private static boolean isRecafLogger(@Nonnull String loggerName) {
