@@ -4,6 +4,7 @@ import jakarta.annotation.Nonnull;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jetbrains.java.decompiler.main.Fernflower;
+import org.jetbrains.java.decompiler.main.decompiler.ConsoleDecompiler;
 import org.jetbrains.java.decompiler.main.extern.IFernflowerLogger;
 import org.jetbrains.java.decompiler.main.extern.IResultSaver;
 import software.coley.recaf.info.JvmClassInfo;
@@ -33,8 +34,7 @@ public class VineflowerDecompiler extends AbstractJvmDecompiler {
 	 */
 	@Inject
 	public VineflowerDecompiler(@Nonnull VineflowerConfig config) {
-		// Change this version to be dynamic when / if the Vineflower authors make a function that returns the version...
-		super(NAME, "1.11.2", config);
+		super(NAME, ConsoleDecompiler.version(), config);
 		this.config = config;
 		logger = new VineflowerLogger(config);
 	}

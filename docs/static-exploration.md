@@ -5,9 +5,15 @@ Three separate tools are available under **Analysis**. They inspect JVM bytecode
 ## Simplify control flow
 
 **Analysis → Deobfuscation → Simplify control flow** opens a deobfuscation preview configured with constant folding,
-local dispatcher simplification, opaque predicate simplification, dead code removal, goto inlining, and variable
-folding, with up to six passes. Review the source/bytecode diff, then use **Transform workspace** to apply.
+local dispatcher simplification, opaque predicate simplification, blank control-flow removal, dead code removal,
+goto inlining, and variable folding, with up to six passes. Review the source/bytecode diff, then use
+**Transform workspace** to apply.
 **Run on preview only** allows inspection without committing changes.
+
+**Remove blank control-flow clauses** is also available as a standalone transformer under **General → Flow**. It removes
+empty `if` and `else` arms, switches whose paths rejoin without doing work, and empty loops whose first test always exits. Condition calls and
+other observable evaluations still run. A loop such as `while (isBusy()) {}` can wait or call `isBusy()` more than
+once, so its loop behavior is preserved.
 
 For example:
 

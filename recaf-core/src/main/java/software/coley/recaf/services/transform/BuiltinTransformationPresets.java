@@ -4,6 +4,7 @@ import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFold
 import software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.InvokeDynamicInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.EmptyControlFlowRemovingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredicateFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
@@ -43,6 +44,7 @@ public final class BuiltinTransformationPresets {
 			new TransformationPreset.TransformerPreset(OpaqueConstantFoldingTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(DispatcherInliningTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(OpaquePredicateFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(EmptyControlFlowRemovingTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(DeadCodeRemovingTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(GotoInliningTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(VariableFoldingTransformer.class.getName(), Map.of())),

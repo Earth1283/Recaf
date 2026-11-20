@@ -22,6 +22,7 @@ Navigate compiled applications using a familiar, IDE-like interface.
 - Switch between multiple configurable Java decompilers: CFR, Procyon, Fernflower
     - Each decompiler can be fully configured via the config menu. If you're lost, just use the config window's search bar and type in the name of the decompiler you want to tweak.
 - Search for strings, constants, class references, methods, and bytecode instruction patterns.
+- Compare two versions of a JAR from **File → Compare JARs**. Inspect added, removed, and changed classes, methods, and resources side by side. Turn on **Strict mode** to include exact JVM string value changes.
 - Navigate thorugh Java applications like you would with an IDE.
     - Control + left click or press F3 to jump to referenced classes, fields, and methods.
     - Left/Right + Alt to jump between recently visited locations.

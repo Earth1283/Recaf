@@ -49,6 +49,10 @@ jar {
 }
 
 shadowJar {
+    // Vineflower reads its version from the package manifest, so retain it when bundling the engine.
+    manifest.attributes(['Implementation-Version': libs.versions.vineflower.get()],
+            'org/jetbrains/java/decompiler/main/decompiler/')
+
     exclude "META-INF/maven/**"
     exclude "META-INF/rewrite/**"
     exclude "META-INF/proguard/*"

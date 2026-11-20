@@ -23,6 +23,7 @@ import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.control.popup.OpenUrlPopup;
 import software.coley.recaf.ui.docking.DockingManager;
 import software.coley.recaf.ui.pane.WorkspaceBuilderPane;
+import software.coley.recaf.ui.window.JarComparisonWindow;
 import software.coley.recaf.ui.window.RecafScene;
 import software.coley.recaf.ui.window.RecafStage;
 import software.coley.recaf.util.ErrorDialogs;
@@ -103,6 +104,7 @@ public class FileMenu extends WorkspaceAwareMenu {
 		items.add(menuRecent);
 		items.add(action("menu.file.attach", CarbonIcons.DEBUG, this::openAttach));
 		items.add(action("menu.file.openurl", CarbonIcons.ATTACHMENT, this::openUrl));
+		items.add(action("jarcompare.title", CarbonIcons.COMPARE, this::openJarComparison));
 		items.add(separator());
 		items.add(itemExportPrimary);
 		items.add(itemViewChanges);
@@ -234,6 +236,12 @@ public class FileMenu extends WorkspaceAwareMenu {
 		popup.show();
 		popup.requestInputFocus();
 		popup.setOnHiding(e -> openUrlProvider.destroy(popup));
+	}
+
+	private void openJarComparison() {
+		JarComparisonWindow comparison = new JarComparisonWindow();
+		windowManager.registerAnonymous(comparison);
+		comparison.show();
 	}
 
 	/**
