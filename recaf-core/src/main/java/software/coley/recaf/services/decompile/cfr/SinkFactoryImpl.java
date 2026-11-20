@@ -2,10 +2,10 @@ package software.coley.recaf.services.decompile.cfr;
 
 import jakarta.annotation.Nullable;
 import org.benf.cfr.reader.api.OutputSinkFactory;
+import org.benf.cfr.reader.api.SinkReturns;
 import org.slf4j.Logger;
 import software.coley.recaf.analytics.logging.Logging;
 
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
@@ -21,7 +21,9 @@ public class SinkFactoryImpl implements OutputSinkFactory {
 
 	@Override
 	public List<SinkClass> getSupportedSinks(SinkType sinkType, Collection<SinkClass> collection) {
-		return Arrays.asList(SinkClass.values());
+		if (sinkType == SinkType.EXCEPTION && collection.contains(SinkClass.EXCEPTION_MESSAGE))
+			return List.of(SinkClass.EXCEPTION_MESSAGE);
+		return collection.contains(SinkClass.STRING) ? List.of(SinkClass.STRING) : List.of();
 	}
 
 	@Override
@@ -35,11 +37,14 @@ public class SinkFactoryImpl implements OutputSinkFactory {
 	}
 
 	private <T> void handleException(@Nullable T value) {
-		if (value instanceof Throwable) {
-			logger.error("CFR Error: {}", value);
-			exception = (Throwable) value;
-		} else {
-			logger.error("CFR encountered an error but provided no additional information");
+		if (value instanceof SinkReturns.ExceptionMessage message) {
+			exception = message.getThrownException();
+			if (exception == null)
+				exception = new IllegalStateException(message.getMessage());
+			logger.error("CFR error in '{}': {}", message.getPath(), message.getMessage(), exception);
+		} else if (value != null) {
+			exception = new IllegalStateException(value.toString());
+			logger.error("CFR error", exception);
 		}
 	}
 

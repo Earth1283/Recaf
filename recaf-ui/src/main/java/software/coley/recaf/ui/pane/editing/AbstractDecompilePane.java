@@ -4,14 +4,20 @@ import atlantafx.base.controls.Spacer;
 import atlantafx.base.theme.Styles;
 import jakarta.annotation.Nonnull;
 import javafx.collections.ObservableList;
+import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
+import javafx.scene.Group;
 import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuButton;
+import javafx.scene.control.MenuItem;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
 import org.fxmisc.richtext.CodeArea;
@@ -24,6 +30,7 @@ import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.InnerClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.member.ClassMember;
+import software.coley.recaf.info.member.MethodMember;
 import software.coley.recaf.info.properties.builtin.RemapOriginTaskProperty;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.path.IncompletePathException;
@@ -33,6 +40,7 @@ import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.decompile.NoopJvmDecompiler;
+import software.coley.recaf.services.decompile.fallback.FallbackDecompiler;
 import software.coley.recaf.services.info.association.FileTypeSyntaxAssociationService;
 import software.coley.recaf.services.mapping.MappingResults;
 import software.coley.recaf.services.mapping.Mappings;
@@ -66,15 +74,17 @@ import software.coley.recaf.util.FxThreadUtil;
 import software.coley.recaf.util.Keywords;
 import software.coley.recaf.util.Lang;
 import software.coley.recaf.util.StringDiff;
-import software.coley.recaf.util.StringUtil;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.sourcesolver.model.CompilationUnitModel;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -100,7 +110,11 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	protected final TutorialConfig tutorialConfig;
 	protected final Editor editor;
 	protected ClassPathNode path;
+	private final Group astTools = new Group();
 	private boolean recordsNavigationHistory = true;
+	private boolean sourceWasEditable;
+	private long decompileRequest;
+	private DecompileFailurePane failurePane;
 
 	protected AbstractDecompilePane(@Nonnull DecompilerPaneConfig decompileConfig,
 	                                @Nonnull TutorialConfig tutorialConfig,
@@ -147,6 +161,8 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 		// Setup common keybindings.
 		addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+			if (isInspectingBytecode())
+				return;
 			if (keys.getAssembler().match(e)) {
 				// Resolve what the caret position has, then handle opening the assembler for the resulting path.
 				PathNode<?> enclosingPath = contextActionSupport.getEnclosingDeclarationPath(editor.getCodeArea().getCaretPosition(), true);
@@ -183,6 +199,8 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 		// Keep shortcut-click navigation consistent across JVM and Android decompiler panes.
 		addEventFilter(MouseEvent.MOUSE_CLICKED, e -> {
+			if (isInspectingBytecode())
+				return;
 			if (e.getButton() == MouseButton.PRIMARY && e.isShortcutDown()) {
 				// Resolve what the caret position has, then handle navigating to the resulting path.
 				AstResolveResult result = contextActionSupport.resolvePosition(editor.getCodeArea().getCaretPosition());
@@ -240,7 +258,10 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 	@Override
 	public void requestFocus(@Nonnull ClassMember member) {
-		contextActionSupport.select(member);
+		if (isInspectingBytecode() && member instanceof MethodMember method)
+			failurePane.select(method);
+		else if (!isInspectingBytecode())
+			contextActionSupport.select(member);
 		requestFocus();
 	}
 
@@ -252,8 +273,10 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 	@Override
 	public void requestFocus() {
-		// Delegate focus to the editor.
-		editor.getCodeArea().requestFocus();
+		if (isInspectingBytecode())
+			failurePane.requestFocus();
+		else
+			editor.getCodeArea().requestFocus();
 	}
 
 	@Nonnull
@@ -264,6 +287,8 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 	@Override
 	public void disable() {
+		decompileRequest++;
+		clearFailureView();
 		setDisable(true);
 		setOnKeyPressed(null);
 		editor.close();
@@ -305,15 +330,9 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	 * 		Tool container to install.
 	 */
 	protected void installToolsContainer(@Nonnull ToolsContainerComponent toolsContainer) {
-		DecompileFailureButton failureButton = new DecompileFailureButton();
-		decompileOutputErrored.addChangeListener((ob, old, cur) -> {
-			failureButton.setVisible(cur);
-			if (cur) failureButton.animate();
-		});
-
 		toolsContainer.install(editor);
-		toolsContainer.add(contextActionSupport.getAvailabilityButton());
-		toolsContainer.addLast(failureButton);
+		astTools.getChildren().add(contextActionSupport.getAvailabilityButton());
+		toolsContainer.add(astTools);
 	}
 
 	/**
@@ -329,6 +348,9 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	 * @return {@code true} when we were able to handle it with an AST visitors.
 	 */
 	private boolean handleRemapUpdate(@Nonnull ClassInfo classInfo) {
+		if (decompileInProgress.getValue() || decompileOutputErrored.getValue())
+			return false;
+
 		// Attempt to handle change with an AST mapping visitor if the change is originating
 		// from a mapping application job.
 		String currentText = editor.getText();
@@ -386,8 +408,13 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	 * with the decompilation results.
 	 */
 	public void decompile() {
+		if (path == null || isDisabled())
+			return;
+		long request = ++decompileRequest;
 		Workspace workspace = path.getValueOfType(Workspace.class);
 		JvmClassInfo classInfo = path.getValue().asJvmClass();
+		JvmDecompiler selectedDecompiler = decompiler.getValue();
+		int timeout = decompileConfig.getTimeoutSeconds().getValue();
 
 		// Get current caret position so we can restore prior positions between decompilations.
 		// Some actions that edit the class (like mapping, assembler edits, etc) will decompile with some changes,
@@ -397,75 +424,131 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 		int caretColumn = area.getCaretColumn();
 
 		// Schedule decompilation task, update the editor's text asynchronously on the JavaFX UI thread when complete.
+		clearFailureView();
 		decompileInProgress.setValue(true);
 		editor.setMouseTransparent(true);
-		decompilerManager.decompile(decompiler.getValue(), workspace, classInfo)
-				.completeOnTimeout(timeoutResult(), decompileConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
+		decompilerManager.decompile(selectedDecompiler, workspace, classInfo)
+				.orTimeout(timeout, TimeUnit.SECONDS)
 				.whenCompleteAsync((result, throwable) -> {
+					if (request != decompileRequest)
+						return;
 					editor.setMouseTransparent(false);
 					decompileInProgress.setValue(false);
 
-					// Handle uncaught exceptions
+					// Treat timeouts and exceptional completions like reported failures.
 					if (throwable != null) {
-						String trace = StringUtil.traceToString(throwable);
-						editor.setTextAndCaret("/*\nUncaught exception when decompiling:\n" + trace + "\n*/", caretParagraph, caretColumn);
-						return;
-					}
-
-					// Handle decompilation result
-					String text = result.getText();
-					if (Objects.equals(text, editor.getText()))
-						return; // Skip if existing text is the same
-					DecompileResult.ResultType resultType = result.getType();
-					decompileOutputErrored.setValue(resultType == DecompileResult.ResultType.FAILURE);
-					switch (resultType) {
-						case SUCCESS -> editor.setTextAndCaret(text, caretParagraph, caretColumn);
-						case SKIPPED -> editor.setTextAndCaret(text == null ? "// Decompilation skipped" : text, caretParagraph, caretColumn);
-						case FAILURE -> {
-							Throwable exception = result.getException();
-							if (exception != null) {
-								String trace = StringUtil.traceToString(exception);
-								editor.setTextAndCaret("/*\nDecompile failed:\n" + trace + "\n*/", caretParagraph, caretColumn);
-							} else {
-								editor.setTextAndCaret("/*\nDecompile failed, but no trace was attached.\n*/", caretParagraph, caretColumn);
-							}
+						Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
+								? throwable.getCause() : throwable;
+						if (cause instanceof TimeoutException) {
+							cause = new TimeoutException("Decompilation timed out after " + timeout + " seconds.");
+							cause.setStackTrace(new StackTraceElement[0]);
 						}
+						result = new DecompileResult(cause, selectedDecompiler.getConfig().getHash());
 					}
 
-					// Schedule AST parsing for context action support.
-					contextActionSupport.scheduleAstParse();
+					boolean failed = result.getType() == DecompileResult.ResultType.FAILURE;
+					boolean partial = !failed && !result.getDiagnostics().isEmpty();
+					boolean hasIssues = failed || partial;
+					if (hasIssues && !decompileOutputErrored.getValue()) {
+						sourceWasEditable = area.isEditable();
+						area.setEditable(false);
+					} else if (!hasIssues && decompileOutputErrored.getValue()) {
+						area.setEditable(sourceWasEditable);
+					}
+					decompileOutputErrored.setValue(hasIssues);
 
-					// Prevent undo from reverting to empty state.
-					editor.getCodeArea().getUndoManager().forgetHistory();
+					String text = result.getText();
+					if (text == null)
+						text = "// Decompilation skipped";
+					if (!Objects.equals(text, editor.getText())) {
+						editor.setTextAndCaret(text, caretParagraph, caretColumn);
+						if (!failed)
+							contextActionSupport.scheduleAstParse();
+						area.getUndoManager().forgetHistory();
+					}
+
+					if (hasIssues)
+						showFailureView(classInfo, workspace, selectedDecompiler, result, partial);
 				}, FxThreadUtil.executor());
 	}
 
-	/**
-	 * @return Result made for timed out decompilations.
-	 */
-	@Nonnull
-	private DecompileResult timeoutResult() {
-		JvmClassInfo info = path.getValue().asJvmClass();
-		JvmDecompiler jvmDecompiler = decompiler.getValue();
-		return new DecompileResult("""
-				// Decompilation timed out.
-				//  - Class name: %s
-				//  - Class size: %d bytes
-				//  - Decompiler: %s - %s
-				//  - Timeout: %d seconds
-				//
-				// Suggestions:
-				//  - Increase timeout
-				//  - Change decompilers in 'config' or bottom right (i)
-				//  - Deobfuscate heavily obfuscated code and try again
-				//
-				// Reminder:
-				//  - Class information is still available on the side panels ==>
-				""".formatted(info.getName(),
-				info.getBytecode().length,
-				jvmDecompiler.getName(), jvmDecompiler.getVersion(),
-				decompileConfig.getTimeoutSeconds().getValue()
-		));
+	private boolean isInspectingBytecode() {
+		return failurePane != null && failurePane.isVisible();
+	}
+
+	private void clearFailureView() {
+		setTop(null);
+		if (failurePane != null) {
+			failurePane.cancelInspection();
+			editor.getPrimaryStack().getChildren().remove(failurePane);
+			failurePane = null;
+			editor.getCodeArea().setFocusTraversable(true);
+		}
+		astTools.setVisible(true);
+	}
+
+	private void showFailureView(JvmClassInfo info, Workspace workspace, JvmDecompiler selectedDecompiler,
+	                             DecompileResult result, boolean partial) {
+		String prefix = "java.decompile-inspection.";
+		String messageKey = partial ? prefix + "partial" : result.getException() instanceof TimeoutException
+				? prefix + "timeout" : "java.decompile-failure.brief";
+		Label message = new BoundLabel(Lang.getBinding(messageKey));
+		message.getStyleClass().add(Styles.WARNING);
+		message.setWrapText(true);
+		HBox banner = new HBox(8, message);
+		banner.setAlignment(Pos.CENTER_LEFT);
+		banner.setPadding(new Insets(6, 8, 6, 8));
+
+		if (partial) {
+			Button toggle = new Button();
+			toggle.getStyleClass().add(Styles.SMALL);
+			toggle.textProperty().bind(Lang.getBinding(prefix + "inspect"));
+			toggle.setOnAction(e -> {
+				boolean show = !isInspectingBytecode();
+				if (show) {
+					openFailurePane(info, workspace, selectedDecompiler, result);
+				} else {
+					failurePane.setVisible(false);
+					editor.getCodeArea().setFocusTraversable(true);
+					astTools.setVisible(true);
+				}
+				toggle.textProperty().bind(Lang.getBinding(prefix + (show ? "source" : "inspect")));
+			});
+			banner.getChildren().add(toggle);
+		} else {
+			openFailurePane(info, workspace, selectedDecompiler, result);
+		}
+
+		MenuButton retry = new MenuButton();
+		retry.getStyleClass().add(Styles.SMALL);
+		retry.textProperty().bind(Lang.getBinding(prefix + "retry"));
+		decompilerManager.getJvmDecompilers().stream()
+				.filter(candidate -> candidate != selectedDecompiler && !(candidate instanceof NoopJvmDecompiler)
+						&& !(candidate instanceof FallbackDecompiler))
+				.sorted(Comparator.comparing(JvmDecompiler::getName))
+				.forEach(candidate -> {
+					MenuItem choice = new MenuItem(candidate.getName());
+					choice.setOnAction(e -> decompiler.setValue(candidate));
+					retry.getItems().add(choice);
+				});
+		if (!retry.getItems().isEmpty())
+			banner.getChildren().add(retry);
+		setTop(banner);
+	}
+
+	private void openFailurePane(JvmClassInfo info, Workspace workspace, JvmDecompiler selectedDecompiler, DecompileResult result) {
+		if (failurePane == null) {
+			failurePane = new DecompileFailurePane(info, workspace, selectedDecompiler, result);
+			failurePane.managedProperty().bind(failurePane.visibleProperty());
+			// Leave the editor's tool controls accessible along the bottom.
+			failurePane.setPadding(new Insets(0, 0, 36, 0));
+			editor.getPrimaryStack().getChildren().add(1, failurePane);
+		}
+		failurePane.setVisible(true);
+		if (editor.getCodeArea().isFocused())
+			failurePane.requestFocus();
+		editor.getCodeArea().setFocusTraversable(false);
+		astTools.setVisible(false);
 	}
 
 	/**

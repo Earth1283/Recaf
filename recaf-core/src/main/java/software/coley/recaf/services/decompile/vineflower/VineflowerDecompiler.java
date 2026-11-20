@@ -5,7 +5,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jetbrains.java.decompiler.main.Fernflower;
 import org.jetbrains.java.decompiler.main.decompiler.ConsoleDecompiler;
-import org.jetbrains.java.decompiler.main.extern.IFernflowerLogger;
 import org.jetbrains.java.decompiler.main.extern.IResultSaver;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.decompile.AbstractJvmDecompiler;
@@ -23,7 +22,6 @@ import java.util.function.UnaryOperator;
 public class VineflowerDecompiler extends AbstractJvmDecompiler {
 	public static final String NAME = "Vineflower";
 	private final VineflowerConfig config;
-	private final IFernflowerLogger logger;
 	private final IResultSaver dummySaver = new DummyResultSaver();
 
 	/**
@@ -36,12 +34,12 @@ public class VineflowerDecompiler extends AbstractJvmDecompiler {
 	public VineflowerDecompiler(@Nonnull VineflowerConfig config) {
 		super(NAME, ConsoleDecompiler.version(), config);
 		this.config = config;
-		logger = new VineflowerLogger(config);
 	}
 
 	@Nonnull
 	@Override
 	public DecompileResult decompileInternal(@Nonnull Workspace workspace, @Nonnull JvmClassInfo info) {
+		VineflowerLogger logger = new VineflowerLogger(config);
 		Fernflower fernflower = new Fernflower(dummySaver, config.getFernflowerProperties(), logger);
 
 		try {
@@ -53,11 +51,14 @@ public class VineflowerDecompiler extends AbstractJvmDecompiler {
 
 			String decompiled = source.getSink().getDecompiledOutput().get();
 			if (decompiled == null || decompiled.isEmpty())
-				return new DecompileResult(new IllegalStateException("Missing decompilation output"), config.getHash());
+				return new DecompileResult(new IllegalStateException("Missing decompilation output"), config.getHash())
+						.withDiagnostics(logger.getDiagnostics());
 
-			return new DecompileResult(decompiled, config.getHash());
+			return new DecompileResult(decompiled, config.getHash()).withDiagnostics(logger.getDiagnostics());
 		} catch (Exception e) {
-			return new DecompileResult(e, config.getHash());
+			return new DecompileResult(e, config.getHash()).withDiagnostics(logger.getDiagnostics());
+		} finally {
+			fernflower.clearContext();
 		}
 	}
 }

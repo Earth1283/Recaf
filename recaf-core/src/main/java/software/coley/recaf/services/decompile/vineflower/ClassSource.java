@@ -50,7 +50,7 @@ public class ClassSource extends BaseSource {
 		entries.add(new Entry(targetInfo.getName(), Entry.BASE_VERSION));
 		for (InnerClassInfo innerClass : targetInfo.getInnerClasses()) {
 			// Only add entry if it exists in the workspace.
-			if (workspace.findClass(innerClass.getInnerClassName()) != null)
+			if (!innerClass.isSelfReference() && workspace.findClass(innerClass.getInnerClassName()) != null)
 				entries.add(new Entry(innerClass.getName(), Entry.BASE_VERSION));
 		}
 		return new Entries(entries, Collections.emptyList(), Collections.emptyList());

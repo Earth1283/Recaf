@@ -9,14 +9,17 @@ import org.benf.cfr.reader.util.CfrVersionInfo;
 import org.benf.cfr.reader.util.DecompilerComment;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.decompile.AbstractJvmDecompiler;
+import software.coley.recaf.services.decompile.DecompileDiagnostic;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.util.ReflectUtil;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * CFR decompiler implementation.
@@ -26,6 +29,7 @@ import java.util.Objects;
 @ApplicationScoped
 public class CfrDecompiler extends AbstractJvmDecompiler {
 	public static final String NAME = "CFR";
+	private static final Pattern METHOD_FAILURE = Pattern.compile("(?m)^\\h*\\* (This method has failed to decompile\\.|Unable to fully structure code)");
 	private final CfrConfig config;
 
 	/**
@@ -68,7 +72,12 @@ public class CfrDecompiler extends AbstractJvmDecompiler {
 			});
 			return new DecompileResult(exception, configHash);
 		}
-		return new DecompileResult(filter(decompile), configHash);
+		var diagnostics = new ArrayList<DecompileDiagnostic>();
+		if (METHOD_FAILURE.matcher(decompile).find())
+			diagnostics.add(new DecompileDiagnostic(null, "CFR could not reconstruct one or more method bodies.", null));
+		if (sink.getException() != null)
+			diagnostics.add(new DecompileDiagnostic(null, "CFR reported an error while producing source.", sink.getException()));
+		return new DecompileResult(filter(decompile), configHash).withDiagnostics(diagnostics);
 	}
 
 	@Nonnull

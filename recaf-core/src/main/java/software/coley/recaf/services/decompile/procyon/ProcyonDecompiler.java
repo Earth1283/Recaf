@@ -22,12 +22,15 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.decompile.AbstractJvmDecompiler;
+import software.coley.recaf.services.decompile.DecompileDiagnostic;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.json.GsonProvider;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
 import java.io.StringWriter;
+import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Procyon decompiler implementation.
@@ -37,6 +40,7 @@ import java.io.StringWriter;
 @ApplicationScoped
 public class ProcyonDecompiler extends AbstractJvmDecompiler {
 	public static final String NAME = "Procyon";
+	private static final Pattern METHOD_FAILURE = Pattern.compile("(?m)^\\h*// This method could not be decompiled\\.\\h*$");
 	private final ProcyonConfig config;
 
 	/**
@@ -84,9 +88,12 @@ public class ProcyonDecompiler extends AbstractJvmDecompiler {
 		settings.getLanguage().decompileType(ref.resolve(), new PlainTextOutput(writer), decompilationOptions);
 		String decompile = writer.toString();
 		int configHash = getConfig().getHash();
-		if (decompile == null)
+		if (decompile.isBlank())
 			return new DecompileResult(new IllegalStateException("Missing decompilation output"), configHash);
-		return new DecompileResult(decompile, configHash);
+		DecompileResult result = new DecompileResult(decompile, configHash);
+		if (METHOD_FAILURE.matcher(decompile).find())
+			result = result.withDiagnostics(List.of(new DecompileDiagnostic(null, "Procyon could not reconstruct one or more method bodies.", null)));
+		return result;
 	}
 
 	/**

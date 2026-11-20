@@ -147,6 +147,9 @@ public class JvmDecompilerPane extends AbstractDecompilePane {
 	 * with the newly compiled {@link JvmClassInfo}.
 	 */
 	private void save() {
+		if (path == null || decompileInProgress.getValue() || decompileOutputErrored.getValue())
+			return;
+
 		// Pull data from path.
 		JvmClassInfo info = path.getValue().asJvmClass();
 		Workspace workspace = path.getValueOfType(Workspace.class);

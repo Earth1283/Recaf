@@ -5,6 +5,7 @@ import jakarta.annotation.Nullable;
 import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
 import software.coley.recaf.util.StringUtil;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -17,6 +18,7 @@ public class DecompileResult {
 	private final Throwable exception;
 	private final ResultType type;
 	private final int configHash;
+	private final List<DecompileDiagnostic> diagnostics;
 
 	/**
 	 * Constructor for a successful decompilation.
@@ -28,10 +30,7 @@ public class DecompileResult {
 	 * 		Used to determine if cached value in {@link CachedDecompileProperty} is up-to-date with current config.
 	 */
 	public DecompileResult(@Nonnull String text, int configHash) {
-		this.text = text;
-		this.type = ResultType.SUCCESS;
-		this.configHash = configHash;
-		this.exception = null;
+		this(text, null, ResultType.SUCCESS, configHash, List.of());
 	}
 
 	/**
@@ -44,10 +43,7 @@ public class DecompileResult {
 	 * 		Used to determine if cached value in {@link CachedDecompileProperty} is up-to-date with current config.
 	 */
 	public DecompileResult(@Nonnull Throwable exception, int configHash) {
-		this.text = "// " + StringUtil.traceToString(exception).replace("\n", "\n// ");
-		this.type = ResultType.FAILURE;
-		this.configHash = configHash;
-		this.exception = exception;
+		this("// " + StringUtil.traceToString(exception).replace("\n", "\n// "), exception, ResultType.FAILURE, configHash, List.of());
 	}
 
 	/**
@@ -58,10 +54,7 @@ public class DecompileResult {
 	 * 		Used to determine if cached value in {@link CachedDecompileProperty} is up-to-date with current config.
 	 */
 	public DecompileResult(int configHash) {
-		this.text = null;
-		this.type = ResultType.SKIPPED;
-		this.configHash = configHash;
-		this.exception = null;
+		this(null, null, ResultType.SKIPPED, configHash, List.of());
 	}
 
 	/**
@@ -72,10 +65,7 @@ public class DecompileResult {
 	 * 		Decompiled text.
 	 */
 	public DecompileResult(@Nonnull String text) {
-		this.text = text;
-		this.type = ResultType.SKIPPED;
-		this.configHash = 0;
-		this.exception = null;
+		this(text, null, ResultType.SKIPPED, 0, List.of());
 	}
 
 	/**
@@ -89,12 +79,15 @@ public class DecompileResult {
 	 * 		Result type.
 	 * @param configHash
 	 * 		Hash of config used to decompile the code.
+	 * @param diagnostics
+	 * 		Problems reported by the decompiler.
 	 */
-	private DecompileResult(String text, Throwable exception, ResultType type, int configHash) {
+	private DecompileResult(String text, Throwable exception, ResultType type, int configHash, List<DecompileDiagnostic> diagnostics) {
 		this.text = text;
 		this.exception = exception;
 		this.type = type;
 		this.configHash = configHash;
+		this.diagnostics = diagnostics;
 	}
 
 	/**
@@ -105,7 +98,28 @@ public class DecompileResult {
 	 */
 	@Nonnull
 	public DecompileResult withText(@Nonnull String text) {
-		return new DecompileResult(text, exception, type, configHash);
+		return new DecompileResult(text, exception, type, configHash, diagnostics);
+	}
+
+	/**
+	 * @param diagnostics
+	 * 		Problems reported by the decompiler.
+	 *
+	 * @return Copy of result with the supplied diagnostics.
+	 */
+	@Nonnull
+	public DecompileResult withDiagnostics(@Nonnull List<DecompileDiagnostic> diagnostics) {
+		if (this.diagnostics.isEmpty() && diagnostics.isEmpty())
+			return this;
+		return new DecompileResult(text, exception, type, configHash, List.copyOf(diagnostics));
+	}
+
+	/**
+	 * @return Problems reported even when a decompiler returned partial source.
+	 */
+	@Nonnull
+	public List<DecompileDiagnostic> getDiagnostics() {
+		return diagnostics;
 	}
 
 	/**
@@ -152,6 +166,7 @@ public class DecompileResult {
 		if (configHash != that.configHash) return false;
 		if (!Objects.equals(text, that.text)) return false;
 		if (!Objects.equals(exception, that.exception)) return false;
+		if (!diagnostics.equals(that.diagnostics)) return false;
 		return type == that.type;
 	}
 
@@ -161,6 +176,7 @@ public class DecompileResult {
 		result = 31 * result + (exception != null ? exception.hashCode() : 0);
 		result = 31 * result + type.hashCode();
 		result = 31 * result + configHash;
+		result = 31 * result + diagnostics.hashCode();
 		return result;
 	}
 
