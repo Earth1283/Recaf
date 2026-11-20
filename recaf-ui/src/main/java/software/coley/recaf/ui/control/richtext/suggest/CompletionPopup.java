@@ -8,12 +8,15 @@ import javafx.geometry.Bounds;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Node;
 import javafx.scene.control.IndexRange;
+import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseEvent;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.stage.Popup;
 import javafx.stage.Screen;
 import org.fxmisc.richtext.CodeArea;
@@ -122,6 +125,20 @@ public abstract class CompletionPopup<T> {
 
 		// Map the completion values to a nicer display format.
 		listView.setCellFactory(v -> new ListCell<>() {
+			private final Label name = new Label();
+			private final Label detail = new Label();
+			private final HBox row = new HBox(10, name, detail);
+
+			{
+				name.getStyleClass().add("completion-name");
+				name.setMaxWidth(Double.MAX_VALUE);
+				HBox.setHgrow(name, Priority.ALWAYS);
+				detail.getStyleClass().add("completion-detail");
+				detail.setMinWidth(0);
+				row.getStyleClass().add("completion-row");
+				row.prefWidthProperty().bind(widthProperty().subtract(16));
+			}
+
 			@Override
 			protected void updateItem(T item, boolean empty) {
 				super.updateItem(item, empty);
@@ -129,11 +146,28 @@ public abstract class CompletionPopup<T> {
 					setText(null);
 					setGraphic(null);
 				} else {
-					setText(textifier.toText(item));
-					setGraphic(graphifier.toGraphic(item));
+					String text = textifier.toText(item);
+					Node graphic = graphifier.toGraphic(item);
+					String secondary = detail(item);
+					if (secondary == null) {
+						setText(text);
+						setGraphic(graphic);
+					} else {
+						setText(null);
+						name.setText(text);
+						name.setGraphic(graphic);
+						detail.setText(secondary);
+						setGraphic(row);
+					}
 				}
 			}
 		});
+	}
+
+	/** @return Optional secondary text for a completion row. */
+	@Nullable
+	protected String detail(@Nonnull T item) {
+		return null;
 	}
 
 	/**

@@ -19,12 +19,12 @@ import java.util.List;
  */
 public interface TabCompleter<T> extends EditorComponent {
 	/**
-	 * Attempts to fill in the current completion candidate, if one is selected and the tab-completion overlay is active.
+	 * Handles a completion key by accepting a candidate or opening suggestions where supported.
 	 *
 	 * @param event
 	 * 		Key event where {@link KeyCode#TAB} or {@link KeyCode#ENTER} was pressed.
 	 *
-	 * @return {@code true} when a completion is made.
+	 * @return {@code true} when the completer handles the key.
 	 */
 	boolean requestCompletion(@Nonnull KeyEvent event);
 

@@ -4,6 +4,7 @@ import jakarta.annotation.Nonnull;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
 import me.darknet.assembler.backend.dalvik.DalvikTargetContext;
 import me.darknet.assembler.backend.jvm.JvmTargetContext;
 import me.darknet.assembler.query.AssemblyQueries;
@@ -11,6 +12,7 @@ import me.darknet.assembler.target.TargetContext;
 import me.darknet.assembler.query.resolution.Resolution;
 import org.fxmisc.richtext.CharacterHit;
 import org.fxmisc.richtext.CodeArea;
+import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import software.coley.recaf.analytics.logging.DebuggingLogger;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
@@ -19,8 +21,12 @@ import software.coley.recaf.path.AssemblerPathNode;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.cell.context.ContextMenuProviderService;
 import software.coley.recaf.services.cell.context.ContextSource;
+import software.coley.recaf.ui.control.FontIconView;
 import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.control.richtext.source.JavaContextActionSupport;
+import software.coley.recaf.util.Lang;
+
+import java.util.function.IntFunction;
 
 /**
  * Enables context actions on an {@link Editor} within an {@link AssemblerPane}.
@@ -33,11 +39,16 @@ import software.coley.recaf.ui.control.richtext.source.JavaContextActionSupport;
 public class AssemblerContextActionSupport extends AstBuildConsumerComponent {
 	private static final DebuggingLogger logger = Logging.get(AssemblerContextActionSupport.class);
 	private final CellConfigurationService cellConfigurationService;
+	private IntFunction<Runnable> labelRename = offset -> null;
 	private ContextMenu menu;
 
 	@Inject
 	public AssemblerContextActionSupport(@Nonnull CellConfigurationService cellConfigurationService) {
 		this.cellConfigurationService = cellConfigurationService;
+	}
+
+	void setLabelRename(@Nonnull IntFunction<Runnable> labelRename) {
+		this.labelRename = labelRename;
 	}
 
 	@Override
@@ -51,7 +62,7 @@ public class AssemblerContextActionSupport extends AstBuildConsumerComponent {
 			}
 
 			// Check AST model has been generated
-			if (astElements == null) {
+			if (astElements == null || path == null) {
 				logger.warn("Could not request context menu, AST model not available");
 				return;
 			}
@@ -70,6 +81,15 @@ public class AssemblerContextActionSupport extends AstBuildConsumerComponent {
 			Resolution resolution = AssemblyQueries.resolveAt(astElements, hit.getInsertionIndex(), target);
 			AssemblerPathData data = new AssemblerPathData(editor, resolution);
 			menu = cellConfigurationService.contextMenuOf(ContextSource.DECLARATION, new AssemblerPathNode(path, data));
+
+			Runnable rename = labelRename.apply(hit.getInsertionIndex());
+			if (rename != null) {
+				if (menu == null)
+					menu = new ContextMenu();
+				var item = new MenuItem(Lang.get("assembler.rename-label.title"), new FontIconView(CarbonIcons.EDIT));
+				item.setOnAction(event -> rename.run());
+				menu.getItems().add(item);
+			}
 
 			// Show menu
 			if (menu != null && !menu.getItems().isEmpty()) {

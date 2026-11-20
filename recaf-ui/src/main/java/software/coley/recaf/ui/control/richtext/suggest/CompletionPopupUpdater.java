@@ -41,6 +41,10 @@ public class CompletionPopupUpdater<T> implements EventHandler<KeyEvent> {
 		typedCharacter = "";
 		KeyCode code = event.getCode();
 
+		// The assembler handles this shortcut on key press to request completion explicitly.
+		if (code == SPACE && event.isControlDown())
+			return;
+
 		// Remove popup if backspace is pressed.
 		if (code == BACK_SPACE) {
 			// If the popup is shown, one backspace will be consumed, so we must

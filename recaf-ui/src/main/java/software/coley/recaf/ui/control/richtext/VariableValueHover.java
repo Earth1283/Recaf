@@ -2,6 +2,7 @@ package software.coley.recaf.ui.control.richtext;
 
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
+import javafx.css.PseudoClass;
 import javafx.event.EventHandler;
 import javafx.geometry.Bounds;
 import javafx.scene.AccessibleRole;
@@ -21,10 +22,12 @@ import java.util.function.IntFunction;
 
 /** Displays a value resolved at the character under the pointer. */
 public final class VariableValueHover implements EditorComponent {
+	private static final PseudoClass DOCUMENTATION = PseudoClass.getPseudoClass("documentation");
 	private final IntFunction<Preview> resolver;
 	private final Popup popup = new Popup();
 	private final Label declaration = new Label();
 	private final Label value = new Label();
+	private final VBox content = new VBox(4, declaration, value);
 	private final EventHandler<MouseOverTextEvent> showHandler = this::show;
 	private final EventHandler<MouseOverTextEvent> endHandler = event -> hide();
 	private final EventHandler<MouseEvent> pressHandler = event -> hide();
@@ -37,7 +40,6 @@ public final class VariableValueHover implements EditorComponent {
 		this.resolver = resolver;
 		declaration.getStyleClass().add("variable-value-declaration");
 		value.getStyleClass().add("variable-value-content");
-		VBox content = new VBox(4, declaration, value);
 		content.setMaxWidth(400);
 		content.setAccessibleRole(AccessibleRole.TOOLTIP);
 		content.getStyleClass().add("variable-value-hover");
@@ -92,6 +94,7 @@ public final class VariableValueHover implements EditorComponent {
 		if (bounds == null)
 			return;
 
+		content.pseudoClassStateChanged(DOCUMENTATION, preview.documentation());
 		declaration.setText(preview.type() == null ? preview.name() : preview.name() + "  ·  " + preview.type());
 		value.setText(preview.value());
 		popup.show(area, bounds.getMinX(), bounds.getMaxY() + 5);
@@ -118,6 +121,10 @@ public final class VariableValueHover implements EditorComponent {
 		return quote + escaped + quote + (shortened ? "…" : "");
 	}
 
-	/** The name, optional type, and display value for a single variable. */
-	public record Preview(@Nonnull String name, @Nullable String type, @Nonnull String value) {}
+	/** Text to display as a variable value or editor documentation. */
+	public record Preview(@Nonnull String name, @Nullable String type, @Nonnull String value, boolean documentation) {
+		public Preview(@Nonnull String name, @Nullable String type, @Nonnull String value) {
+			this(name, type, value, false);
+		}
+	}
 }

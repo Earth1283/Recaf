@@ -58,6 +58,34 @@
     -fx-text-fill: -color-fg-default;
 }
 
+.variable-value-hover:documentation {
+    -fx-background-radius: 5px, 4px;
+    -fx-padding: 9px 12px;
+}
+.variable-value-hover:documentation .variable-value-declaration {
+    -fx-text-fill: -color-fg-default;
+    -fx-font-weight: bold;
+}
+.variable-value-hover:documentation .variable-value-content {
+    -fx-font-family: system;
+}
+
+.completion-row {
+    -fx-alignment: center-left;
+}
+.completion-name {
+    -fx-font-family: 'JetBrains Mono';
+    -fx-text-fill: -color-cell-fg;
+}
+.completion-detail {
+    -fx-text-fill: -color-fg-subtle;
+    -fx-padding: 0 3px 0 0;
+}
+.list-cell:selected .completion-detail {
+    -fx-text-fill: -color-cell-fg;
+    -fx-opacity: 0.82;
+}
+
 /* Clearly separates filter from the workspace tree */
 .workspace-filter-pane {
     -fx-border-color: -color-border-muted;

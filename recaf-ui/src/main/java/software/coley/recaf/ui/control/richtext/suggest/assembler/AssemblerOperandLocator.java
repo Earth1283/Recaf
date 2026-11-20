@@ -71,7 +71,7 @@ final class AssemblerOperandLocator {
 		}
 
 		Instruction<?> definition = targetContext.instructions().get(mnemonic);
-		if (definition == null)
+		if (definition == null || caret <= argumentsStart)
 			return null;
 		while (argumentsStart < caret && Character.isWhitespace(source.charAt(argumentsStart)))
 			argumentsStart++;
@@ -100,7 +100,7 @@ final class AssemblerOperandLocator {
 	}
 
 	@Nullable
-	private static ASTMethod findMethod(@Nullable List<ASTElement> ast, int caret) {
+	static ASTMethod findMethod(@Nullable List<ASTElement> ast, int caret) {
 		if (ast == null)
 			return null;
 		ASTMethod selected = null;

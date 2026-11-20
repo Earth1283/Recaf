@@ -1180,7 +1180,7 @@ public class Editor extends BorderPane implements Closing {
 	 * @param event
 	 * 		Key event where {@link KeyCode#TAB} or {@link KeyCode#ENTER} was pressed.
 	 *
-	 * @return {@code true} when a completion was made.
+	 * @return {@code true} when the completer handled the key.
 	 */
 	private boolean handleTabCompletion(@Nonnull KeyEvent event) {
 		return tabCompleter != null && tabCompleter.requestCompletion(event);

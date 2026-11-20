@@ -5,7 +5,10 @@ import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
 import jakarta.inject.Inject;
 import javafx.geometry.Side;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
 import me.darknet.assembler.ast.ASTElement;
+import me.darknet.assembler.ast.primitive.ASTLabel;
 import me.darknet.assembler.ast.specific.ASTClass;
 import me.darknet.assembler.ast.specific.ASTField;
 import me.darknet.assembler.ast.specific.ASTInner;
@@ -19,6 +22,7 @@ import me.darknet.assembler.error.Diagnostic;
 import me.darknet.assembler.error.Outcome;
 import me.darknet.assembler.parser.Token;
 import me.darknet.assembler.query.AssemblyQueries;
+import me.darknet.assembler.query.AssemblyUtils;
 import me.darknet.assembler.query.resolution.Resolution;
 import me.darknet.assembler.target.TargetContext;
 import me.darknet.assembler.util.Location;
@@ -58,6 +62,7 @@ import software.coley.recaf.ui.control.richtext.problem.ProblemPhase;
 import software.coley.recaf.ui.control.richtext.problem.ProblemTracking;
 import software.coley.recaf.ui.control.richtext.search.SearchBar;
 import software.coley.recaf.ui.control.richtext.suggest.TabCompletionConfig;
+import software.coley.recaf.ui.control.richtext.suggest.assembler.AssemblerOpcodeHints;
 import software.coley.recaf.ui.control.richtext.suggest.assembler.AssemblerTabCompleter;
 import software.coley.recaf.ui.control.richtext.suggest.typeindex.TypeIndexService;
 import software.coley.recaf.ui.control.richtext.syntax.RegexLanguages;
@@ -89,6 +94,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Dependent
 public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements UpdatableNavigable, ClassNavigable {
 	private static final Logger logger = Logging.get(AssemblerPane.class);
+	private static final KeyCodeCombination RENAME_LABEL = new KeyCodeCombination(KeyCode.F2);
 
 	private final AssemblerPipelineManager pipelineManager;
 	private final AssemblerToolTabs assemblerToolTabs;
@@ -96,7 +102,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	private final WorkspaceSaveService saveService;
 	private final ProblemTracking problemTracking = new ProblemTracking();
 	private final Editor editor = new Editor();
-	private final VariableValueHover variableHover = new VariableValueHover(this::resolveVariableValue);
+	private final VariableValueHover textHover = new VariableValueHover(this::resolveHover);
 	private final AtomicBoolean updateLock = new AtomicBoolean();
 	private AssemblerPipeline<? extends ClassInfo, ? extends ClassResult<?>, ?> pipeline;
 	private AssemblerTabCompleter tabCompleter;
@@ -106,6 +112,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	private List<ASTElement> lastConcreteAst;
 	private long hoverBuildRequest;
 	private HoverAnalysis hoverAnalysis;
+	private ParsedSource parsedSource;
 
 	@Inject
 	public AssemblerPane(@Nonnull AssemblerPipelineManager pipelineManager,
@@ -149,8 +156,12 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 				.successionEnds(Duration.ofMillis(timeToWait))
 				.addObserver(e -> assemble());
 
+		contextActionSupport.setLabelRename(offset -> {
+			var edit = labelRenameAt(editor.getText(), offset);
+			return edit == null ? null : () -> edit.show(editor.getCodeArea());
+		});
 		contextActionSupport.install(editor);
-		variableHover.install(editor);
+		textHover.install(editor);
 		searchBar.install(editor);
 
 		// Context action should be passed along path updates
@@ -160,6 +171,10 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 		setOnKeyPressed(event -> {
 			if (keys.getSave().match(event))
 				assembleAndUpdateWorkspace();
+			else if (editor.getCodeArea().isFocused() && (keys.getRename().match(event) || RENAME_LABEL.match(event))) {
+				renameLabel();
+				event.consume();
+			}
 		});
 	}
 
@@ -315,7 +330,9 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 		super.disable();
 		hoverBuildRequest++;
 		hoverAnalysis = null;
-		variableHover.uninstall(editor);
+		parsedSource = null;
+		textHover.uninstall(editor);
+		editor.setTabCompleter(null);
 		editor.close();
 	}
 
@@ -413,12 +430,14 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 		if (!updateLock.get()) {
 			hoverBuildRequest++;
 			hoverAnalysis = null;
-			variableHover.hide();
+			parsedSource = null;
+			textHover.hide();
 			pipeline = pipelineManager.getPipeline(path);
 
 			// Setup from existing class data from the path.
 			lastAssembledClass = path.getValueOfType(ClassInfo.class);
 			if (tabCompleter != null && lastAssembledClass != null) {
+				tabCompleter.clearAnalysis();
 				tabCompleter.setEditedClass(lastAssembledClass);
 				TargetContext targetContext = lastAssembledClass.isAndroidClass()
 						? DalvikTargetContext.INSTANCE : JvmTargetContext.INSTANCE;
@@ -557,10 +576,15 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 			if (problemTracking.removeByPhase(ProblemPhase.BUILD))
 				FxThreadUtil.run(editor::redrawParagraphGraphics);
 
-			// Skip if any problems remain in the AST
-			if (astResult == null || !astResult.isSuccess() || !problemTracking.getProblemsByPhase(ProblemPhase.LINT).isEmpty())
+			if (astResult == null || !astResult.isSuccess())
 				return;
 			List<ASTElement> concreteAst = astResult.requireValue();
+			FxThreadUtil.run(() -> {
+				if (request == hoverBuildRequest && source.equals(editor.getText()))
+					parsedSource = new ParsedSource(source, concreteAst);
+			});
+			if (!problemTracking.getProblemsByPhase(ProblemPhase.LINT).isEmpty())
+				return;
 
 			// Clear build errors since we are running the build process again.
 			problemTracking.removeByPhase(ProblemPhase.BUILD);
@@ -659,8 +683,10 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 					eachChild(AssemblerBuildConsumer.class, c -> c.consumeClass(result, lastAssembledClass));
 					FxThreadUtil.run(() -> {
 						if (request == hoverBuildRequest && source.equals(editor.getText())) {
-							variableHover.hide();
+							textHover.hide();
 							hoverAnalysis = new HoverAnalysis(source, concreteAst, result);
+							if (tabCompleter != null)
+								tabCompleter.setAnalysis(source, concreteAst, result);
 						}
 					});
 				}
@@ -674,12 +700,81 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	}
 
 	@Nullable
-	private VariableValueHover.Preview resolveVariableValue(int offset) {
+	private VariableValueHover.Preview resolveHover(int offset) {
+		if (tabCompleter != null && tabCompleter.isCompletionActive())
+			return null;
+		String source = editor.getText();
+		TargetContext target = targetContext();
+		AssemblerOpcodeHints.Hint hint = null;
+		String memberSignature = null;
+		ParsedSource parsed = parsedSource;
+		if (parsed != null && parsed.source().equals(source)) {
+			var instruction = AssemblyUtils.findInstructionAt(parsed.ast(), offset);
+			if (instruction != null && !(instruction instanceof ASTLabel)
+					&& offset >= instruction.identifier().range().start()
+					&& offset < instruction.identifier().range().start() + instruction.identifier().content().length()) {
+				hint = AssemblerOpcodeHints.get(target, instruction.identifier().content());
+				memberSignature = AssemblerOpcodeHints.memberSignature(target, instruction);
+			}
+		} else {
+			hint = AssemblerOpcodeHints.at(target, source, offset);
+		}
+		if (hint != null) {
+			String documentation = hint.documentation();
+			if (memberSignature != null)
+				documentation += "\n" + memberSignature;
+			return new VariableValueHover.Preview(hint.syntax(), null, documentation, true);
+		}
+
 		HoverAnalysis snapshot = hoverAnalysis;
-		if (snapshot == null || !snapshot.source().equals(editor.getText()))
+		if (snapshot == null || !snapshot.source().equals(source))
 			return null;
 		return AssemblerVariableValues.resolve(snapshot.ast(), snapshot.result(), offset);
 	}
+
+	private TargetContext targetContext() {
+		ClassInfo classInfo = path == null ? null : path.getValueOfType(ClassInfo.class);
+		return classInfo != null && classInfo.isAndroidClass() ? DalvikTargetContext.INSTANCE : JvmTargetContext.INSTANCE;
+	}
+
+	@Nullable
+	private AssemblerLabelRename.Edit labelRenameAt(String source, int offset) {
+		ParsedSource parsed = parsedSource;
+		return parsed != null && parsed.source().equals(source)
+				? AssemblerLabelRename.resolve(source, parsed.ast(), targetContext(), offset) : null;
+	}
+
+	private void renameLabel() {
+		CodeArea area = editor.getCodeArea();
+		String source = area.getText();
+		int offset = area.getCaretPosition();
+		if (parsedSource != null && parsedSource.source().equals(source)) {
+			var edit = labelRenameAt(source, offset);
+			if (edit != null)
+				edit.show(area);
+			return;
+		}
+		var activePipeline = pipeline;
+		if (activePipeline == null || source.isBlank())
+			return;
+		TargetContext target = targetContext();
+		CompletableFuture.supplyAsync(() -> {
+			var tokens = activePipeline.tokenize(source, "<assembler>");
+			return tokens.isSuccess() ? activePipeline.fullParse(tokens.requireValue()) : null;
+		}).thenAccept(parsed -> FxThreadUtil.run(() -> {
+			if (parsed == null || !parsed.isSuccess() || pipeline != activePipeline || !source.equals(area.getText())
+					|| !area.isFocused() || offset != area.getCaretPosition())
+				return;
+			var edit = AssemblerLabelRename.resolve(source, parsed.requireValue(), target, offset);
+			if (edit != null)
+				edit.show(area);
+		})).exceptionally(error -> {
+			logger.error("Could not resolve label to rename", error);
+			return null;
+		});
+	}
+
+	private record ParsedSource(String source, List<ASTElement> ast) {}
 
 	private record HoverAnalysis(String source, List<ASTElement> ast, ClassResult<?> result) {}
 

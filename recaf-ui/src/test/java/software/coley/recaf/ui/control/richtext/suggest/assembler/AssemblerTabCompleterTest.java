@@ -1,11 +1,21 @@
 package software.coley.recaf.ui.control.richtext.suggest.assembler;
 
 import jakarta.annotation.Nonnull;
+import javafx.animation.PauseTransition;
+import javafx.application.Platform;
+import javafx.scene.control.ListView;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
+import javafx.stage.Popup;
+import javafx.stage.Stage;
+import javafx.stage.Window;
+import javafx.util.Duration;
 import me.darknet.assembler.ast.ASTElement;
 import me.darknet.assembler.ast.specific.ASTMethod;
 import me.darknet.assembler.backend.dalvik.DalvikTargetContext;
 import me.darknet.assembler.backend.jvm.JvmTargetContext;
 import me.darknet.assembler.target.TargetContext;
+import org.fxmisc.richtext.Caret;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
@@ -17,16 +27,22 @@ import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.workspace.WorkspaceManager;
 import software.coley.recaf.test.TestBase;
+import software.coley.recaf.ui.RecafTheme;
+import software.coley.recaf.ui.control.richtext.Editor;
 import software.coley.recaf.ui.control.richtext.suggest.TabCompletionConfig;
 import software.coley.recaf.ui.control.richtext.suggest.typeindex.TypeIndexService;
+import software.coley.recaf.ui.window.RecafScene;
 import software.coley.recaf.workspace.model.BasicWorkspace;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.BasicJvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResourceBuilder;
 
 import java.util.List;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -718,6 +734,111 @@ class AssemblerTabCompleterTest extends TestBase {
 		AssemblerCompletionEngine engine = newEngine(mock(Workspace.class), DalvikTargetContext.INSTANCE);
 		String source = "    code: {\n        ";
 		assertTrue(engine.resolve(source, source.length(), List.of(), null).complete().isEmpty());
+	}
+
+	@Test
+	void keyboardCompletionShowsOpcodeHintsAndWorksWithAndWithoutAnOpenPopup() throws Exception {
+		var completer = new AssemblerTabCompleter(mock(Workspace.class), mock(InheritanceGraph.class),
+				testTypeIndexService(), mock(CellConfigurationService.class), new TabCompletionConfig());
+		String labelSource = """
+				.method public static sample ()V {
+				    code: {
+				        goto Tar
+				    Target:
+				        return
+				    }
+				}
+				""";
+		ASTMethod labelMethod = parseJvmMethod(labelSource);
+		try {
+			Platform.startup(() -> Platform.setImplicitExit(false));
+		} catch (IllegalStateException ignored) {
+			// Another UI test may already have started JavaFX.
+		} catch (UnsupportedOperationException unavailable) {
+			assumeTrue(false, unavailable.getMessage());
+		}
+		String prefix = "code: {\n    ";
+		var setup = new FutureTask<>(() -> {
+			var editor = new Editor();
+			var stage = new Stage();
+			var scene = new RecafScene(editor, 520, 310);
+			scene.setUserAgentStylesheet(new RecafTheme().getUserAgentStylesheet());
+			stage.setScene(scene);
+			var area = editor.getCodeArea();
+			area.getCaretSelectionBind().setShowCaret(Caret.CaretVisibility.ON);
+			area.replaceText(prefix + "\n}");
+			editor.setTabCompleter(completer);
+			stage.show();
+			area.requestFocus();
+			area.moveTo(prefix.length());
+			return stage;
+		});
+		Platform.runLater(setup);
+		Stage stage = setup.get(10, TimeUnit.SECONDS);
+		var task = new FutureTask<Void>(() -> {
+			var editor = (Editor) stage.getScene().getRoot();
+			try {
+				var area = editor.getCodeArea();
+				Runnable pressTab = () -> area.fireEvent(new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.TAB, false, false, false, false));
+				assertTrue(area.getCaretBounds().isPresent(), "Caret must be visible before opening completion");
+				area.fireEvent(new KeyEvent(KeyEvent.KEY_PRESSED, "", "", KeyCode.SPACE, false, true, false, false));
+				area.fireEvent(new KeyEvent(KeyEvent.KEY_RELEASED, "", "", KeyCode.SPACE, false, true, false, false));
+				Popup popup = Window.getWindows().stream()
+						.filter(window -> window instanceof Popup candidate && candidate.getOwnerWindow() == stage)
+						.map(Popup.class::cast).findFirst().orElseThrow();
+				var root = popup.getScene().getRoot();
+				root.applyCss();
+				root.layout();
+				assertNotNull(root.lookup(".completion-detail"));
+				var list = (ListView<?>) root.lookup(".list-view");
+				var selected = (AssemblerCompletion.Opcode) list.getSelectionModel().getSelectedItem();
+				pressTab.run();
+				assertEquals(prefix + selected.text() + "\n}", area.getText());
+
+				String ambiguous = prefix + "invo";
+				area.replaceText(ambiguous + "\n}");
+				area.moveTo(ambiguous.length());
+				pressTab.run();
+				assertTrue(completer.isCompletionActive());
+				assertEquals(ambiguous + "\n}", area.getText());
+				var choice = completer.computeCurrentCompletions().getFirst();
+				pressTab.run();
+				assertEquals(prefix + choice.text() + "\n}", area.getText());
+				assertFalse(completer.isCompletionActive());
+
+				String unique = prefix + "monitoren";
+				area.replaceText(unique + "\n}");
+				area.moveTo(unique.length());
+				pressTab.run();
+				assertEquals(prefix + "monitorenter\n}", area.getText());
+
+				area.replaceText(labelSource);
+				area.moveTo(labelSource.indexOf("goto Tar") + "goto Tar".length());
+				completer.setAst(List.of(labelMethod));
+				pressTab.run();
+				assertEquals(labelSource.replace("goto Tar", "goto Target"), area.getText());
+				completer.clearAst();
+
+				for (String text : List.of(prefix, prefix + "goto")) {
+					area.replaceText(text + "\n}");
+					area.moveTo(text.length());
+					pressTab.run();
+					assertEquals(text + "\t\n}", area.getText());
+					assertFalse(completer.isCompletionActive());
+				}
+			} finally {
+				editor.setTabCompleter(null);
+				editor.close();
+				stage.close();
+			}
+			return null;
+		});
+		Platform.runLater(() -> {
+			var layoutDelay = new PauseTransition(Duration.millis(100));
+			layoutDelay.setOnFinished(event -> task.run());
+			layoutDelay.play();
+		});
+		task.get(10, TimeUnit.SECONDS);
 	}
 
 	@Test

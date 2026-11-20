@@ -81,6 +81,12 @@ final class AssemblerCompletionEngine {
 	@Nonnull
 	AssemblerCompletionContext resolve(@Nonnull String source, int caret, @Nullable List<ASTElement> ast,
 	                                   @Nullable String editedClassName) {
+		return resolve(source, caret, ast, editedClassName, false);
+	}
+
+	@Nonnull
+	AssemblerCompletionContext resolve(@Nonnull String source, int caret, @Nullable List<ASTElement> ast,
+	                                   @Nullable String editedClassName, boolean explicit) {
 		if (caret < 0 || caret > source.length())
 			return new AssemblerCompletionContext.Empty();
 
@@ -106,9 +112,13 @@ final class AssemblerCompletionEngine {
 		String linePrefix = source.substring(lineStart, caret);
 		String partialText = linePrefix.trim();
 
-		// Skip if there is nothing to complete.
-		if (partialText.isEmpty())
+		// Explicit completion can list instructions on a blank line.
+		if (partialText.isEmpty()) {
+			int lineEnd = source.indexOf('\n', caret);
+			if (explicit && source.substring(caret, lineEnd < 0 ? source.length() : lineEnd).isBlank())
+				return new AssemblerCompletionContext.OpcodeToken("", opcodes);
 			return new AssemblerCompletionContext.Empty();
+		}
 
 		// Resolved instructions are routed by their active operand role and schema. Incomplete mnemonics fall
 		// through to opcode completion because they do not yet have an instruction definition.
