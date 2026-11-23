@@ -533,6 +533,18 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 				});
 		if (!retry.getItems().isEmpty())
 			banner.getChildren().add(retry);
+		var managerConfig = decompilerManager.getServiceConfig();
+		if (!managerConfig.getFilterRepairTryCatch().getValue() || !managerConfig.getFilterRepairDebugRanges().getValue()) {
+			Button repair = new Button();
+			repair.getStyleClass().add(Styles.SMALL);
+			repair.textProperty().bind(Lang.getBinding(prefix + "repair-retry"));
+			repair.setOnAction(e -> {
+				managerConfig.getFilterRepairTryCatch().setValue(true);
+				managerConfig.getFilterRepairDebugRanges().setValue(true);
+				decompile();
+			});
+			banner.getChildren().add(repair);
+		}
 		setTop(banner);
 	}
 

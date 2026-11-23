@@ -1,7 +1,9 @@
 package software.coley.recaf.services.transform;
 
+import software.coley.recaf.services.deobfuscation.transform.generic.AlgebraicOpaquePredicateTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.BitwiseFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.DeadPrivateMethodRemovingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.InvokeDynamicInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.EmptyControlFlowRemovingTransformer;
@@ -12,6 +14,7 @@ import software.coley.recaf.services.deobfuscation.transform.generic.GotoInlinin
 import software.coley.recaf.services.deobfuscation.transform.generic.LiteralStackSimplificationTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.TryCatchRepairTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.VariableFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.specific.skid.SkidXorInliningTransformer;
 
@@ -40,7 +43,9 @@ public final class BuiltinTransformationPresets {
 
 	/** Conservative local integer dispatcher unflattening, followed by ordinary folding and cleanup. */
 	public static final TransformationPreset CONTROL_FLOW_SIMPLIFICATION = new TransformationPreset(List.of(
+			new TransformationPreset.TransformerPreset(TryCatchRepairTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(LiteralStackSimplificationTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(AlgebraicOpaquePredicateTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(OpaqueConstantFoldingTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(DispatcherInliningTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(OpaquePredicateFoldingTransformer.class.getName(), Map.of()),
@@ -49,6 +54,31 @@ public final class BuiltinTransformationPresets {
 			new TransformationPreset.TransformerPreset(GotoInliningTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(VariableFoldingTransformer.class.getName(), Map.of())),
 			6, false, TransformationPreset.ScopeMode.NONE, List.of());
+
+	/**
+	 * Broad cleanup preset for obfuscated plugins: repairs obfuscated try-catch blocks, folds algebraic
+	 * predicates and dead constant arithmetic, resolves constant-input helpers and invokedynamic bootstraps,
+	 * simplifies control flow, and prunes dead private decoy methods.
+	 */
+	public static final TransformationPreset OBFUSCATED_PLUGIN_CLEANUP = new TransformationPreset(List.of(
+			new TransformationPreset.TransformerPreset(TryCatchRepairTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(LiteralStackSimplificationTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(AlgebraicOpaquePredicateTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(StaticValueCollectionTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(StaticValueInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(InvokeDynamicInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(CallResultInliningTransformer.class.getName(), Map.of(
+					CallResultInliningTransformer.KEY_ALLOW_UNREACHABLE_UNSUPPORTED, true,
+					CallResultInliningTransformer.KEY_EVALUATE_CLASS_INITIALIZERS, true)),
+			new TransformationPreset.TransformerPreset(BitwiseFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DispatcherInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(OpaquePredicateFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(EmptyControlFlowRemovingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DeadCodeRemovingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(GotoInliningTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(VariableFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(DeadPrivateMethodRemovingTransformer.class.getName(), Map.of())),
+			6, true, TransformationPreset.ScopeMode.NONE, List.of());
 
 	/**
 	 * Folds known integer and long expressions, including reverse, rotations, shifts, and masks.

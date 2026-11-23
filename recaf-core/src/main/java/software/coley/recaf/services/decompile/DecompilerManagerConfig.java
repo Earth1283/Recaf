@@ -34,6 +34,9 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 	private final ObservableBoolean filterSignatures = new ObservableBoolean(false);
 	private final ObservableBoolean filterSynthetics = new ObservableBoolean(false);
 	private final ObservableBoolean filterNonAsciiNames = new ObservableBoolean(false);
+	private final ObservableBoolean filterRepairTryCatch = new ObservableBoolean(true);
+	private final ObservableBoolean filterRepairDebugRanges = new ObservableBoolean(true);
+	private final ObservableBoolean filterRemoveConstantDefinitions = new ObservableBoolean(false);
 
 	@Inject
 	public DecompilerManagerConfig() {
@@ -53,6 +56,9 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 		addValue(new BasicConfigValue<>("filter-illegal-signatures", boolean.class, filterSignatures));
 		addValue(new BasicConfigValue<>("filter-synthetics", boolean.class, filterSynthetics));
 		addValue(new BasicConfigValue<>("filter-names-ascii", boolean.class, filterNonAsciiNames));
+		addValue(new BasicConfigValue<>("filter-repair-try-catch", boolean.class, filterRepairTryCatch));
+		addValue(new BasicConfigValue<>("filter-repair-debug-ranges", boolean.class, filterRepairDebugRanges));
+		addValue(new BasicConfigValue<>("filter-remove-constant-definitions", boolean.class, filterRemoveConstantDefinitions));
 	}
 
 	/**
@@ -165,5 +171,50 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 	@Nonnull
 	public ObservableBoolean getFilterNonAsciiNames() {
 		return filterNonAsciiNames;
+	}
+
+	/**
+	 * @return {@code true} to repair no-op identity-rethrow and degenerate try-catch blocks before decompiling.
+	 */
+	@Nonnull
+	public ObservableBoolean getFilterRepairTryCatch() {
+		return filterRepairTryCatch;
+	}
+
+	/**
+	 * @return {@code true} to repair malformed local-variable debug ranges before decompiling.
+	 */
+	@Nonnull
+	public ObservableBoolean getFilterRepairDebugRanges() {
+		return filterRepairDebugRanges;
+	}
+
+	/**
+	 * @return {@code true} to propagate inlineable constants and remove dead constant definitions in decompiled Java text.
+	 */
+	@Nonnull
+	public ObservableBoolean getFilterRemoveConstantDefinitions() {
+		return filterRemoveConstantDefinitions;
+	}
+
+	/**
+	 * @return Hash of the active filter configuration for decompilation cache invalidation.
+	 */
+	public int computeFilterHash() {
+		int h = Boolean.hashCode(filterDebug.getValue());
+		h = 31 * h + Boolean.hashCode(filterHollow.getValue());
+		h = 31 * h + Boolean.hashCode(filterIllegalAnnotations.getValue());
+		h = 31 * h + Boolean.hashCode(filterDuplicateAnnotations.getValue());
+		h = 31 * h + Boolean.hashCode(filterLongAnnotations.getValue());
+		h = 31 * h + filterLongAnnotationsLength.getValue();
+		h = 31 * h + Boolean.hashCode(filterLongExceptions.getValue());
+		h = 31 * h + filterLongExceptionsLength.getValue();
+		h = 31 * h + Boolean.hashCode(filterSignatures.getValue());
+		h = 31 * h + Boolean.hashCode(filterSynthetics.getValue());
+		h = 31 * h + Boolean.hashCode(filterNonAsciiNames.getValue());
+		h = 31 * h + Boolean.hashCode(filterRepairTryCatch.getValue());
+		h = 31 * h + Boolean.hashCode(filterRepairDebugRanges.getValue());
+		h = 31 * h + Boolean.hashCode(filterRemoveConstantDefinitions.getValue());
+		return h;
 	}
 }

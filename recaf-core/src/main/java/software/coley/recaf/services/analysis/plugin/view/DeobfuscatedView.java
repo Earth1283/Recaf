@@ -3,6 +3,7 @@ package software.coley.recaf.services.analysis.plugin.view;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.deobfuscation.transform.generic.AlgebraicOpaquePredicateTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.DispatcherInliningTransformer;
@@ -16,6 +17,7 @@ import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredi
 import software.coley.recaf.services.deobfuscation.transform.generic.RedundantTryCatchRemovingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.TryCatchRepairTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.VariableFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.specific.dasho.DashOpaqueSeedFoldingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.specific.zkm.ZkmDecryptionCleanupTransformer;
@@ -48,7 +50,9 @@ final class DeobfuscatedView {
 	 * plugin index describes methods by their original signatures.
 	 */
 	static final List<Class<? extends JvmClassTransformer>> PLAN = List.of(
+			TryCatchRepairTransformer.class,
 			LiteralStackSimplificationTransformer.class,
+			AlgebraicOpaquePredicateTransformer.class,
 			StaticValueCollectionTransformer.class,
 			StaticValueInliningTransformer.class,
 			CallResultInliningTransformer.class,

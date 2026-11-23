@@ -114,6 +114,8 @@ public class AnalysisMenu extends WorkspaceAwareMenu {
 						() -> openPreset(BuiltinTransformationPresets.SKIDFUSCATOR_SIMPLIFICATION)),
 				action("flow.simplify", CarbonIcons.DEVELOPMENT,
 						() -> openPreset(BuiltinTransformationPresets.CONTROL_FLOW_SIMPLIFICATION)),
+				action("menu.analysis.clean-obfuscated-plugin", CarbonIcons.DEVELOPMENT,
+						() -> openPreset(BuiltinTransformationPresets.OBFUSCATED_PLUGIN_CLEANUP)),
 				presets);
 		return deobfuscation;
 	}

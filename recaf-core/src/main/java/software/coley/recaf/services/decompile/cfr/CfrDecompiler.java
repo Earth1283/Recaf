@@ -18,7 +18,10 @@ import software.coley.recaf.workspace.model.Workspace;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -30,6 +33,7 @@ import java.util.regex.Pattern;
 public class CfrDecompiler extends AbstractJvmDecompiler {
 	public static final String NAME = "CFR";
 	private static final Pattern METHOD_FAILURE = Pattern.compile("(?m)^\\h*\\* (This method has failed to decompile\\.|Unable to fully structure code)");
+	private static final String TOO_OPTIMISTIC_SWITCH = "SwitchStringRewriter$TooOptimisticMatchException";
 	private final CfrConfig config;
 
 	/**
@@ -56,10 +60,11 @@ public class CfrDecompiler extends AbstractJvmDecompiler {
 		String name = classInfo.getName();
 		ClassSource source = new ClassSource(workspace, classInfo, info -> nestedClassView(workspace, name, info));
 		SinkFactoryImpl sink = new SinkFactoryImpl();
+		Map<String, String> options = config.toMap();
 		CfrDriver driver = new CfrDriver.Builder()
 				.withClassFileSource(source)
 				.withOutputSink(sink)
-				.withOptions(config.toMap())
+				.withOptions(options)
 				.build();
 		driver.analyse(Collections.singletonList(name));
 		String decompile = sink.getDecompilation();
@@ -72,12 +77,38 @@ public class CfrDecompiler extends AbstractJvmDecompiler {
 			});
 			return new DecompileResult(exception, configHash);
 		}
+		if (decompile.contains(TOO_OPTIMISTIC_SWITCH) && !"true".equals(options.get("decodestringswitch"))
+				&& !"false".equals(options.get("decodestringswitch"))) {
+			Map<String, String> retryOptions = new HashMap<>(options);
+			retryOptions.put("decodestringswitch", "false");
+			ClassSource retrySource = new ClassSource(workspace, classInfo, info -> nestedClassView(workspace, name, info));
+			SinkFactoryImpl retrySink = new SinkFactoryImpl();
+			new CfrDriver.Builder()
+					.withClassFileSource(retrySource)
+					.withOutputSink(retrySink)
+					.withOptions(retryOptions)
+					.build()
+					.analyse(Collections.singletonList(name));
+			String retryDecompile = retrySink.getDecompilation();
+			if (retryDecompile != null && countFailures(retryDecompile) < countFailures(decompile)) {
+				decompile = retryDecompile;
+				sink = retrySink;
+			}
+		}
 		var diagnostics = new ArrayList<DecompileDiagnostic>();
 		if (METHOD_FAILURE.matcher(decompile).find())
 			diagnostics.add(new DecompileDiagnostic(null, "CFR could not reconstruct one or more method bodies.", null));
 		if (sink.getException() != null)
 			diagnostics.add(new DecompileDiagnostic(null, "CFR reported an error while producing source.", sink.getException()));
 		return new DecompileResult(filter(decompile), configHash).withDiagnostics(diagnostics);
+	}
+
+	private static int countFailures(@Nonnull String source) {
+		Matcher matcher = METHOD_FAILURE.matcher(source);
+		int count = 0;
+		while (matcher.find())
+			count++;
+		return count;
 	}
 
 	@Nonnull

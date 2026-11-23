@@ -14,7 +14,11 @@ import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.SplitPane;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
 import org.kordamp.ikonli.carbonicons.CarbonIcons;
 import org.objectweb.asm.Type;
@@ -64,6 +68,8 @@ public class JvmExpressionCompilerPane extends AstBuildConsumerComponent {
 	private final Editor javaEditor = new Editor();
 	private final Editor jasmEditor = new Editor();
 	private final Button settingsButton = new Button();
+	private final Button insertButton = new Button();
+	private final Button copyButton = new Button();
 	private final CheckBox classContextCheckBox = new CheckBox();
 	private final CheckBox methodContextCheckBox = new CheckBox();
 	private Popover popover;
@@ -103,10 +109,32 @@ public class JvmExpressionCompilerPane extends AstBuildConsumerComponent {
 		settingsButton.setGraphic(new FontIconView(CarbonIcons.SETTINGS));
 		settingsButton.getStyleClass().addAll(Styles.BUTTON_ICON, Styles.ACCENT, Styles.FLAT);
 		settingsButton.setOnAction(this::showConfiguratorPopover);
-		StackPane stack = new StackPane(javaEditor, settingsButton);
-		SplitPane split = new SplitPane(stack, jasmEditor);
+		insertButton.setGraphic(new FontIconView(CarbonIcons.PASTE));
+		insertButton.getStyleClass().addAll(Styles.BUTTON_ICON, Styles.ACCENT, Styles.FLAT);
+		insertButton.setTooltip(new Tooltip(Lang.get("assembler.action.insert-caret")));
+		insertButton.setDisable(true);
+		insertButton.setOnAction(e -> {
+			if (editor != null)
+				AssemblerEditingActions.insertSnippet(editor.getCodeArea(), jasmEditor.getText());
+		});
+		copyButton.setGraphic(new FontIconView(CarbonIcons.COPY));
+		copyButton.getStyleClass().addAll(Styles.BUTTON_ICON, Styles.ACCENT, Styles.FLAT);
+		copyButton.setTooltip(new Tooltip(Lang.get("menu.edit.copy")));
+		copyButton.setDisable(true);
+		copyButton.setOnAction(e -> {
+			ClipboardContent content = new ClipboardContent();
+			content.putString(jasmEditor.getText());
+			Clipboard.getSystemClipboard().setContent(content);
+		});
+		HBox jasmTools = new HBox(4, insertButton, copyButton);
+		jasmTools.setMaxSize(HBox.USE_PREF_SIZE, HBox.USE_PREF_SIZE);
+		StackPane javaStack = new StackPane(javaEditor, settingsButton);
+		StackPane jasmStack = new StackPane(jasmEditor, jasmTools);
+		SplitPane split = new SplitPane(javaStack, jasmStack);
 		StackPane.setAlignment(settingsButton, Pos.BOTTOM_RIGHT);
 		StackPane.setMargin(settingsButton, new Insets(7));
+		StackPane.setAlignment(jasmTools, Pos.BOTTOM_RIGHT);
+		StackPane.setMargin(jasmTools, new Insets(7));
 		setCenter(split);
 
 		javaEditor.getTextChangeEventStream()
@@ -315,6 +343,9 @@ public class JvmExpressionCompilerPane extends AstBuildConsumerComponent {
 			// Should have a result, but null check just to be safe.
 			String assembly = result.getAssembly();
 			jasmEditor.setText(Objects.requireNonNullElse(assembly, "<no-output>"));
+			boolean hasOutput = assembly != null && !assembly.isBlank();
+			insertButton.setDisable(!hasOutput || editor == null);
+			copyButton.setDisable(!hasOutput);
 		});
 	}
 

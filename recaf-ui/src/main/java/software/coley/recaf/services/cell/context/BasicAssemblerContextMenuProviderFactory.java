@@ -123,6 +123,13 @@ public class BasicAssemblerContextMenuProviderFactory extends AbstractContextMen
 				addUsageMenu(menu, editor, "menu.search.find-usages", variableUsageTargets(reference.method(), targetContext, reference.usage().name()));
 			} else if (resolution instanceof LabelDeclarationResolution declaration) {
 				addUsageMenu(menu, editor, "assembler.variables.usage", labelUsageTargets(declaration.method(), targetContext, declaration.label().name()));
+			} else if (resolution instanceof LabelReferenceResolution reference) {
+				String target = reference.reference().content();
+				if (target != null) {
+					menu.getItems().add(action("menu.goto.label", ARROW_RIGHT, () ->
+							gotoLabelDeclaration(reference.method(), editor.getCodeArea(), target)));
+					addUsageMenu(menu, editor, "assembler.variables.usage", labelUsageTargets(reference.method(), targetContext, target));
+				}
 			} else if (resolution instanceof ClassResolution declaration) {
 				addClassUsages(menu, actions, declaration.klass().getName().literal());
 			} else if (resolution instanceof FieldResolution declaration) {

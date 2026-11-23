@@ -23,6 +23,7 @@ public class JvmAssemblerPipelineConfig extends BasicConfigContainer implements 
 	private final ObservableBoolean tryRangeComments = new ObservableBoolean(true);
 	private final ObservableBoolean recycleConstPool = new ObservableBoolean(false);
 	private final ObservableObject<JvmVariableMode> variableEmissionMode = new ObservableObject<>(JvmVariableMode.ALWAYS_WRITE);
+	private final ObservableBoolean showStackDepthGutter = new ObservableBoolean(true);
 
 
 	@Inject
@@ -33,6 +34,7 @@ public class JvmAssemblerPipelineConfig extends BasicConfigContainer implements 
 		addValue(new BasicConfigValue<>("try-range-comments", boolean.class, tryRangeComments));
 		addValue(new BasicConfigValue<>("recycle-const-pool", boolean.class, recycleConstPool));
 		addValue(new BasicConfigValue<>("variable-emission-mode", JvmVariableMode.class, variableEmissionMode));
+		addValue(new BasicConfigValue<>("show-stack-depth-gutter", boolean.class, showStackDepthGutter));
 	}
 
 	@Override
@@ -65,5 +67,13 @@ public class JvmAssemblerPipelineConfig extends BasicConfigContainer implements 
 	@Nonnull
 	public JvmVariableMode getVariableTableMode() {
 		return variableEmissionMode.getValue();
+	}
+
+	/**
+	 * @return Observable toggle for displaying the stack depth gutter in the JVM assembler.
+	 */
+	@Nonnull
+	public ObservableBoolean getShowStackDepthGutter() {
+		return showStackDepthGutter;
 	}
 }

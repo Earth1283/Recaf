@@ -102,6 +102,19 @@ public class DecompileResult {
 	}
 
 	/**
+	 * @param configHash
+	 * 		New config hash value.
+	 *
+	 * @return Copy of result, with updated config hash.
+	 */
+	@Nonnull
+	DecompileResult withConfigHash(int configHash) {
+		if (this.configHash == configHash)
+			return this;
+		return new DecompileResult(text, exception, type, configHash, diagnostics);
+	}
+
+	/**
 	 * @param diagnostics
 	 * 		Problems reported by the decompiler.
 	 *

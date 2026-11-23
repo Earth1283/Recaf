@@ -15,6 +15,7 @@ import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.services.deobfuscation.transform.specific.skid.SkidInvokeDynamicResolver;
 import software.coley.recaf.services.deobfuscation.transform.specific.zkm.ZkmInvokeDynamicResolver;
 import software.coley.recaf.util.AsmInsnUtil;
+import software.coley.recaf.util.bytecode.TryCatchRepairUtil;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.*;
@@ -48,6 +49,7 @@ public class ObfuscatorFingerprinting {
 
 	public enum Indicator {
 		ALLATORI_DEMO_MARKER(Family.ALLATORI, 85),
+		ALLATORI_STRING_DECODER(Family.ALLATORI, 70),
 		BOZAR_STRING_ARRAY(Family.BOZAR, 85), BOZAR_DUMMY_CLASS(Family.BOZAR, 85),
 		DASHO_SEED_HELPER(Family.DASHO, 60),
 		DPROTECT_STRING_DECODER(Family.DPROTECT, 70),
@@ -57,7 +59,9 @@ public class ObfuscatorFingerprinting {
 		RADON_INT_SHUFFLE(Family.RADON, 75), RADON_LONG_SHUFFLE(Family.RADON, 75),
 		SKID_REFERENCE_BOOTSTRAP(Family.SKIDFUSCATOR, 90), SKID_NATIVE_DRIVER(Family.SKIDFUSCATOR, 35),
 		STRINGER_STACK_TRACE_DECODER(Family.STRINGER, 70),
-		ZELIX_REFERENCE_METADATA(Family.ZELIX, 90);
+		ZELIX_REFERENCE_METADATA(Family.ZELIX, 90),
+		ZELIX_FLOW_RETHROW(Family.ZELIX, 80),
+		ZELIX_PACKED_ARRAY_PARAMS(Family.ZELIX, 70);
 
 		private final Family family;
 		private final int baseConfidence;
@@ -159,6 +163,16 @@ public class ObfuscatorFingerprinting {
 			}
 			if (objectCache && descriptorCache && ZkmInvokeDynamicResolver.hasReferenceMetadata(node))
 				record(Indicator.ZELIX_REFERENCE_METADATA, 1, node.name, node.name + version);
+			int helperRethrows = TryCatchRepairUtil.countHelperRethrowTryCatches(node);
+			if (helperRethrows > 0)
+				record(Indicator.ZELIX_FLOW_RETHROW, helperRethrows, node.name, node.name + version);
+			int packedMethods = 0;
+			for (MethodNode method : node.methods) {
+				if (matchesZelixPackedParams(method))
+					packedMethods++;
+			}
+			if (packedMethods >= 2)
+				record(Indicator.ZELIX_PACKED_ARRAY_PARAMS, packedMethods, node.name, node.name + version);
 			if (matchesNativeLoader(node, sourceFile))
 				record(Indicator.NATIVE_OBFUSCATOR_LOADER, 1, node.name, node.name + version);
 			// DashO's generated helper has only a public static seed supplier and a public static string decoder.
@@ -179,6 +193,7 @@ public class ObfuscatorFingerprinting {
 					recordMethod(Indicator.JOBF_CLASS_LOADER, 1, node, method, version);
 				if (matchesDProtectDecoder(method)) recordMethod(Indicator.DPROTECT_STRING_DECODER, 1, node, method, version);
 				if (matchesStringerDecoder(method)) recordMethod(Indicator.STRINGER_STACK_TRACE_DECODER, 1, node, method, version);
+				if (matchesAllatoriDecoder(method)) recordMethod(Indicator.ALLATORI_STRING_DECODER, 1, node, method, version);
 				int radonInt = 0, radonLong = 0, bozarArrays = 0;
 				for (AbstractInsnNode insn : method.instructions) {
 					switch (insn.getOpcode()) {
@@ -262,6 +277,48 @@ public class ObfuscatorFingerprinting {
 			}
 		}
 		return readsChar && appendsChar && xor;
+	}
+
+	private static boolean matchesAllatoriDecoder(MethodNode method) {
+		if ((method.access & ACC_STATIC) == 0 || !STRING_DECODER.equals(method.desc) || method.instructions == null)
+			return false;
+		boolean toCharArray = false;
+		boolean decLoop = false;
+		boolean xor = false;
+		boolean stackTrace = false;
+		for (AbstractInsnNode insn : method.instructions) {
+			if (insn.getOpcode() == IXOR)
+				xor = true;
+			else if (insn instanceof org.objectweb.asm.tree.IincInsnNode iinc && iinc.incr == -1)
+				decLoop = true;
+			else if (insn instanceof MethodInsnNode call) {
+				if ("java/lang/String".equals(call.owner) && "toCharArray".equals(call.name) && "()[C".equals(call.desc))
+					toCharArray = true;
+				else if (("java/lang/Thread".equals(call.owner) && "getStackTrace".equals(call.name))
+						|| ("java/lang/StackTraceElement".equals(call.owner)
+						&& ("getClassName".equals(call.name) || "getMethodName".equals(call.name))))
+					stackTrace = true;
+			}
+		}
+		return toCharArray && decLoop && xor && stackTrace;
+	}
+
+	private static boolean matchesZelixPackedParams(MethodNode method) {
+		if ((method.access & ACC_STATIC) == 0 || !method.desc.startsWith("([Ljava/lang/Object;)")
+				|| method.instructions == null)
+			return false;
+		boolean unpacksArg0 = false;
+		boolean hasLxor = false;
+		for (AbstractInsnNode insn : method.instructions) {
+			if (insn.getOpcode() == LXOR) {
+				hasLxor = true;
+			} else if (insn.getOpcode() == AALOAD && insn.getPrevious() != null
+					&& isIntLiteral(insn.getPrevious())
+					&& insn.getNext() != null && insn.getNext().getOpcode() == CHECKCAST) {
+				unpacksArg0 = true;
+			}
+		}
+		return unpacksArg0 && hasLxor;
 	}
 
 	private static boolean matchesStringerDecoder(MethodNode method) {

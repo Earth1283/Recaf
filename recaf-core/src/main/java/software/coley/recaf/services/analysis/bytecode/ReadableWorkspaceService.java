@@ -88,8 +88,11 @@ public class ReadableWorkspaceService {
 					StaticValueCollectionTransformer.KEY_MAX_STEPS, maxSteps);
 			List<TransformationPhase> phases = List.of(
 					new TransformationPhase("Fold numeric noise and encoded literals", 2,
-							List.of(LiteralStackSimplificationTransformer.class, SkidXorInliningTransformer.class, OpaqueConstantFoldingTransformer.class,
-									LiteralArrayStringTransformer.class, CallResultInliningTransformer.class, VariableFoldingTransformer.class), new TransformationParameters(values)),
+							List.of(TryCatchRepairTransformer.class, LiteralStackSimplificationTransformer.class,
+									AlgebraicOpaquePredicateTransformer.class, SkidXorInliningTransformer.class,
+									OpaqueConstantFoldingTransformer.class, LiteralArrayStringTransformer.class,
+									CallResultInliningTransformer.class, VariableFoldingTransformer.class),
+							new TransformationParameters(values)),
 					new TransformationPhase("Resolve proven bootstrap targets", 1, InvokeDynamicInliningTransformer.class),
 					new TransformationPhase("Decode strings and simplify control flow", 2,
 							List.of(LiteralStackSimplificationTransformer.class, SkidXorInliningTransformer.class, StaticValueCollectionTransformer.class,

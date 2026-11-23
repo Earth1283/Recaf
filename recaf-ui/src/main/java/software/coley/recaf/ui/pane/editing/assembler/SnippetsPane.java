@@ -40,6 +40,7 @@ import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
 import software.coley.recaf.ui.control.GraphicActionButton;
 import software.coley.recaf.ui.control.richtext.Editor;
+import software.coley.recaf.ui.control.richtext.EditorComponent;
 import software.coley.recaf.ui.control.richtext.bracket.SelectedBracketTracking;
 import software.coley.recaf.ui.control.richtext.syntax.RegexLanguages;
 import software.coley.recaf.ui.control.richtext.syntax.RegexSyntaxHighlighter;
@@ -56,9 +57,10 @@ import java.util.Objects;
  * @author Matt Coley
  */
 @Dependent
-public class SnippetsPane extends StackPane implements SnippetListener, Navigable {
+public class SnippetsPane extends StackPane implements SnippetListener, Navigable, EditorComponent {
 	private final SnippetManager snippetManager;
 	private final Editor editor = new Editor();
+	private final GraphicActionButton btnInsert;
 	private final GraphicActionButton btnSave;
 	private final GraphicActionButton btnNew;
 	private final GraphicActionButton btnDelete;
@@ -66,6 +68,8 @@ public class SnippetsPane extends StackPane implements SnippetListener, Navigabl
 	private final ObservableList<Snippet> snippetList = FXCollections.observableArrayList();
 	private final ObjectProperty<Snippet> currentSnippet = new SimpleObjectProperty<>();
 	private final ComboBox<Snippet> snippetComboBox = new ComboBox<>(snippetList);
+	private final javafx.beans.property.BooleanProperty hasTargetEditor = new javafx.beans.property.SimpleBooleanProperty(false);
+	private Editor targetEditor;
 	private SnippetTarget target;
 
 	@Inject
@@ -84,12 +88,15 @@ public class SnippetsPane extends StackPane implements SnippetListener, Navigabl
 		resetContent();
 
 		// Setup actions
+		btnInsert = new GraphicActionButton(CarbonIcons.PASTE, this::insertSnippetIntoTarget);
+		btnInsert.setTooltip(new javafx.scene.control.Tooltip(Lang.get("assembler.action.insert-caret")));
 		btnSave = new GraphicActionButton(CarbonIcons.SAVE, this::saveSnippet);
 		btnNew = new GraphicActionButton(CarbonIcons.DOCUMENT_ADD, this::newSnippet);
 		btnDelete = new GraphicActionButton(CarbonIcons.TRASH_CAN, this::deleteSnippet);
 		btnLoad = new GraphicActionButton(CarbonIcons.FOLDERS, this::loadSnippet);
-		HBox tools = new HBox(btnSave, btnNew, btnDelete, btnLoad);
+		HBox tools = new HBox(btnInsert, btnSave, btnNew, btnDelete, btnLoad);
 		tools.setSpacing(6);
+		btnInsert.disableProperty().bind(currentSnippet.isNull().or(hasTargetEditor.not()));
 		btnDelete.disableProperty().bind(currentSnippet.isNull());
 		btnSave.disableProperty().bind(currentSnippet.isNull());
 
@@ -252,8 +259,29 @@ public class SnippetsPane extends StackPane implements SnippetListener, Navigabl
 	}
 
 	@Override
+	public void install(@Nonnull Editor editor) {
+		this.targetEditor = editor;
+		hasTargetEditor.set(true);
+	}
+
+	@Override
+	public void uninstall(@Nonnull Editor editor) {
+		if (this.targetEditor == editor) {
+			this.targetEditor = null;
+			hasTargetEditor.set(false);
+		}
+	}
+
+	private void insertSnippetIntoTarget() {
+		if (targetEditor != null && currentSnippet.get() != null)
+			AssemblerEditingActions.insertSnippet(targetEditor.getCodeArea(), editor.getText());
+	}
+
+	@Override
 	public void disable() {
 		snippetManager.removeSnippetListener(this);
+		targetEditor = null;
+		hasTargetEditor.set(false);
 		editor.close();
 	}
 

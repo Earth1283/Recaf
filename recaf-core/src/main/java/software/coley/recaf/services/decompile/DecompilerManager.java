@@ -17,6 +17,8 @@ import software.coley.recaf.info.AndroidClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
 import software.coley.recaf.services.Service;
+import software.coley.recaf.services.decompile.filter.ConstantDefinitionRemovingOutputFilter;
+import software.coley.recaf.services.decompile.filter.DecompilerBytecodeRepairFilter;
 import software.coley.recaf.services.decompile.filter.JvmBytecodeFilter;
 import software.coley.recaf.services.decompile.filter.OutputTextFilter;
 import software.coley.recaf.util.threading.ThreadPoolFactory;
@@ -61,6 +63,8 @@ public class DecompilerManager implements Service {
 	private final DecompilerManagerConfig config;
 	private final ObservableObject<JvmDecompiler> targetJvmDecompiler;
 	private final ObservableObject<AndroidDecompiler> targetAndroidDecompiler;
+	private final DecompilerBytecodeRepairFilter repairFilter;
+	private final ConstantDefinitionRemovingOutputFilter constantDefinitionFilter;
 
 	/**
 	 * @param config
@@ -72,6 +76,10 @@ public class DecompilerManager implements Service {
 	public DecompilerManager(@Nonnull DecompilerManagerConfig config,
 	                         @Nonnull Instance<Decompiler> implementations) {
 		this.config = config;
+		this.repairFilter = new DecompilerBytecodeRepairFilter(this::getServiceConfig);
+		this.constantDefinitionFilter = new ConstantDefinitionRemovingOutputFilter(this::getServiceConfig);
+		addNestedClassFilter(repairFilter);
+		addOutputTextFilter(constantDefinitionFilter);
 
 		// Register implementations
 		for (Decompiler implementation : implementations) {
@@ -135,12 +143,13 @@ public class DecompilerManager implements Service {
 	public CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
 		return CompletableFuture.supplyAsync(() -> {
 			boolean doCache = config.getCacheDecompilations().getValue();
+			int effectiveHash = decompiler.getConfig().getHash() ^ (31 * config.computeFilterHash());
 			if (doCache) {
 				// Check for cached result, returning the cached result if found
-				// and only if the current config matches the one that yielded the cached result.
+				// and only if the current config + filter settings match the ones that yielded the cached result.
 				DecompileResult cachedResult = CachedDecompileProperty.get(classInfo, decompiler);
 				if (cachedResult != null) {
-					if (cachedResult.getConfigHash() == decompiler.getConfig().getHash())
+					if (cachedResult.getConfigHash() == effectiveHash)
 						return cachedResult;
 
 					// Config changed, void the cache.
@@ -162,6 +171,7 @@ public class DecompilerManager implements Service {
 					decompilation = textFilter.filter(workspace, classInfo, decompilation);
 				result = result.withText(decompilation);
 			}
+			result = result.withConfigHash(effectiveHash);
 			if (doCache)
 				CachedDecompileProperty.set(classInfo, decompiler, result);
 			return result;
@@ -415,15 +425,14 @@ public class DecompilerManager implements Service {
 			if (config.getFilterDebug().getValue() && cv == null)
 				cv = cw.get();
 
-			// If no filtering has been requested, we never need to initialize the reader or writer.
-			// Just return the original bytecode passed in.
+			// If no visitor-based filtering has been requested, skip reader/writer and run only the bytecode repair filter.
 			if (cv == null)
-				return bytecode;
+				return repairFilter.filter(workspace, initialClassInfo, bytecode);
 
 			try {
 				int readFlags = config.getFilterDebug().getValue() ? ClassReader.SKIP_DEBUG : 0;
 				reader.get().accept(cv, readFlags);
-				return cw.get().toByteArray();
+				return repairFilter.filter(workspace, initialClassInfo, cw.get().toByteArray());
 			} catch (Throwable t) {
 				logger.error("Error applying filters to class '{}'", initialClassInfo.getName(), t);
 				return bytecode;

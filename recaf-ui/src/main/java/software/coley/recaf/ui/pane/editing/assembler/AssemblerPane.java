@@ -7,6 +7,9 @@ import jakarta.inject.Inject;
 import javafx.geometry.Side;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 import me.darknet.assembler.ast.ASTElement;
 import me.darknet.assembler.ast.primitive.ASTLabel;
 import me.darknet.assembler.ast.specific.ASTClass;
@@ -43,9 +46,11 @@ import software.coley.recaf.path.PathNode;
 import software.coley.recaf.services.assembler.AssemblerPipeline;
 import software.coley.recaf.services.assembler.AssemblerPipelineManager;
 import software.coley.recaf.services.assembler.AssemblyStage;
+import software.coley.recaf.services.assembler.JvmAssemblerPipelineConfig;
 import software.coley.recaf.services.cell.CellConfigurationService;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.inheritance.InheritanceGraphService;
+import software.coley.recaf.services.navigation.Actions;
 import software.coley.recaf.services.navigation.ClassNavigable;
 import software.coley.recaf.services.navigation.NavigationHistoryService;
 import software.coley.recaf.services.navigation.UpdatableNavigable;
@@ -95,11 +100,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements UpdatableNavigable, ClassNavigable {
 	private static final Logger logger = Logging.get(AssemblerPane.class);
 	private static final KeyCodeCombination RENAME_LABEL = new KeyCodeCombination(KeyCode.F2);
+	private static final KeyCodeCombination TOGGLE_COMMENT = new KeyCodeCombination(KeyCode.SLASH, KeyCombination.SHORTCUT_DOWN);
+	private static final KeyCodeCombination DUPLICATE_LINE = new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN);
+	private static final KeyCodeCombination MOVE_LINE_UP = new KeyCodeCombination(KeyCode.UP, KeyCombination.ALT_DOWN);
+	private static final KeyCodeCombination MOVE_LINE_DOWN = new KeyCodeCombination(KeyCode.DOWN, KeyCombination.ALT_DOWN);
+	private static final KeyCodeCombination NOP_INSTRUCTIONS = new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN);
 
 	private final AssemblerPipelineManager pipelineManager;
 	private final AssemblerToolTabs assemblerToolTabs;
 	private final NavigationHistoryService navigationHistoryService;
+	private final WorkspaceManager workspaceManager;
 	private final WorkspaceSaveService saveService;
+	private final Actions actions;
+	private final AssemblerStackDepthFactory stackDepthFactory;
 	private final ProblemTracking problemTracking = new ProblemTracking();
 	private final Editor editor = new Editor();
 	private final VariableValueHover textHover = new VariableValueHover(this::resolveHover);
@@ -116,6 +129,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 
 	@Inject
 	public AssemblerPane(@Nonnull AssemblerPipelineManager pipelineManager,
+	                     @Nonnull JvmAssemblerPipelineConfig jvmConfig,
 	                     @Nonnull AssemblerToolTabs assemblerToolTabs,
 	                     @Nonnull AssemblerContextActionSupport contextActionSupport,
 	                     @Nonnull NavigationHistoryService navigationHistoryService,
@@ -128,13 +142,17 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	                     @Nonnull CellConfigurationService cellConfigurationService,
 	                     @Nonnull TypeIndexService typeIndexService,
 	                     @Nonnull TabCompletionConfig tabCompletionConfig,
-	                     @Nonnull TextConfig textConfig) {
+	                     @Nonnull TextConfig textConfig,
+	                     @Nonnull Actions actions) {
 		super(Side.BOTTOM);
 
 		this.pipelineManager = pipelineManager;
 		this.assemblerToolTabs = assemblerToolTabs;
 		this.navigationHistoryService = navigationHistoryService;
+		this.workspaceManager = workspaceManager;
 		this.saveService = saveService;
+		this.actions = actions;
+		this.stackDepthFactory = new AssemblerStackDepthFactory(jvmConfig);
 
 		assemblerToolTabs.setOwner(this);
 
@@ -152,6 +170,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 		editor.setSyntaxHighlighter(new RegexSyntaxHighlighter(RegexLanguages.getJasmLanguage()));
 		editor.setProblemTracking(problemTracking);
 		editor.getRootLineGraphicFactory().addDefaultCodeGraphicFactories();
+		editor.getRootLineGraphicFactory().addLineGraphicFactory(stackDepthFactory);
 		editor.getTextChangeEventStream()
 				.successionEnds(Duration.ofMillis(timeToWait))
 				.addObserver(e -> assemble());
@@ -160,6 +179,8 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 			var edit = labelRenameAt(editor.getText(), offset);
 			return edit == null ? null : () -> edit.show(editor.getCodeArea());
 		});
+		contextActionSupport.setNopReplace(() -> applyEdit(AssemblerEditingActions.replaceInstructionsWithNop(
+				editor.getText(), editor.getCodeArea().getSelection().getStart(), editor.getCodeArea().getSelection().getEnd())));
 		contextActionSupport.install(editor);
 		textHover.install(editor);
 		searchBar.install(editor);
@@ -168,12 +189,44 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 		children.add(contextActionSupport);
 		children.add(assemblerToolTabs);
 
+		editor.getCodeArea().addEventHandler(MouseEvent.MOUSE_CLICKED, event -> {
+			if (event.getButton() == MouseButton.PRIMARY && event.isShortcutDown()) {
+				if (navigateAtCaret())
+					event.consume();
+			}
+		});
+
 		setOnKeyPressed(event -> {
-			if (keys.getSave().match(event))
+			if (keys.getSave().match(event)) {
 				assembleAndUpdateWorkspace();
-			else if (editor.getCodeArea().isFocused() && (keys.getRename().match(event) || RENAME_LABEL.match(event))) {
-				renameLabel();
-				event.consume();
+			} else if (editor.getCodeArea().isFocused()) {
+				if (keys.getRename().match(event) || RENAME_LABEL.match(event)) {
+					renameLabel();
+					event.consume();
+				} else if (keys.getGoto().match(event)) {
+					if (navigateAtCaret())
+						event.consume();
+				} else if (TOGGLE_COMMENT.match(event)) {
+					var sel = editor.getCodeArea().getSelection();
+					applyEdit(AssemblerEditingActions.toggleLineComment(editor.getText(), sel.getStart(), sel.getEnd()));
+					event.consume();
+				} else if (DUPLICATE_LINE.match(event)) {
+					var sel = editor.getCodeArea().getSelection();
+					applyEdit(AssemblerEditingActions.duplicateSelectionOrLine(editor.getText(), sel.getStart(), sel.getEnd()));
+					event.consume();
+				} else if (MOVE_LINE_UP.match(event)) {
+					var sel = editor.getCodeArea().getSelection();
+					applyEdit(AssemblerEditingActions.moveLines(editor.getText(), sel.getStart(), sel.getEnd(), true));
+					event.consume();
+				} else if (MOVE_LINE_DOWN.match(event)) {
+					var sel = editor.getCodeArea().getSelection();
+					applyEdit(AssemblerEditingActions.moveLines(editor.getText(), sel.getStart(), sel.getEnd(), false));
+					event.consume();
+				} else if (NOP_INSTRUCTIONS.match(event)) {
+					var sel = editor.getCodeArea().getSelection();
+					applyEdit(AssemblerEditingActions.replaceInstructionsWithNop(editor.getText(), sel.getStart(), sel.getEnd()));
+					event.consume();
+				}
 			}
 		});
 	}
@@ -331,6 +384,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 		hoverBuildRequest++;
 		hoverAnalysis = null;
 		parsedSource = null;
+		stackDepthFactory.clear();
 		textHover.uninstall(editor);
 		editor.setTabCompleter(null);
 		editor.close();
@@ -431,6 +485,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 			hoverBuildRequest++;
 			hoverAnalysis = null;
 			parsedSource = null;
+			stackDepthFactory.clear();
 			textHover.hide();
 			pipeline = pipelineManager.getPipeline(path);
 
@@ -685,6 +740,7 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 						if (request == hoverBuildRequest && source.equals(editor.getText())) {
 							textHover.hide();
 							hoverAnalysis = new HoverAnalysis(source, concreteAst, result);
+							stackDepthFactory.update(concreteAst, result);
 							if (tabCompleter != null)
 								tabCompleter.setAnalysis(source, concreteAst, result);
 						}
@@ -735,6 +791,21 @@ public class AssemblerPane extends AbstractContentPane<PathNode<?>> implements U
 	private TargetContext targetContext() {
 		ClassInfo classInfo = path == null ? null : path.getValueOfType(ClassInfo.class);
 		return classInfo != null && classInfo.isAndroidClass() ? DalvikTargetContext.INSTANCE : JvmTargetContext.INSTANCE;
+	}
+
+	private void applyEdit(@Nonnull AssemblerEditingActions.TextEdit edit) {
+		AssemblerEditingActions.apply(editor.getCodeArea(), edit);
+	}
+
+	private boolean navigateAtCaret() {
+		List<ASTElement> ast = parsedSource != null && parsedSource.source().equals(editor.getText())
+				? parsedSource.ast()
+				: lastConcreteAst;
+		Workspace workspace = path != null ? path.getValueOfType(Workspace.class) : workspaceManager.getCurrent();
+		if (ast == null || workspace == null)
+			return false;
+		AssemblerNavigation.Target target = AssemblerNavigation.resolve(ast, targetContext(), editor.getCodeArea().getCaretPosition());
+		return target != null && AssemblerNavigation.navigate(target, workspace, actions, editor.getCodeArea());
 	}
 
 	@Nullable

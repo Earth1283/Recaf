@@ -40,6 +40,7 @@ public class AssemblerContextActionSupport extends AstBuildConsumerComponent {
 	private static final DebuggingLogger logger = Logging.get(AssemblerContextActionSupport.class);
 	private final CellConfigurationService cellConfigurationService;
 	private IntFunction<Runnable> labelRename = offset -> null;
+	private Runnable nopReplace;
 	private ContextMenu menu;
 
 	@Inject
@@ -49,6 +50,10 @@ public class AssemblerContextActionSupport extends AstBuildConsumerComponent {
 
 	void setLabelRename(@Nonnull IntFunction<Runnable> labelRename) {
 		this.labelRename = labelRename;
+	}
+
+	void setNopReplace(@Nonnull Runnable nopReplace) {
+		this.nopReplace = nopReplace;
 	}
 
 	@Override
@@ -89,6 +94,14 @@ public class AssemblerContextActionSupport extends AstBuildConsumerComponent {
 				var item = new MenuItem(Lang.get("assembler.rename-label.title"), new FontIconView(CarbonIcons.EDIT));
 				item.setOnAction(event -> rename.run());
 				menu.getItems().add(item);
+			}
+			if (nopReplace != null && (area.getSelection().getLength() > 0
+					|| resolution instanceof me.darknet.assembler.query.resolution.InstructionResolution)) {
+				if (menu == null)
+					menu = new ContextMenu();
+				var nopItem = new MenuItem(Lang.get("assembler.action.nop"), new FontIconView(CarbonIcons.ERASE));
+				nopItem.setOnAction(event -> nopReplace.run());
+				menu.getItems().add(nopItem);
 			}
 
 			// Show menu
