@@ -20,6 +20,8 @@ import software.coley.observables.ObservableObject;
 import software.coley.recaf.analytics.logging.Logging;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.decompile.DecompileDiagnostic;
+import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
 import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.workspace.WorkspaceManager;
@@ -41,17 +43,20 @@ import software.coley.recaf.workspace.model.resource.WorkspaceFileResource;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipException;
 import java.util.zip.ZipOutputStream;
 
 /**
@@ -84,6 +89,8 @@ public class DecompileAllPopup extends RecafStage {
 		Label pathLabel = new BoundLabel(Lang.getBinding("menu.file.decompileall.path"));
 		ObservableComboBox<JvmDecompiler> decompilerCombo = new ObservableComboBox<>(decompilerProperty, decompilerManager.getJvmDecompilers());
 		ProgressBar progress = new ProgressBar(0);
+		Label status = new Label();
+		status.setWrapText(true);
 		Button pathButton = new ActionButton(CarbonIcons.EDIT, pathProperty.map(Path::toString), () -> {
 			FileChooser chooser = new FileChooserBuilder()
 					.setInitialFileName(defaultName)
@@ -94,7 +101,7 @@ public class DecompileAllPopup extends RecafStage {
 			File file = chooser.showSaveDialog(getScene().getWindow());
 			if (file != null) {
 				String parent = file.getParent();
-				if (parent != null) recentFilesConfig.getLastWorkspaceOpenDirectory().setValue(parent);
+				if (parent != null) recentFilesConfig.getLastWorkspaceExportDirectory().setValue(parent);
 				pathProperty.set(file.toPath());
 			}
 		});
@@ -102,6 +109,7 @@ public class DecompileAllPopup extends RecafStage {
 			try {
 				inProgressProperty.setValue(true);
 				progress.setProgress(0);
+				status.setText("");
 
 				// Determine which classes to decompile.
 				//
@@ -131,66 +139,60 @@ public class DecompileAllPopup extends RecafStage {
 					}
 				}
 
-				// Determine delta of each decompilation
 				int targetCount = targetClasses.size();
 				if (targetCount == 0) {
-					logger.warn("No classes could be selected for decompilation");
+					status.setText(Lang.get("menu.file.decompileall.empty"));
 					inProgressProperty.setValue(false);
-					progress.setProgress(1);
 					return;
 				}
-				AtomicInteger actionedClasses = new AtomicInteger(targetCount);
 
-				// Decompile all classes. Results arrive on decompiler threads, possibly several at once.
-				JvmDecompiler decompiler = decompilerProperty.getValue();
 				Path path = pathProperty.get();
-				ArchiveSink archive;
-				try {
-					archive = new ArchiveSink(path);
-				} catch (IOException ex) {
-					logger.error("Failed to open '{}' for writing decompiled classes", path, ex);
-					inProgressProperty.setValue(false);
-					return;
-				}
-				targetClasses.forEach(cls -> {
-					String name = cls.getName();
-					decompilerManager.decompile(decompiler, workspace, cls)
-							.orTimeout(decompilerPaneConfig.getTimeoutSeconds().getValue(), TimeUnit.SECONDS)
-							.handle((result, error) -> {
-								// 'handle' runs for failures and timeouts too, so every class is counted.
-								if (error != null) {
-									logger.error("Failed to decompile '{}'", name, error);
-								} else if (result.getException() != null) {
-									logger.error("Failed to decompile '{}'", name, result.getException());
-								} else if (result.getText() != null) {
-									archive.write(name + ".java", result.getText());
-								}
+				ArchiveSink archive = new ArchiveSink(path);
+				Duration timeout = Duration.ofSeconds(decompilerPaneConfig.getTimeoutSeconds().getValue());
+				decompilerManager.decompileBatch(decompilerProperty.getValue(), workspace, targetClasses, timeout, (info, result) -> {
+					int oldPercent = 100 * archive.processed / targetCount;
+					try {
+						archive.accept(info, result);
+					} catch (IOException ex) {
+						throw new UncheckedIOException(ex);
+					}
+					int percent = 100 * ++archive.processed / targetCount;
+					if (percent != oldPercent)
+						FxThreadUtil.run(() -> progress.setProgress(percent / 100.0));
+				}).whenCompleteAsync((ignored, error) -> {
+					try (archive) {
+						if (error != null)
+							throw new IllegalStateException("Could not process decompilation results", error);
+						archive.publish();
+					} catch (Exception ex) {
+						logger.error("Failed to export decompiled classes to '{}'", path, ex);
+						FxThreadUtil.run(() -> {
+							status.setText(Lang.get("menu.file.decompileall.error"));
+							inProgressProperty.setValue(false);
+						});
+						return;
+					}
 
-								// Only count the class once its output is written, so that whichever class finishes
-								// last closes the archive after all the others are in it.
-								int remaining = actionedClasses.decrementAndGet();
-								if (remaining == 0)
-									archive.close();
-								FxThreadUtil.run(() -> {
-									progress.setProgress(1 - (actionedClasses.doubleValue() / targetCount));
-									if (remaining == 0)
-										inProgressProperty.setValue(false);
-								});
-								return null;
-							});
+					FxThreadUtil.run(() -> {
+						inProgressProperty.setValue(false);
+						if (archive.written == 0)
+							status.setText(Lang.get("menu.file.decompileall.nooutput"));
+						else if (archive.written < targetCount || archive.withDiagnostics != 0)
+							status.setText(String.format(Lang.get("menu.file.decompileall.partial"),
+									archive.written, targetCount, archive.withDiagnostics));
+						else
+							hide();
+					});
 				});
 			} catch (Throwable t) {
 				logger.error("Failed to schedule all classes for decompilation", t);
+				status.setText(Lang.get("menu.file.decompileall.error"));
 				inProgressProperty.setValue(false);
 			}
 		});
 		decompileButton.disableProperty().bind(pathProperty.isNull().or(inProgressProperty));
-
-		// Hide when done
-		progress.progressProperty().addListener((ob, old, cur) -> {
-			if (cur.doubleValue() >= 1)
-				hide();
-		});
+		pathButton.disableProperty().bind(inProgressProperty);
+		decompilerCombo.disableProperty().bind(inProgressProperty);
 
 		// Layout
 		GridPane layout = new GridPane(8, 8);
@@ -209,6 +211,7 @@ public class DecompileAllPopup extends RecafStage {
 		layout.add(pathButton, 1, 1);
 		layout.add(decompileButton, 1, 2);
 		layout.add(progress, 0, 3, 2, 1);
+		layout.add(status, 0, 4, 2, 1);
 		layout.setPadding(new Insets(10));
 		layout.setAlignment(Pos.TOP_CENTER);
 
@@ -243,47 +246,101 @@ public class DecompileAllPopup extends RecafStage {
 	}
 
 	/**
-	 * Writes decompiled classes into the output archive as they arrive, so that the sources of a large workspace are
-	 * never all held in memory at once.
+	 * Stages a streaming source archive beside its destination. The batch coordinator is the sole writer.
 	 */
-	private static final class ArchiveSink {
+	static final class ArchiveSink implements AutoCloseable {
 		private final Path path;
-		private final ZipOutputStream zip;
-		private boolean failed;
+		private final Set<String> entries = new HashSet<>();
+		private final StringBuilder report = new StringBuilder();
+		private Path staged;
+		private ZipOutputStream zip;
+		private int processed;
+		private int written;
+		private int withDiagnostics;
 
-		private ArchiveSink(@Nonnull Path path) throws IOException {
-			this.path = path;
-			zip = new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(path)));
+		ArchiveSink(@Nonnull Path path) {
+			this.path = path.toAbsolutePath().normalize();
 		}
 
-		private synchronized void write(@Nonnull String entryName, @Nonnull String text) {
-			if (failed)
-				return;
-			try {
-				zip.putNextEntry(new ZipEntry(entryName));
-			} catch (ZipException ex) {
-				// A duplicate name is rejected before anything is written, so the archive is still usable.
-				logger.warn("Skipping duplicate entry '{}' in '{}'", entryName, path);
-				return;
-			} catch (IOException ex) {
-				failed = true;
-				logger.error("Failed to write decompiled classes to '{}'", path, ex);
+		void accept(@Nonnull JvmClassInfo info, @Nonnull DecompileResult result) throws IOException {
+			String name = info.getName();
+			if (result.getType() != DecompileResult.ResultType.SUCCESS || result.getText() == null) {
+				Throwable error = result.getException();
+				recordFailure(name, error == null ? "No source returned" : error.toString());
 				return;
 			}
-			try {
-				zip.write(text.getBytes(StandardCharsets.UTF_8));
-				zip.closeEntry();
-			} catch (IOException ex) {
-				failed = true;
-				logger.error("Failed to write decompiled classes to '{}'", path, ex);
+
+			if (!isSafeClassName(name)) {
+				recordFailure(name, "Invalid archive entry name");
+				return;
+			}
+			String entryName = name + ".java";
+			if (!entries.add(entryName)) {
+				recordFailure(name, "Duplicate archive entry");
+				return;
+			}
+
+			write(entryName, result.getText());
+			written++;
+			if (!result.getDiagnostics().isEmpty()) {
+				withDiagnostics++;
+				report.append(name).append(" was exported with diagnostics:\n");
+				for (DecompileDiagnostic diagnostic : result.getDiagnostics()) {
+					report.append("  ");
+					DecompileDiagnostic.Method method = diagnostic.method();
+					if (method != null)
+						report.append(method.name()).append(method.descriptor()).append(": ");
+					report.append(diagnostic.message()).append('\n');
+				}
 			}
 		}
 
-		private synchronized void close() {
+		private static boolean isSafeClassName(@Nonnull String name) {
+			if (name.indexOf('\\') >= 0 || name.indexOf(':') >= 0 || name.indexOf(0) >= 0)
+				return false;
+			for (String component : name.split("/", -1))
+				if (component.isEmpty() || component.equals(".") || component.equals(".."))
+					return false;
+			return true;
+		}
+
+		private void recordFailure(@Nonnull String name, @Nonnull String reason) {
+			report.append(name).append(" was skipped: ").append(reason).append('\n');
+			logger.warn("Skipping '{}' in '{}': {}", name, path, reason);
+		}
+
+		private void write(@Nonnull String entryName, @Nonnull String text) throws IOException {
+			if (zip == null) {
+				staged = Files.createTempFile(path.getParent(), ".recaf-decompile-", ".zip");
+				zip = new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(staged)));
+			}
+			zip.putNextEntry(new ZipEntry(entryName));
+			zip.write(text.getBytes(StandardCharsets.UTF_8));
+			zip.closeEntry();
+		}
+
+		void publish() throws IOException {
+			if (zip == null)
+				return;
+			if (!report.isEmpty())
+				write("recaf-decompile-report.txt", report.toString());
+			zip.close();
+			zip = null;
 			try {
-				zip.close();
-			} catch (IOException ex) {
-				logger.error("Failed to finish archive of decompiled classes at '{}'", path, ex);
+				Files.move(staged, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			} catch (AtomicMoveNotSupportedException ex) {
+				Files.move(staged, path, StandardCopyOption.REPLACE_EXISTING);
+			}
+		}
+
+		@Override
+		public void close() throws IOException {
+			try {
+				if (zip != null)
+					zip.close();
+			} finally {
+				if (staged != null)
+					Files.deleteIfExists(staged);
 			}
 		}
 	}

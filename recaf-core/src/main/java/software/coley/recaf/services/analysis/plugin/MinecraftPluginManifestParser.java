@@ -1,5 +1,15 @@
 package software.coley.recaf.services.analysis.plugin;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.Strictness;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import org.slf4j.Logger;
@@ -12,6 +22,7 @@ import org.yaml.snakeyaml.nodes.ScalarNode;
 import org.yaml.snakeyaml.nodes.SequenceNode;
 import software.coley.recaf.analytics.logging.Logging;
 
+import java.io.IOException;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -19,7 +30,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Parser for {@code plugin.yml}, {@code paper-plugin.yml}, and {@code bungee.yml} manifests.
+ * Parser for Bukkit, Paper, BungeeCord, and Velocity plugin manifests.
  * <p>
  * Manifests come from arbitrary jars, so they are untrusted input. The YAML is only ever read as a node tree which
  * never constructs objects from tags, and parsing is bounded in size, nesting depth, and alias expansion.
@@ -31,6 +42,12 @@ public final class MinecraftPluginManifestParser {
 	private static final int MAX_MANIFEST_CHARS = 1 << 20;
 	private static final int MAX_NESTING_DEPTH = 32;
 	private static final int MAX_ALIASES = 16;
+	static final Gson VELOCITY_JSON = new GsonBuilder()
+			.setStrictness(Strictness.STRICT)
+			.setPrettyPrinting()
+			.serializeNulls()
+			.disableHtmlEscaping()
+			.create();
 
 	private MinecraftPluginManifestParser() {}
 
@@ -64,6 +81,9 @@ public final class MinecraftPluginManifestParser {
 		// Strip the BOM if present, the platforms themselves read the file as UTF-8 and tolerate it.
 		if (!text.isEmpty() && text.charAt(0) == '﻿')
 			text = text.substring(1);
+
+		if (platform == MinecraftPluginPlatform.VELOCITY)
+			return parseVelocity(text);
 
 		Node root;
 		try {
@@ -126,6 +146,59 @@ public final class MinecraftPluginManifestParser {
 				List.copyOf(loadBefore),
 				keys(get(map, "commands")),
 				keys(get(map, "permissions"))));
+	}
+
+	@Nonnull
+	private static Optional<MinecraftPluginManifest> parseVelocity(@Nonnull String text) {
+		JsonObject object = readVelocityJson(text);
+		if (object == null)
+			return Optional.empty();
+
+		String id = jsonString(object, "id");
+		String main = jsonString(object, "main");
+		if (id == null || main == null)
+			return Optional.empty();
+
+		List<String> required = new ArrayList<>();
+		List<String> optional = new ArrayList<>();
+		if (object.get("dependencies") instanceof JsonArray dependencies) {
+			for (JsonElement element : dependencies) {
+				if (!(element instanceof JsonObject dependency))
+					continue;
+				String dependencyId = jsonString(dependency, "id");
+				if (dependencyId == null)
+					continue;
+				boolean isOptional = dependency.get("optional") instanceof JsonPrimitive flag && flag.isBoolean() && flag.getAsBoolean();
+				(isOptional ? optional : required).add(dependencyId);
+			}
+		}
+		String name = jsonString(object, "name");
+		return Optional.of(new MinecraftPluginManifest(MinecraftPluginPlatform.VELOCITY,
+				name == null ? id : name, jsonString(object, "version"), main.replace('.', '/'),
+				null, null, null, List.copyOf(required), List.copyOf(optional), List.of(), List.of(), List.of()));
+	}
+
+	@Nullable
+	static JsonObject readVelocityJson(@Nonnull String text) {
+		if (text.length() > MAX_MANIFEST_CHARS)
+			return null;
+		try (JsonReader reader = VELOCITY_JSON.newJsonReader(new StringReader(text))) {
+			reader.setNestingLimit(MAX_NESTING_DEPTH);
+			JsonObject object = VELOCITY_JSON.fromJson(reader, JsonObject.class);
+			return reader.peek() == JsonToken.END_DOCUMENT ? object : null;
+		} catch (IOException | JsonParseException ex) {
+			logger.debug("Could not parse 'velocity-plugin.json': {}", ex.getMessage());
+			return null;
+		}
+	}
+
+	@Nullable
+	static String jsonString(@Nonnull JsonObject object, @Nonnull String key) {
+		if (object.get(key) instanceof JsonPrimitive value && value.isString()) {
+			String text = value.getAsString().trim();
+			return text.isEmpty() ? null : text;
+		}
+		return null;
 	}
 
 	@Nullable

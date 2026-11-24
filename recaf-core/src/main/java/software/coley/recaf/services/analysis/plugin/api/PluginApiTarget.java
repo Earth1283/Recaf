@@ -104,13 +104,14 @@ public enum PluginApiTarget {
 	 * @param platform
 	 * 		Platform a plugin is written for.
 	 *
-	 * @return API the plugin is written against.
+	 * @return API the plugin is written against, or {@code null} if automatic attachment is unsupported.
 	 */
-	@Nonnull
+	@Nullable
 	public static PluginApiTarget forPlatform(@Nonnull MinecraftPluginPlatform platform) {
 		return switch (platform) {
 			case BUKKIT, PAPER -> PAPER;
 			case BUNGEE -> BUNGEE;
+			case VELOCITY -> null;
 		};
 	}
 

@@ -85,7 +85,8 @@ public class MinecraftPluginApiService implements Service {
 		Set<PluginApiRequest> requests = new LinkedHashSet<>();
 		analysisService.findManifestsRecursive(workspace, workspace.getPrimaryResource()).forEach(located -> {
 			PluginApiTarget target = PluginApiTarget.forPlatform(located.manifest().platform());
-			requests.add(new PluginApiRequest(target, located.manifest().apiVersion()));
+			if (target != null)
+				requests.add(new PluginApiRequest(target, located.manifest().apiVersion()));
 		});
 		return new ArrayList<>(requests);
 	}

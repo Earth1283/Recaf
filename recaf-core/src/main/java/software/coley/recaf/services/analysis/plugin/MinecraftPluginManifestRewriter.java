@@ -1,5 +1,6 @@
 package software.coley.recaf.services.analysis.plugin;
 
+import com.google.gson.JsonObject;
 import jakarta.annotation.Nonnull;
 
 import java.util.ArrayList;
@@ -12,13 +13,14 @@ import java.util.regex.Pattern;
 /**
  * Updates the class names in a plugin manifest after classes have been renamed.
  * <p>
- * The text is edited in place rather than being parsed and written back out. A manifest is hand-written, and rewriting
+ * YAML text is edited in place rather than being parsed and written back out. A YAML manifest is hand-written, and rewriting
  * it from a data model would discard its comments, ordering, and quoting. Only the value of the top-level
  * {@code main}, {@code bootstrapper}, and {@code loader} keys is touched.
  * <p>
  * The edit is line based, so unusual layouts <i>(flow-style maps, multi-line scalars)</i> are not recognized. To avoid
  * silently leaving a stale name behind, the result is checked against the manifest parser and anything that should have
- * been updated, but was not, is reported in {@link Result#unresolved()}.
+ * been updated, but was not, is reported in {@link Result#unresolved()}. Velocity JSON is parsed as an object and
+ * serialized with the updated top-level {@code main} value.
  */
 public final class MinecraftPluginManifestRewriter {
 	private static final Pattern CLASS_KEY_LINE = Pattern.compile(
@@ -39,6 +41,9 @@ public final class MinecraftPluginManifestRewriter {
 	 */
 	@Nonnull
 	public static Result rewrite(@Nonnull String fileName, @Nonnull String text, @Nonnull Map<String, String> classRenames) {
+		if (MinecraftPluginPlatform.VELOCITY.manifestFileName().equals(fileName))
+			return rewriteVelocity(text, classRenames);
+
 		List<Change> changes = new ArrayList<>();
 		Matcher matcher = CLASS_KEY_LINE.matcher(text);
 		StringBuilder sb = new StringBuilder(text.length() + 16);
@@ -70,6 +75,24 @@ public final class MinecraftPluginManifestRewriter {
 			checkResolved("loader", original.loaderClass(), updated == null ? null : updated.loaderClass(), classRenames, unresolved);
 		}
 		return new Result(rewritten, List.copyOf(changes), List.copyOf(unresolved));
+	}
+
+	@Nonnull
+	private static Result rewriteVelocity(@Nonnull String text, @Nonnull Map<String, String> classRenames) {
+		JsonObject object = MinecraftPluginManifestParser.readVelocityJson(text);
+		if (object == null || MinecraftPluginManifestParser.jsonString(object, "id") == null)
+			return new Result(text, List.of(), List.of());
+		String main = MinecraftPluginManifestParser.jsonString(object, "main");
+		if (main == null)
+			return new Result(text, List.of(), List.of());
+		String oldName = main.replace('.', '/');
+		String newName = classRenames.getOrDefault(oldName, oldName);
+		if (newName.equals(oldName))
+			return new Result(text, List.of(), List.of());
+
+		object.addProperty("main", newName.replace('/', '.'));
+		String rewritten = MinecraftPluginManifestParser.VELOCITY_JSON.toJson(object) + "\n";
+		return new Result(rewritten, List.of(new Change("main", oldName, newName)), List.of());
 	}
 
 	private static void checkResolved(@Nonnull String key, String originalValue, String updatedValue,

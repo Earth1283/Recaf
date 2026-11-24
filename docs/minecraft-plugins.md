@@ -1,6 +1,6 @@
 # Working with Minecraft plugins
 
-Recaf has first-class support for server plugins: Bukkit / Spigot / Paper, and BungeeCord. This page covers what it
+Recaf recognizes Bukkit, Spigot, Paper, BungeeCord, and Velocity plugins. This page covers what it
 recognizes, how to give the decompiler the server API a plugin was written against, and how renaming keeps the plugin
 loadable.
 
@@ -11,6 +11,7 @@ loadable.
 - [Recovering names in obfuscated plugins](#recovering-names-in-obfuscated-plugins)
 - [Security triage](#security-triage)
 - [Decompiler view](#decompiler-view)
+- [Exporting decompiled sources](#exporting-decompiled-sources)
 - [Embedded-JAR readability and bytecode investigation](bytecode-investigation.md)
 - [Configuration](#configuration)
 - [Limitations](#limitations)
@@ -20,21 +21,21 @@ loadable.
 
 ### Manifests
 
-A plugin jar describes itself with a YAML file at the root of the jar.
+A plugin jar describes itself with a manifest at the root of the jar.
 
 | File               | Platform                 |
 |--------------------|--------------------------|
 | `plugin.yml`       | Bukkit / Spigot / Paper  |
 | `paper-plugin.yml` | Paper                    |
 | `bungee.yml`       | BungeeCord and its forks |
+| `velocity-plugin.json` | Velocity |
 
 When a workspace contains one of these, the workspace summary shows a **Minecraft plugin** section with the plugin's
 name, version, API version, main class (click to open it), bootstrapper and loader classes, and its dependencies.
 Embedded jars are checked too.
 
-Manifests are read as untrusted input. The YAML is never turned into objects, global tags are rejected, and size,
-nesting depth, and alias expansion are limited. A manifest that is malformed or exceeds a limit is ignored rather than
-causing an error.
+Manifest parsers limit input size and nesting depth. The YAML parser also limits alias expansion and rejects global
+tags. Recaf ignores malformed manifests and ones that exceed those limits.
 
 `api-version` is read exactly as written. An unquoted `api-version: 1.20` is the number `1.2` to a YAML loader, but
 Recaf treats it as the text `1.20`, which is what the author meant.
@@ -48,7 +49,7 @@ Entry points are listed in the workspace summary and let you jump straight to wh
 | Bukkit plugin initializer       | The class extends `org.bukkit.plugin.java.JavaPlugin`, **or** is the `main` class of `plugin.yml` / `paper-plugin.yml` | `onLoad`, `onEnable`, `onDisable`                                |
 | BungeeCord plugin initializer   | The class extends `net.md_5.bungee.api.plugin.Plugin`, **or** is the `main` class of `bungee.yml`               | `onLoad`, `onEnable`, `onDisable` (`()V`)                        |
 | Paper plugin bootstrapper / loader | The class implements Paper's `PluginBootstrap` / `PluginLoader`, **or** is named by `bootstrapper:` / `loader:` in `paper-plugin.yml` | `bootstrap`, `createPlugin`, `classloader`                       |
-| Velocity plugin initializer     | `@Plugin` annotation or a `ProxyInitializeEvent` / `ProxyReloadEvent` receiver (unchanged)                      |                                                                  |
+| Velocity plugin initializer     | The `main` class of `velocity-plugin.json`, a `@Plugin` annotation, or a proxy lifecycle event receiver | Methods receiving `ProxyInitializeEvent` or `ProxyReloadEvent` |
 
 The two signals for Bukkit and BungeeCord are independent: either one is enough. That keeps discovery working when
 the class hierarchy is incomplete, which is normal because the server API is not inside the plugin jar. If the manifest
@@ -129,7 +130,8 @@ first things you do.
 After any mapping operation, Recaf updates these top-level keys in the plugin's manifest to match the new class names:
 `main`, `bootstrapper`, and `loader`.
 
-- The edit is made in place in the text. Comments, ordering, quoting style, and line endings are preserved.
+- YAML edits preserve comments, ordering, quoting style, and line endings.
+- Recaf reformats a Velocity JSON descriptor when it updates the top-level `main` value, preserving the other fields.
 - Only top-level keys are changed. An indented `main:` belongs to something else and is left alone.
 - Package renames are covered, because they are applied as renames of each class.
 - Every update is logged. If a name needs updating but the manifest uses a layout Recaf cannot edit, such as flow-style
@@ -404,6 +406,15 @@ DashO. Transformers that rename things, or change method signatures, are not inc
 - The transformers read and rewrite bytecode. A few of them work out values by interpreting the plugin's methods in
   Recaf's own evaluator, such as decrypting a string. The plugin's classes are never loaded into the JVM or run.
 
+## Exporting decompiled sources
+
+**Decompile all classes** streams the selected classes into a ZIP. Export workers have their own queue, and the
+per-class timeout starts when a worker picks up the class. Opening a class in the editor uses a separate queue.
+
+When some classes are skipped or written with decompiler diagnostics, the export dialog reports the counts and
+`recaf-decompile-report.txt` inside the ZIP identifies the affected classes. Recaf publishes the ZIP after it
+has finished writing it. If no sources are produced, any existing archive at that path is preserved.
+
 ## Configuration
 
 Settings for the API attachment are under the analysis services as **Minecraft plugin API**.
@@ -445,8 +456,7 @@ The quick navigation shortcut is `quicknav-plugin` in the keybinding settings, a
 
 ## Limitations
 
-- Velocity plugins are recognized as entry points, but do not have a manifest-driven API attach. Velocity plugins are
-  described by an annotation, so there is no `api-version` to read.
+- Attach the Velocity API manually as a workspace library.
 - Spigot's own API and older Paper APIs that are no longer published are not separate choices. The Paper API is used
   for all Bukkit-family plugins.
 - Plugins that use server internals (NMS) refer to code that is not in any API jar. Attaching the API does not make

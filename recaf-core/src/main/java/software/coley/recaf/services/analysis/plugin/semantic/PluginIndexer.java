@@ -21,6 +21,7 @@ import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.path.ClassPathNode;
 import software.coley.recaf.services.analysis.plugin.MinecraftPluginManifest;
+import software.coley.recaf.services.analysis.plugin.MinecraftPluginPlatform;
 import software.coley.recaf.services.analysis.plugin.semantic.NamingFacts.Accessor;
 import software.coley.recaf.services.analysis.plugin.semantic.NamingFacts.AccessorKind;
 import software.coley.recaf.services.analysis.plugin.semantic.NamingFacts.Behavior;
@@ -260,8 +261,9 @@ public final class PluginIndexer implements Opcodes {
 	private void indexManifests() {
 		for (MinecraftPluginManifest manifest : manifests) {
 			String pluginName = manifest.name();
-			addEntryClass(PluginElementKind.MAIN_CLASS, pluginName, manifest.mainClass(),
-					Set.of("onEnable", "onDisable", "onLoad"));
+			Set<String> lifecycleMethods = manifest.platform() == MinecraftPluginPlatform.VELOCITY
+					? Set.of() : Set.of("onEnable", "onDisable", "onLoad");
+			addEntryClass(PluginElementKind.MAIN_CLASS, pluginName, manifest.mainClass(), lifecycleMethods);
 			addEntryClass(PluginElementKind.BOOTSTRAPPER, pluginName, manifest.bootstrapperClass(),
 					Set.of("bootstrap", "createPlugin"));
 			addEntryClass(PluginElementKind.LOADER, pluginName, manifest.loaderClass(), Set.of("classloader"));

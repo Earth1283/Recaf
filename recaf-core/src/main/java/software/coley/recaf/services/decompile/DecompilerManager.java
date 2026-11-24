@@ -32,15 +32,22 @@ import software.coley.recaf.util.visitors.LongExceptionRemovingVisitor;
 import software.coley.recaf.util.visitors.SyntheticRemovingVisitor;
 import software.coley.recaf.workspace.model.Workspace;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.BiConsumer;
 
 /**
  * Manager of multiple {@link Decompiler} instances.
@@ -51,10 +58,13 @@ import java.util.concurrent.ExecutorService;
 public class DecompilerManager implements Service {
 	public static final String SERVICE_ID = "decompilers";
 	private static final DebuggingLogger logger = Logging.get(DecompilerManager.class);
+	private static final int EXPORT_WORKERS = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
 	private static final NoopJvmDecompiler NO_OP_JVM = NoopJvmDecompiler.getInstance();
 	private static final NoopAndroidDecompiler NO_OP_ANDROID = NoopAndroidDecompiler.getInstance();
 	private final JvmBytecodeFilter layeredJvmFilter = new LayeredJvmBytecodeFilter();
 	private final ExecutorService decompileThreadPool = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID);
+	private final ExecutorService exportCoordinator = ThreadPoolFactory.newSingleThreadExecutor(SERVICE_ID + "-export");
+	private final ExecutorService exportWorkers = ThreadPoolFactory.newFixedThreadPool(SERVICE_ID + "-export-worker", EXPORT_WORKERS, true);
 	private final List<JvmBytecodeFilter> bytecodeFilters = new CopyOnWriteArrayList<>();
 	private final List<OutputTextFilter> outputTextFilters = new CopyOnWriteArrayList<>();
 	private final List<JvmBytecodeFilter> nestedClassFilters = new CopyOnWriteArrayList<>();
@@ -141,42 +151,119 @@ public class DecompilerManager implements Service {
 	 */
 	@Nonnull
 	public CompletableFuture<DecompileResult> decompile(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace, @Nonnull JvmClassInfo classInfo) {
-		return CompletableFuture.supplyAsync(() -> {
-			boolean doCache = config.getCacheDecompilations().getValue();
-			int effectiveHash = decompiler.getConfig().getHash() ^ (31 * config.computeFilterHash());
-			if (doCache) {
-				// Check for cached result, returning the cached result if found
-				// and only if the current config + filter settings match the ones that yielded the cached result.
-				DecompileResult cachedResult = CachedDecompileProperty.get(classInfo, decompiler);
-				if (cachedResult != null) {
-					if (cachedResult.getConfigHash() == effectiveHash)
-						return cachedResult;
-
-					// Config changed, void the cache.
-					CachedDecompileProperty.remove(classInfo);
-				}
-			}
-
-			// We will use the layered filter manually here so any user requested cleanup is done before we pass the class to the decompiler.
-			// The decompiler base implementation skips some work if there are no registered filters so doing it externally like this is
-			// better for performance. If the user has no filtering enabled then no re-reads and re-writes are necessary.
-			JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, Collections.singletonList(layeredJvmFilter));
-
-			// Decompile and cache the results.
-			DecompileResult result = decompiler.decompile(workspace, filteredClass);
-			String decompilation = result.getText();
-			if (result.getType() == DecompileResult.ResultType.SUCCESS && decompilation != null && !outputTextFilters.isEmpty()) {
-				// Apply output filters and preserve the result metadata when updating the text.
-				for (OutputTextFilter textFilter : outputTextFilters)
-					decompilation = textFilter.filter(workspace, classInfo, decompilation);
-				result = result.withText(decompilation);
-			}
-			result = result.withConfigHash(effectiveHash);
-			if (doCache)
-				CachedDecompileProperty.set(classInfo, decompiler, result);
-			return result;
-		}, decompileThreadPool);
+		return CompletableFuture.supplyAsync(() ->
+				decompileJvm(decompiler, workspace, classInfo, config.getCacheDecompilations().getValue()), decompileThreadPool);
 	}
+
+	/**
+	 * Decompiles a batch using workers separate from interactive requests. Only a small window of classes is
+	 * submitted at a time, and exported results are not retained in the editor cache.
+	 *
+	 * @param decompiler
+	 * 		Decompiler implementation to use for the entire batch.
+	 * @param workspace
+	 * 		Workspace to pull additional information from.
+	 * @param classes
+	 * 		Classes to decompile.
+	 * @param timeout
+	 * 		Per-class time budget, starting when an export worker picks up the class.
+	 * @param consumer
+	 * 		Receives results (including failures) serially in completion order, off the caller's thread.
+	 *
+	 * @return Future that completes after all results have been consumed, or fails if the consumer fails.
+	 * Cancelling it stops scheduling new classes and discards outstanding results.
+	 */
+	@Nonnull
+	public CompletableFuture<Void> decompileBatch(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                                             @Nonnull List<JvmClassInfo> classes, @Nonnull Duration timeout,
+	                                             @Nonnull BiConsumer<JvmClassInfo, DecompileResult> consumer) {
+		List<JvmClassInfo> targets = List.copyOf(classes);
+		long timeoutNanos = timeout.toNanos();
+		BlockingQueue<ExportResult> ready = new ArrayBlockingQueue<>(EXPORT_WORKERS + 1);
+		CompletableFuture<Void> batch = new CompletableFuture<>();
+		batch.whenComplete((ignored, error) -> {
+			// Wake the coordinator if it is waiting for a class result.
+			if (batch.isCancelled())
+				ready.add(new ExportResult(null, null, null));
+		});
+		exportCoordinator.execute(() -> {
+			try {
+				int submitted = 0;
+				for (int completed = 0; completed < targets.size() && !batch.isCancelled(); completed++) {
+					while (submitted - completed < EXPORT_WORKERS && submitted < targets.size() && !batch.isCancelled())
+						submitExportClass(decompiler, workspace, targets.get(submitted++), timeoutNanos, ready, batch);
+					if (batch.isCancelled())
+						break;
+					ExportResult item = ready.take();
+					if (batch.isCancelled())
+						break;
+					DecompileResult result = item.error() == null ? item.result() :
+							new DecompileResult(item.error(), decompiler.getConfig().getHash());
+					consumer.accept(item.info(), result);
+				}
+				batch.complete(null);
+			} catch (InterruptedException ex) {
+				Thread.currentThread().interrupt();
+				batch.completeExceptionally(ex);
+			} catch (Throwable t) {
+				batch.completeExceptionally(t);
+			}
+		});
+		return batch;
+	}
+
+	private void submitExportClass(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                               @Nonnull JvmClassInfo info, long timeoutNanos,
+	                               @Nonnull BlockingQueue<ExportResult> ready, @Nonnull CompletableFuture<Void> batch) {
+		CompletableFuture<DecompileResult> task = new CompletableFuture<>();
+		FutureTask<Void> worker = new FutureTask<>(() -> {
+			if (batch.isDone()) {
+				task.cancel(false);
+				return;
+			}
+			task.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
+			try {
+				task.complete(decompileJvm(decompiler, workspace, info, false));
+			} catch (Throwable t) {
+				task.completeExceptionally(t);
+			}
+		}, null);
+		task.whenComplete((result, error) -> {
+			if (error instanceof TimeoutException)
+				worker.cancel(true);
+			ready.add(new ExportResult(info, result, error));
+		});
+		exportWorkers.execute(worker);
+	}
+
+	@Nonnull
+	private DecompileResult decompileJvm(@Nonnull JvmDecompiler decompiler, @Nonnull Workspace workspace,
+	                                     @Nonnull JvmClassInfo classInfo, boolean doCache) {
+		int effectiveHash = decompiler.getConfig().getHash() ^ (31 * config.computeFilterHash());
+		if (doCache) {
+			DecompileResult cachedResult = CachedDecompileProperty.get(classInfo, decompiler);
+			if (cachedResult != null) {
+				if (cachedResult.getConfigHash() == effectiveHash)
+					return cachedResult;
+				CachedDecompileProperty.remove(classInfo);
+			}
+		}
+
+		JvmClassInfo filteredClass = JvmBytecodeFilter.applyFilters(workspace, classInfo, Collections.singletonList(layeredJvmFilter));
+		DecompileResult result = decompiler.decompile(workspace, filteredClass);
+		String decompilation = result.getText();
+		if (result.getType() == DecompileResult.ResultType.SUCCESS && decompilation != null && !outputTextFilters.isEmpty()) {
+			for (OutputTextFilter textFilter : outputTextFilters)
+				decompilation = textFilter.filter(workspace, classInfo, decompilation);
+			result = result.withText(decompilation);
+		}
+		result = result.withConfigHash(effectiveHash);
+		if (doCache)
+			CachedDecompileProperty.set(classInfo, decompiler, result);
+		return result;
+	}
+
+	private record ExportResult(JvmClassInfo info, DecompileResult result, Throwable error) {}
 
 	/**
 	 * Uses the built-in thread-pool to schedule the decompilation with the {@link #getTargetAndroidDecompiler()}.

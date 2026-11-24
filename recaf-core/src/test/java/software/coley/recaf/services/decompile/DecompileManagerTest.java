@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import software.coley.observables.ObservableBoolean;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
 import software.coley.recaf.services.decompile.cfr.CfrDecompiler;
 import software.coley.recaf.services.decompile.fallback.FallbackDecompiler;
 import software.coley.recaf.services.decompile.filter.JvmBytecodeFilter;
@@ -20,9 +21,15 @@ import software.coley.recaf.util.ReflectUtil;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -147,6 +154,44 @@ public class DecompileManagerTest extends TestBase {
 		// Hollowing will remove method bodies, so the 'println' call should no longer exist in the output
 		String decompilationAfter = assertDoesNotThrow(() -> decompilerManager.decompile(workspace, classHelloWorld).get().getText());
 		assertFalse(decompilationAfter.contains("\"Hello world\""));
+	}
+
+	@Test
+	void exportTimeoutStartsOnTheWorkerAndExportDoesNotPopulateTheEditorCache() throws Exception {
+		decompilerManagerConfig.getCacheDecompilations().setValue(true);
+		List<JvmClassInfo> classes = IntStream.range(0, 9)
+				.mapToObj(i -> TestClassUtils.createEmptyClass("export/Test" + i))
+				.toList();
+		JvmClassInfo interactive = TestClassUtils.createEmptyClass("export/Interactive");
+		CountDownLatch exportStarted = new CountDownLatch(1);
+		JvmDecompiler decompiler = mock(JvmDecompiler.class);
+		when(decompiler.getName()).thenReturn("Test export");
+		when(decompiler.getConfig()).thenReturn(NoopJvmDecompiler.getInstance().getConfig());
+		when(decompiler.decompile(eq(workspace), any())).thenAnswer(invocation -> {
+			JvmClassInfo info = invocation.getArgument(1);
+			if (classes.subList(0, 8).contains(info)) {
+				exportStarted.countDown();
+				Thread.sleep(10_000);
+			}
+			return new DecompileResult("class Example {}", 0);
+		});
+
+		Map<JvmClassInfo, DecompileResult> results = new HashMap<>();
+		var export = decompilerManager.decompileBatch(decompiler, workspace, classes, Duration.ofMillis(200), results::put);
+		try {
+			assertTrue(exportStarted.await(2, TimeUnit.SECONDS));
+			assertEquals(DecompileResult.ResultType.SUCCESS,
+					decompilerManager.decompile(decompiler, workspace, interactive).get(2, TimeUnit.SECONDS).getType());
+			export.get(5, TimeUnit.SECONDS);
+			assertEquals(classes.size(), results.size());
+			for (JvmClassInfo slowClass : classes.subList(0, 8))
+				assertInstanceOf(TimeoutException.class, results.get(slowClass).getException());
+			assertEquals(DecompileResult.ResultType.SUCCESS, results.get(classes.getLast()).getType());
+			assertNull(CachedDecompileProperty.get(classes.getLast(), decompiler));
+			assertNotNull(CachedDecompileProperty.get(interactive, decompiler));
+		} finally {
+			export.cancel(false);
+		}
 	}
 
 	@Test

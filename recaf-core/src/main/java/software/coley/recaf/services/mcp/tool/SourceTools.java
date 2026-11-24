@@ -32,7 +32,9 @@ import software.coley.recaf.workspace.model.Workspace;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -186,7 +188,7 @@ public class SourceTools implements McpToolProvider {
 	@Nonnull
 	private McpToolResult export(@Nonnull McpArgs args) throws Exception {
 		Workspace workspace = support.workspace();
-		Path directory = Path.of(args.requireString("directory")).toAbsolutePath();
+		Path directory = Path.of(args.requireString("directory")).toAbsolutePath().normalize();
 		Files.createDirectories(directory);
 		String pkg = args.string("package", null);
 		String prefix = pkg == null ? null : McpSupport.normalizeClassName(pkg).replaceAll("/+$", "") + "/";
@@ -200,30 +202,33 @@ public class SourceTools implements McpToolProvider {
 				.toList();
 		AtomicInteger written = new AtomicInteger();
 		JsonArray failures = new JsonArray();
-		List<CompletableFuture<Object>> futures = classes.stream().map(info -> decompilerManager.decompile(workspace, info)
-				.orTimeout(2, TimeUnit.MINUTES)
-				.handle((result, error) -> {
+		CompletableFuture<Void> batch = decompilerManager.decompileBatch(
+				decompilerManager.getTargetJvmDecompiler(), workspace, classes, Duration.ofMinutes(2), (info, result) -> {
+					String name = info.getName();
+					if (result.getType() != DecompileResult.ResultType.SUCCESS || result.getText() == null) {
+						Throwable error = result.getException();
+						failures.add(name + ": " + (error == null ? "No source returned" : error));
+						return;
+					}
 					try {
-						if (error != null || result.getType() != DecompileResult.ResultType.SUCCESS) {
-							synchronized (failures) {
-								failures.add(info.getName() + ": " + (error != null ? error : result.getException()));
-							}
-							return null;
+						Path file = directory.resolve(name + ".java").normalize();
+						if (!file.startsWith(directory)) {
+							failures.add(name + ": Output path is outside the export directory");
+							return;
 						}
-						Path file = directory.resolve(info.getName() + ".java").normalize();
-						if (!file.startsWith(directory))
-							return null;
 						Files.createDirectories(file.getParent());
 						Files.writeString(file, result.getText());
 						written.incrementAndGet();
-					} catch (IOException ex) {
-						synchronized (failures) {
-							failures.add(info.getName() + ": " + ex);
-						}
+					} catch (IOException | InvalidPathException ex) {
+						failures.add(name + ": " + ex);
 					}
-					return null;
-				})).toList();
-		CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).get(30, TimeUnit.MINUTES);
+				});
+		try {
+			batch.get(30, TimeUnit.MINUTES);
+		} catch (InterruptedException | TimeoutException ex) {
+			batch.cancel(false);
+			throw ex;
+		}
 		JsonObject json = new JsonObject();
 		json.addProperty("directory", directory.toString());
 		json.addProperty("classesSelected", classes.size());

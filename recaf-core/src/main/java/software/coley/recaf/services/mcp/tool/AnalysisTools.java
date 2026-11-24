@@ -102,8 +102,7 @@ public class AnalysisTools implements McpToolProvider {
 						"custom bootstrap groups. Good for finding obfuscation machinery.",
 				McpAccess.READ, McpToolSchema.create().paging(), this::hotspots);
 		registry.add("plugin_manifest",
-				"Minecraft plugin manifests (plugin.yml, paper-plugin.yml, bungee.yml, velocity-plugin.json, " +
-						"fabric.mod.json, mods.toml) found in the workspace.",
+				"Minecraft server plugin manifests (plugin.yml, paper-plugin.yml, bungee.yml, velocity-plugin.json) found in the workspace.",
 				McpAccess.READ, McpToolSchema.create(), args -> McpToolResult.json(McpValues.toJson(
 						pluginAnalysis.findManifestsRecursive(support.workspace(), support.workspace().getPrimaryResource()))));
 		registry.add("plugin_security_scan",

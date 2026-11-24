@@ -6,9 +6,7 @@ import jakarta.annotation.Nullable;
 import java.util.Arrays;
 
 /**
- * Minecraft server software families that load plugins described by a YAML manifest at the root of the plugin jar.
- * <p>
- * Velocity is intentionally absent, its plugins are described by annotations rather than a hand-written manifest.
+ * Minecraft server software families that load plugins described by a manifest at the root of the plugin jar.
  */
 public enum MinecraftPluginPlatform {
 	/** Bukkit, Spigot, and Paper (when not using the Paper-specific manifest). */
@@ -16,7 +14,9 @@ public enum MinecraftPluginPlatform {
 	/** Paper plugins using the newer manifest which supports bootstrappers and custom loaders. */
 	PAPER("paper-plugin.yml", "Paper"),
 	/** BungeeCord and its forks (Waterfall, FlameCord, ...). */
-	BUNGEE("bungee.yml", "BungeeCord");
+	BUNGEE("bungee.yml", "BungeeCord"),
+	/** Velocity, whose JSON manifest can be generated from the plugin annotation. */
+	VELOCITY("velocity-plugin.json", "Velocity");
 
 	private final String manifestFileName;
 	private final String displayName;

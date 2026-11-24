@@ -1,5 +1,6 @@
 package software.coley.recaf.services.analysis.plugin;
 
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.coley.recaf.info.FileInfo;
@@ -12,6 +13,7 @@ import software.coley.recaf.test.TestBase;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -94,5 +96,35 @@ class MinecraftPluginMappingListenerTest extends TestBase {
 
 		FileInfo after = workspace.getPrimaryResource().getFileBundle().get("paper-plugin.yml");
 		assertEquals("main: x.y.Main\nbootstrapper: x.y.Bootstrap\n", new String(after.getRawContent(), StandardCharsets.UTF_8));
+	}
+
+	@Test
+	void renamingVelocityMainUpdatesOnlyTheDescriptorClassReference() {
+		String fileName = "velocity-plugin.json";
+		String text = """
+				{
+				  "id": "example",
+				  "main": "test.Velocity",
+				  "dependencies": [{"id":"required"}, {"id":"optional","optional":true}],
+				  "other": {"main":"test.Velocity","nullValue":null}
+				}
+				""";
+		Workspace workspace = fromBundles(fromClasses(createEmptyClass("test/Velocity")),
+				fromFiles(createFile(fileName, text.getBytes(StandardCharsets.UTF_8))));
+		workspaceManager.setCurrent(workspace);
+		MinecraftPluginManifest manifest = MinecraftPluginManifestParser.parse(fileName, text).orElseThrow();
+		assertEquals("example", manifest.name());
+		assertEquals(List.of("required"), manifest.dependencies());
+		assertEquals(List.of("optional"), manifest.softDependencies());
+
+		IntermediateMappings mappings = new IntermediateMappings();
+		mappings.addClass("test/Velocity", "renamed/Main");
+		mappingApplierService.inCurrentWorkspace().applyToPrimaryResource(mappings).apply();
+
+		FileInfo after = workspace.getPrimaryResource().getFileBundle().get(fileName);
+		var updated = JsonParser.parseString(new String(after.getRawContent(), StandardCharsets.UTF_8)).getAsJsonObject();
+		var expected = JsonParser.parseString(text).getAsJsonObject();
+		expected.addProperty("main", "renamed.Main");
+		assertEquals(expected, updated);
 	}
 }

@@ -260,7 +260,8 @@ class McpToolsTest extends TestBase {
 	@Test
 	void decompileExportWritesSourceFiles() throws Exception {
 		Path out = dir.resolve("src");
-		JsonObject result = json(ok("decompile_export", args("directory", out.toString())));
+		JsonObject result = json(ok("decompile_export", args("directory", dir.resolve(".").resolve("src").toString())));
+		assertEquals(out.toString(), result.get("directory").getAsString());
 		assertTrue(result.get("filesWritten").getAsInt() >= 3, result.toString());
 		assertTrue(Files.readString(out.resolve(HELLO + ".java")).contains("Hello world"));
 	}

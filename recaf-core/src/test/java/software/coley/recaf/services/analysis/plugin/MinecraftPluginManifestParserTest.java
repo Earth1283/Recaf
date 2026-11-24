@@ -14,6 +14,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class MinecraftPluginManifestParserTest {
 	@Test
+	void rejectsInvalidVelocityDescriptors() {
+		String fileName = "velocity-plugin.json";
+		assertTrue(MinecraftPluginManifestParser.parse(fileName, "{\"main\":\"test.Plugin\"}").isEmpty());
+		assertTrue(MinecraftPluginManifestParser.parse(fileName, "{\"id\":\"test\",\"main\":42}").isEmpty());
+		assertTrue(MinecraftPluginManifestParser.parse(fileName, "{\"id\":\"test\",\"main\":\"test.Plugin\"} {}").isEmpty());
+		String deep = "{\"id\":\"test\",\"main\":\"test.Plugin\",\"extra\":" + "[".repeat(40) + "0" + "]".repeat(40) + "}";
+		assertTrue(MinecraftPluginManifestParser.parse(fileName, deep).isEmpty());
+	}
+
+	@Test
 	void parsesBukkitManifest() {
 		String yml = """
 				name: Example

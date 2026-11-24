@@ -118,6 +118,21 @@ class MinecraftPluginEntryPointTest extends TestBase {
 	}
 
 	@Test
+	void velocityUsesTheDescriptorWithoutAnAnnotationOrLifecycleMethod() {
+		JvmClassInfo plugin = createClass("test/Velocity", node -> addEmptyMethod(node.methods, "onEnable", "()V"));
+		List<EntryPoint> results = discover(fromClasses(plugin), "velocity-plugin.json",
+				"""
+				{"id":"example","main":"test.Velocity"}
+				""");
+
+		assertEquals(1, results.size());
+		EntryPoint entry = results.getFirst();
+		assertEquals(EntryPointKind.MC_VELOCITY_PLUGIN_INIT, entry.kind());
+		assertEquals("test/Velocity", entry.classPath().getValue().getName());
+		assertNull(entry.memberPath());
+	}
+
+	@Test
 	void paperBootstrapperAndLoaderFoundByInterface() {
 		JvmClassInfo bootstrap = createClass("test/Boot", node -> {
 			node.interfaces.add("io/papermc/paper/plugin/bootstrap/PluginBootstrap");
