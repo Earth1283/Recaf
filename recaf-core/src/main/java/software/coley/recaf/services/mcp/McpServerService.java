@@ -56,9 +56,13 @@ public class McpServerService implements Service {
 	private static final Logger logger = Logging.get(McpServerService.class);
 	private static final int MAX_RESULT_CHARS = 400_000;
 	private static final String INSTRUCTIONS = """
-			Recaf is a Java and Android bytecode reverse engineering tool. All tools operate on one current workspace.
-			Start with workspace_open (or workspace_info if one is already open), then explore with class_list,
-			class_decompile, search_* and graph tools. Class names use internal form, such as 'com/example/Foo'.
+			Recaf is a Java and Android bytecode reverse engineering tool. All tools operate on one current workspace \
+			(except jar_compare / jar_compare_diff which compare two archives directly on disk).
+			Start with workspace_open (or workspace_info if one is already open), then map the codebase with package_list, \
+			class_list, class_summary, analysis_entry_points, analysis_obfuscation, search_* and graph/callgraph_path tools.
+			Use class_decompile / class_disassemble / file_read with grep or start_line/max_lines for large classes, or \
+			method_bytecode / method_analyze / bytecode_evaluate when decompilation fails or code is obfuscated. Built-in \
+			deobfuscation presets are listed by transform_presets. Class names use internal form, such as 'com/example/Foo'.
 			Results are paged: pass offset and limit and check the 'truncated' flag.""";
 	private final McpServerConfig config;
 	private final McpToolRegistry registry;

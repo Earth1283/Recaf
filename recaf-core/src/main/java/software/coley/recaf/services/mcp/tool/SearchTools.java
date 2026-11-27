@@ -6,6 +6,8 @@ import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import software.coley.recaf.info.ClassInfo;
+import software.coley.recaf.info.FileInfo;
 import software.coley.recaf.services.mcp.McpAccess;
 import software.coley.recaf.services.mcp.McpArgs;
 import software.coley.recaf.services.mcp.McpSupport;
@@ -14,6 +16,7 @@ import software.coley.recaf.services.mcp.McpToolProvider;
 import software.coley.recaf.services.mcp.McpToolRegistry;
 import software.coley.recaf.services.mcp.McpToolResult;
 import software.coley.recaf.services.mcp.McpToolSchema;
+import software.coley.recaf.services.search.SearchFeedback;
 import software.coley.recaf.services.search.SearchService;
 import software.coley.recaf.services.search.match.NumberPredicate;
 import software.coley.recaf.services.search.match.NumberPredicateProvider;
@@ -35,9 +38,13 @@ import software.coley.recaf.services.search.result.Result;
 import software.coley.recaf.services.search.result.Results;
 import software.coley.recaf.services.search.result.StringResult;
 import software.coley.recaf.util.AccessFlag;
+import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 /**
  * Tools wrapping Recaf's search service.
@@ -65,62 +72,69 @@ public class SearchTools implements McpToolProvider {
 		registry.add("search_strings",
 				"Find string constants in class code and in text files.",
 				McpAccess.READ,
-				withStringMode(McpToolSchema.create().requiredString("query", "Text or pattern to look for."))
+				withScopeFilters(withStringMode(McpToolSchema.create().requiredString("query", "Text or pattern to look for.")))
+						.enumeration("scope", "Where to search. Default all.", List.of("all", "classes", "files"))
 						.paging(),
-				args -> run(args, new StringQuery(stringPredicate(args, "query")), result -> {
-					JsonObject json = new JsonObject();
-					json.addProperty("value", ((StringResult) result).getValue());
-					return json;
-				}));
+				args -> run(args, new StringQuery(stringPredicate(args, "query")),
+						args.string("scope", "all"), result -> {
+							JsonObject json = new JsonObject();
+							json.addProperty("value", ((StringResult) result).getValue());
+							return json;
+						}));
 		registry.add("search_numbers",
 				"Find numeric constants (int, long, float, double) in class code.",
 				McpAccess.READ,
-				McpToolSchema.create()
+				withScopeFilters(McpToolSchema.create()
 						.requiredString("value", "Number to compare against. Decimal, or hex with a 0x prefix.")
 						.enumeration("mode", "Comparison. Default equal.", NUMBER_MODES)
-						.string("upper", "Upper bound when mode is 'range' (inclusive).")
+						.string("upper", "Upper bound when mode is 'range' (inclusive)."))
 						.paging(),
-				args -> run(args, new NumberQuery(numberPredicate(args)), result -> {
+				args -> run(args, new NumberQuery(numberPredicate(args)), "classes", result -> {
 					JsonObject json = new JsonObject();
 					json.addProperty("value", ((NumberResult) result).getValue());
 					return json;
 				}));
 		registry.add("search_references",
-				"Find where a class, field or method is referenced from. Pass only 'owner' to find class references, " +
-						"or add 'name' / 'descriptor' to find member references.",
+				"Find where a class, field or method is referenced from. Pass 'owner' alone to find class references, " +
+						"or pass any combination of 'owner', 'name' and 'descriptor' to find member references. " +
+						"Note: 'mode' defaults to 'contains'; pass mode='equals' when searching short or obfuscated names (like 'a' or 'Foo').",
 				McpAccess.READ,
-				withStringMode(McpToolSchema.create()
-						.requiredString("owner", "Class the target belongs to, or the class itself (internal name).")
+				withScopeFilters(withStringMode(McpToolSchema.create()
+						.string("owner", "Class the target belongs to, or the class itself (internal name).")
 						.string("name", "Field or method name.")
-						.string("descriptor", "Field or method descriptor."))
+						.string("descriptor", "Field or method descriptor.")
+						.bool("include_member_owners", "When searching by 'owner' alone, also treat field/method references to that owner as class references. Default true.")))
 						.paging(),
 				this::references);
 		registry.add("search_declarations",
 				"Find fields and methods by declared owner, name and/or descriptor.",
 				McpAccess.READ,
-				withStringMode(McpToolSchema.create()
+				withScopeFilters(withStringMode(McpToolSchema.create()
 						.string("owner", "Declaring class (internal name).")
 						.string("name", "Member name.")
-						.string("descriptor", "Member descriptor."))
+						.string("descriptor", "Member descriptor.")))
 						.paging(),
 				this::declarations);
 		registry.add("search_instructions",
 				"Find sequences of bytecode instructions. Each pattern is matched, in order, against consecutive " +
 						"instructions rendered as text such as 'invokestatic java/lang/Runtime.getRuntime ()Ljava/lang/Runtime;'.",
 				McpAccess.READ,
-				withStringMode(McpToolSchema.create()
-						.requiredStringArray("patterns", "One pattern per instruction, in order.")).paging(),
+				withScopeFilters(withStringMode(McpToolSchema.create()
+						.requiredStringArray("patterns", "One pattern per instruction, in order.")))
+						.paging(),
 				this::instructions);
 	}
 
 	@Nonnull
 	private McpToolResult references(@Nonnull McpArgs args) {
-		boolean member = args.has("name") || args.has("descriptor");
-		StringPredicate owner = stringPredicate(args, "owner");
-		Query query = member
-				? new ReferenceQuery(owner, optional(args, "name"), optional(args, "descriptor"))
-				: new ReferenceQuery(owner);
-		return run(args, query, result -> {
+		boolean hasOwner = args.has("owner");
+		boolean hasMember = args.has("name") || args.has("descriptor");
+		if (!hasOwner && !hasMember)
+			throw new McpToolException("Provide at least one of 'owner', 'name', or 'descriptor'");
+		Query query = hasMember
+				? new ReferenceQuery(optional(args, "owner"), optional(args, "name"), optional(args, "descriptor"))
+				: new ReferenceQuery(stringPredicate(args, "owner"), args.bool("include_member_owners", true));
+		return run(args, query, "classes", result -> {
 			JsonObject json = new JsonObject();
 			if (result instanceof MemberReferenceResult memberResult) {
 				MemberReference ref = memberResult.getValue();
@@ -138,7 +152,7 @@ public class SearchTools implements McpToolProvider {
 	private McpToolResult declarations(@Nonnull McpArgs args) {
 		DeclarationQuery query = new DeclarationQuery(optional(args, "owner"), optional(args, "name"),
 				optional(args, "descriptor"));
-		return run(args, query, result -> {
+		return run(args, query, "classes", result -> {
 			JsonObject json = new JsonObject();
 			MemberDeclaration declaration = ((MemberDeclarationResult) result).getValue();
 			json.addProperty("owner", declaration.owner());
@@ -157,7 +171,7 @@ public class SearchTools implements McpToolProvider {
 			predicates.add(stringPredicate(args.raw(), pattern));
 		if (predicates.isEmpty())
 			throw new McpToolException("'patterns' must not be empty");
-		return run(args, new InstructionQuery(predicates), result -> {
+		return run(args, new InstructionQuery(predicates), "classes", result -> {
 			JsonObject json = new JsonObject();
 			json.addProperty("matched", String.valueOf(result.getValue()));
 			return json;
@@ -165,9 +179,39 @@ public class SearchTools implements McpToolProvider {
 	}
 
 	@Nonnull
-	private McpToolResult run(@Nonnull McpArgs args, @Nonnull Query query,
+	private McpToolResult run(@Nonnull McpArgs args, @Nonnull Query query, @Nonnull String scope,
 	                          @Nonnull java.util.function.Function<Result<?>, JsonObject> detail) {
-		Results results = searchService.search(support.workspace(), query);
+		String pkg = args.string("package", null);
+		Predicate<String> classFilter = classFilter(args.string("class", null));
+		boolean includeLibraries = args.bool("include_libraries", false);
+		boolean searchClasses = !"files".equals(scope);
+		boolean searchFiles = !"classes".equals(scope) && (pkg == null && classFilter == null || "files".equals(scope));
+
+		SearchFeedback feedback = new SearchFeedback() {
+			@Override
+			public boolean doVisitClass(@Nonnull ClassInfo cls) {
+				if (!searchClasses)
+					return false;
+				if (pkg != null && !McpSupport.matchesPackage(cls.getName(), true, pkg))
+					return false;
+				return classFilter == null || classFilter.test(cls.getName());
+			}
+
+			@Override
+			public boolean doVisitFile(@Nonnull FileInfo file) {
+				return searchFiles;
+			}
+
+			@Override
+			public boolean doAcceptResult(@Nonnull Result<?> result) {
+				if (includeLibraries)
+					return true;
+				WorkspaceResource resource = result.getPath().getValueOfType(WorkspaceResource.class);
+				return resource == null || !support.isLibrary(resource);
+			}
+		};
+
+		Results results = searchService.search(support.workspace(), query, feedback);
 		return McpToolResult.json(McpSupport.page(results.stream(), args, 100, result -> {
 			JsonObject json = McpSupport.describePath(result.getPath());
 			detail.apply(result).entrySet().forEach(e -> json.add(e.getKey(), e.getValue()));
@@ -180,6 +224,31 @@ public class SearchTools implements McpToolProvider {
 		return schema
 				.enumeration("mode", "How text is compared. Default contains.", STRING_MODES)
 				.bool("ignore_case", "Compare case-insensitively. Default false.");
+	}
+
+	@Nonnull
+	private static McpToolSchema withScopeFilters(@Nonnull McpToolSchema schema) {
+		return schema
+				.string("package", "Only search classes in this package (e.g. 'com/example' or 'com/example/*').")
+				.string("class", "Only search classes matching this substring (case-insensitive) or 're:<regex>'.")
+				.bool("include_libraries", "Include results from library resources. Default false.");
+	}
+
+	@Nullable
+	private static Predicate<String> classFilter(@Nullable String filter) {
+		if (filter == null || filter.isEmpty())
+			return null;
+		if (filter.startsWith("re:")) {
+			Pattern pattern;
+			try {
+				pattern = Pattern.compile(filter.substring(3));
+			} catch (RuntimeException ex) {
+				throw new McpToolException("Invalid regex: " + ex.getMessage());
+			}
+			return name -> pattern.matcher(name).find();
+		}
+		String lower = filter.toLowerCase(Locale.ROOT);
+		return name -> name.toLowerCase(Locale.ROOT).contains(lower);
 	}
 
 	@Nullable
@@ -203,10 +272,10 @@ public class SearchTools implements McpToolProvider {
 			case "starts" -> strings.newStartsWithPredicate(key, caseSensitive);
 			case "ends" -> strings.newEndsWithPredicate(key, caseSensitive);
 			case "regex", "regex_full" -> {
-				java.util.regex.Pattern pattern;
+				Pattern pattern;
 				try {
-					pattern = java.util.regex.Pattern.compile(key, caseSensitive ? 0
-							: java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE);
+					pattern = Pattern.compile(key, caseSensitive ? 0
+							: Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 				} catch (RuntimeException ex) {
 					throw new McpToolException("Invalid regex: " + ex.getMessage());
 				}

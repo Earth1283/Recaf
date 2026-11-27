@@ -7,8 +7,13 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import software.coley.recaf.info.ClassInfo;
 import software.coley.recaf.info.member.MethodMember;
+import software.coley.recaf.path.ClassMemberPathNode;
+import software.coley.recaf.path.ClassPathNode;
+import software.coley.recaf.services.analysis.entry.EntryAnalysisService;
+import software.coley.recaf.services.analysis.entry.EntryPoint;
 import software.coley.recaf.services.callgraph.CallGraph;
 import software.coley.recaf.services.callgraph.CallGraphService;
+import software.coley.recaf.services.callgraph.ClassMethodsContainer;
 import software.coley.recaf.services.callgraph.MethodRef;
 import software.coley.recaf.services.callgraph.MethodVertex;
 import software.coley.recaf.services.inheritance.InheritanceGraph;
@@ -25,10 +30,13 @@ import software.coley.recaf.services.mcp.McpToolSchema;
 import software.coley.recaf.workspace.model.Workspace;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -42,18 +50,21 @@ import java.util.function.Function;
 @ApplicationScoped
 public class GraphTools implements McpToolProvider {
 	private static final int MAX_NODES = 500;
+	private static final int MAX_PATH_VISITS = 50_000;
 	private final McpSupport support;
 	private final InheritanceGraphService inheritanceService;
 	private final CallGraphService callGraphService;
+	private final EntryAnalysisService entryAnalysisService;
 	private Workspace fallbackWorkspace;
 	private CallGraph fallbackGraph;
 
 	@Inject
 	public GraphTools(@Nonnull McpSupport support, @Nonnull InheritanceGraphService inheritanceService,
-	                  @Nonnull CallGraphService callGraphService) {
+	                  @Nonnull CallGraphService callGraphService, @Nonnull EntryAnalysisService entryAnalysisService) {
 		this.support = support;
 		this.inheritanceService = inheritanceService;
 		this.callGraphService = callGraphService;
+		this.entryAnalysisService = entryAnalysisService;
 	}
 
 	@Override
@@ -84,6 +95,20 @@ public class GraphTools implements McpToolProvider {
 		registry.add("callgraph_callees",
 				"Methods called by the given method, transitively up to 'depth' levels.",
 				McpAccess.READ, methodSchema(), args -> walk(args, false));
+		registry.add("callgraph_path",
+				"Find shortest call chains reaching a target class/method, either from a specific source class/method or from " +
+						"any discovered entry point in the workspace. Omit 'to_method' to target any method/constructor of 'to_class'.",
+				McpAccess.READ,
+				McpToolSchema.create()
+						.requiredString("to_class", "Target class (internal name).")
+						.string("to_method", "Target method name. Omit to match any method or constructor of 'to_class'.")
+						.string("to_descriptor", "Target method descriptor, needed when overloaded.")
+						.string("from_class", "Source class (internal name). Omit to search from all workspace entry points.")
+						.string("from_method", "Optional source method name (when from_class is given).")
+						.string("from_descriptor", "Optional source method descriptor.")
+						.integer("max_depth", "Maximum call chain depth. Default 10, at most 20.")
+						.integer("max_paths", "Maximum paths to return. Default 5, at most 20."),
+				this::path);
 	}
 
 	@Nonnull
@@ -122,6 +147,15 @@ public class GraphTools implements McpToolProvider {
 		return fallbackGraph;
 	}
 
+	private void waitReady(@Nonnull CallGraph graph) throws InterruptedException {
+		long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
+		while (!graph.isReady().getValue()) {
+			if (System.nanoTime() > deadline)
+				throw new McpToolException("The call graph is still being built, try again shortly");
+			Thread.sleep(50);
+		}
+	}
+
 	@Nonnull
 	private McpToolResult inheritance(@Nonnull McpArgs args) {
 		String name = McpSupport.normalizeClassName(args.requireString("name"));
@@ -141,27 +175,16 @@ public class GraphTools implements McpToolProvider {
 	@Nonnull
 	private McpToolResult walk(@Nonnull McpArgs args, boolean callers) throws InterruptedException {
 		Workspace workspace = support.workspace();
-		ClassInfo owner = support.requireClass(args.requireString("class")).getValue();
-		String methodName = args.requireString("method");
-		String descriptor = args.string("descriptor", null);
-		List<MethodMember> candidates = owner.getMethods().stream()
-				.filter(m -> m.getName().equals(methodName) && (descriptor == null || m.getDescriptor().equals(descriptor)))
-				.toList();
-		if (candidates.isEmpty())
-			throw new McpToolException("No method '" + methodName + "' in " + owner.getName());
-		if (candidates.size() > 1)
-			throw new McpToolException("'" + methodName + "' is overloaded, pass 'descriptor'. Candidates: " +
-					candidates.stream().map(MethodMember::getDescriptor).toList());
+		ClassPathNode ownerPath = support.requireClass(args.requireString("class"));
+		ClassMemberPathNode methodPath = support.requireMethod(ownerPath, args.requireString("method"),
+				args.string("descriptor", null));
+		ClassInfo owner = ownerPath.getValue();
+		MethodMember method = (MethodMember) methodPath.getValue();
 
 		CallGraph graph = graph(workspace);
-		long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
-		while (!graph.isReady().getValue()) {
-			if (System.nanoTime() > deadline)
-				throw new McpToolException("The call graph is still being built, try again shortly");
-			Thread.sleep(50);
-		}
+		waitReady(graph);
 
-		MethodVertex start = graph.getClassMethodsContainer(owner).getVertex(candidates.getFirst());
+		MethodVertex start = graph.getClassMethodsContainer(owner).getVertex(method);
 		int maxDepth = Math.max(1, Math.min(8, args.integer("depth", 1)));
 		int limit = Math.min(MAX_NODES, args.limit(200));
 		Function<MethodVertex, Collection<MethodVertex>> next = callers ? MethodVertex::getCallers : MethodVertex::getCalls;
@@ -205,6 +228,143 @@ public class GraphTools implements McpToolProvider {
 		json.addProperty("start", start.getMethod().owner() + "." + start.getMethod().name() + start.getMethod().desc());
 		json.addProperty("truncated", truncated);
 		json.add(callers ? "callers" : "callees", result);
+		return McpToolResult.json(json);
+	}
+
+	@Nonnull
+	private McpToolResult path(@Nonnull McpArgs args) throws InterruptedException {
+		Workspace workspace = support.workspace();
+		ClassPathNode toClass = support.requireClass(args.requireString("to_class"));
+		String toMethodName = args.string("to_method", null);
+		String toDesc = args.string("to_descriptor", null);
+		List<MethodMember> targetMethods;
+		String targetLabel;
+		if (toMethodName != null) {
+			MethodMember single = (MethodMember) support.requireMethod(toClass, toMethodName, toDesc).getValue();
+			targetMethods = List.of(single);
+			targetLabel = toClass.getValue().getName() + "." + single.getName() + single.getDescriptor();
+		} else {
+			targetMethods = toClass.getValue().getMethods();
+			if (targetMethods.isEmpty())
+				throw new McpToolException("Class " + toClass.getValue().getName() + " declares no methods");
+			targetLabel = toClass.getValue().getName() + ".*";
+		}
+
+		Set<MethodRef> startRefs = new HashSet<>();
+		if (args.has("from_class")) {
+			ClassPathNode fromClass = support.requireClass(args.requireString("from_class"));
+			if (args.has("from_method")) {
+				ClassMemberPathNode fromMethodPath = support.requireMethod(fromClass, args.requireString("from_method"),
+						args.string("from_descriptor", null));
+				startRefs.add(new MethodRef(fromClass.getValue().getName(),
+						fromMethodPath.getValue().getName(), fromMethodPath.getValue().getDescriptor()));
+			} else {
+				for (MethodMember m : fromClass.getValue().getMethods())
+					startRefs.add(new MethodRef(fromClass.getValue().getName(), m.getName(), m.getDescriptor()));
+			}
+		} else {
+			for (EntryPoint ep : entryAnalysisService.findEntryPoints(workspace, workspace.getPrimaryResource())) {
+				if (ep.memberPath() != null && ep.memberPath().getValue() instanceof MethodMember m) {
+					startRefs.add(new MethodRef(ep.classPath().getValue().getName(), m.getName(), m.getDescriptor()));
+				} else {
+					ClassInfo cls = ep.classPath().getValue();
+					for (MethodMember m : cls.getMethods())
+						startRefs.add(new MethodRef(cls.getName(), m.getName(), m.getDescriptor()));
+				}
+			}
+		}
+
+		CallGraph graph = graph(workspace);
+		waitReady(graph);
+
+		ClassMethodsContainer targetContainer = graph.getClassMethodsContainer(toClass.getValue());
+		int maxDepth = Math.max(1, Math.min(20, args.integer("max_depth", 10)));
+		int maxPaths = Math.max(1, Math.min(20, args.integer("max_paths", 5)));
+
+		record Chain(MethodVertex vertex, Chain next, int depth) {
+			boolean contains(@Nonnull MethodRef ref) {
+				for (Chain c = this; c != null; c = c.next)
+					if (c.vertex.getMethod().equals(ref))
+						return true;
+				return false;
+			}
+
+			@Nonnull
+			JsonArray toJsonArray() {
+				JsonArray chain = new JsonArray();
+				for (Chain c = this; c != null; c = c.next) {
+					MethodRef ref = c.vertex.getMethod();
+					JsonObject step = new JsonObject();
+					step.addProperty("owner", ref.owner());
+					step.addProperty("name", ref.name());
+					step.addProperty("descriptor", ref.desc());
+					chain.add(step);
+				}
+				return chain;
+			}
+		}
+
+		Queue<Chain> queue = new ArrayDeque<>();
+		Map<MethodRef, Integer> bestDepth = new HashMap<>();
+		for (MethodMember tm : targetMethods) {
+			MethodVertex v = targetContainer.getVertex(tm);
+			if (v != null && bestDepth.putIfAbsent(v.getMethod(), 0) == null)
+				queue.add(new Chain(v, null, 0));
+		}
+
+		JsonArray paths = new JsonArray();
+		List<Chain> deadEnds = new ArrayList<>();
+		Set<MethodRef> seenDeadEnds = new HashSet<>();
+		int visits = 0;
+		while (!queue.isEmpty() && paths.size() < maxPaths && visits++ < MAX_PATH_VISITS) {
+			Chain current = queue.poll();
+			MethodRef currentRef = current.vertex().getMethod();
+			if (startRefs.contains(currentRef)) {
+				paths.add(current.toJsonArray());
+				continue;
+			}
+			List<MethodVertex> callers = current.vertex().getCallers().stream()
+					.sorted(Comparator.comparing(v -> v.getMethod().owner() + "." + v.getMethod().name() + v.getMethod().desc()))
+					.toList();
+			if (callers.isEmpty()) {
+				if (deadEnds.size() < 15 && seenDeadEnds.add(currentRef))
+					deadEnds.add(current);
+				continue;
+			}
+			if (current.depth() >= maxDepth)
+				continue;
+			for (MethodVertex caller : callers) {
+				MethodRef callerRef = caller.getMethod();
+				if (current.contains(callerRef))
+					continue;
+				int nextDepth = current.depth() + 1;
+				Integer prevBest = bestDepth.get(callerRef);
+				if (prevBest != null && nextDepth > prevBest)
+					continue;
+				bestDepth.put(callerRef, nextDepth);
+				queue.add(new Chain(caller, current, nextDepth));
+			}
+		}
+
+		JsonObject json = new JsonObject();
+		json.addProperty("target", targetLabel);
+		json.addProperty("startCount", startRefs.size());
+		json.addProperty("found", paths.size());
+		json.add("paths", paths);
+		if (paths.isEmpty() && !deadEnds.isEmpty()) {
+			JsonArray roots = new JsonArray();
+			for (Chain dead : deadEnds) {
+				MethodRef ref = dead.vertex().getMethod();
+				JsonObject entry = new JsonObject();
+				entry.addProperty("owner", ref.owner());
+				entry.addProperty("name", ref.name());
+				entry.addProperty("descriptor", ref.desc());
+				entry.addProperty("depth", dead.depth());
+				entry.add("pathToTarget", dead.toJsonArray());
+				roots.add(entry);
+			}
+			json.add("rootCallers", roots);
+		}
 		return McpToolResult.json(json);
 	}
 

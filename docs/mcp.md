@@ -72,15 +72,17 @@ Class names use internal form (`com/example/Foo`). Results that can be large are
 
 | Area       | Tools |
 |------------|-------|
-| Workspace  | `workspace_open` `workspace_add_library` `workspace_info` `workspace_close` `workspace_export` |
-| Classes    | `class_list` `class_info` `class_decompile` `decompiler_list` `class_disassemble` `class_bytes` `class_diff` |
+| Workspace  | `workspace_open` `workspace_add_library` `workspace_info` `workspace_close` `workspace_export` `workspace_readable_copy` |
+| Classes    | `package_list` `class_list` `class_info` `class_summary` `class_decompile` `decompiler_list` `class_disassemble` `class_bytes` `class_diff` |
 | Editing    | `class_assemble` `class_put_bytes` `class_delete` `java_compile` `file_write` `file_delete` `comment_set` |
 | Files      | `file_list` `file_read` `comment_get` |
 | Search     | `search_strings` `search_numbers` `search_references` `search_declarations` `search_instructions` `similar_classes` `similar_methods` |
-| Graphs     | `inheritance_info` `inheritance_is_assignable` `callgraph_callers` `callgraph_callees` |
+| Graphs     | `inheritance_info` `inheritance_is_assignable` `callgraph_callers` `callgraph_callees` `callgraph_path` |
 | Renaming   | `rename_class` `rename_member` `mapping_apply` `mapping_export` `mapping_formats` `mapping_generate` `mapping_similarity` |
 | Deobfuscation | `transform_list` `transform_presets` `transform_run` |
-| Analysis   | `analysis_anti_reversal` `analysis_entry_points` `analysis_areas` `analysis_hashes` `analysis_jar_signing` `analysis_android_permissions` `analysis_bytecode_hotspots` |
+| Bytecode   | `method_bytecode` `method_analyze` `bytecode_call_sites` `bytecode_evaluate` |
+| Comparison | `jar_compare` `jar_compare_diff` |
+| Analysis   | `analysis_anti_reversal` `analysis_entry_points` `analysis_areas` `analysis_hashes` `analysis_jar_signing` `analysis_android_permissions` `analysis_bytecode_hotspots` `analysis_obfuscation` |
 | Minecraft plugins | `plugin_manifest` `plugin_security_scan` `plugin_name_suggestions` `plugin_apply_names` |
 | Decompiled export | `decompile_export` writes every class as `.java` under a directory so ordinary tools can grep it |
 | Data       | `crypto_inspect` `crypto_auto_decode` `crypto_codec` `crypto_hash` |

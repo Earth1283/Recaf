@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import jakarta.annotation.Nonnull;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import software.coley.recaf.services.analysis.bytecode.ReadableWorkspaceService;
 import software.coley.recaf.services.mcp.McpAccess;
 import software.coley.recaf.services.mcp.McpArgs;
 import software.coley.recaf.services.mcp.McpSupport;
@@ -13,6 +14,7 @@ import software.coley.recaf.services.mcp.McpToolProvider;
 import software.coley.recaf.services.mcp.McpToolRegistry;
 import software.coley.recaf.services.mcp.McpToolResult;
 import software.coley.recaf.services.mcp.McpToolSchema;
+import software.coley.recaf.services.transform.TransformationException;
 import software.coley.recaf.services.workspace.io.PathWorkspaceExportConsumer;
 import software.coley.recaf.services.workspace.io.ResourceImporter;
 import software.coley.recaf.services.workspace.io.WorkspaceCompressType;
@@ -38,11 +40,14 @@ import java.util.Locale;
 public class WorkspaceTools implements McpToolProvider {
 	private final McpSupport support;
 	private final ResourceImporter importer;
+	private final ReadableWorkspaceService readableWorkspaceService;
 
 	@Inject
-	public WorkspaceTools(@Nonnull McpSupport support, @Nonnull ResourceImporter importer) {
+	public WorkspaceTools(@Nonnull McpSupport support, @Nonnull ResourceImporter importer,
+	                      @Nonnull ReadableWorkspaceService readableWorkspaceService) {
 		this.support = support;
 		this.importer = importer;
+		this.readableWorkspaceService = readableWorkspaceService;
 	}
 
 	@Override
@@ -76,6 +81,17 @@ public class WorkspaceTools implements McpToolProvider {
 								List.of("MATCH_ORIGINAL", "SMART", "ALWAYS", "NEVER"))
 						.bool("bundle_libraries", "Include supporting resources in the output."),
 				this::export);
+		registry.add("workspace_readable_copy",
+				"Build an isolated readable analysis copy of the current workspace (folding constants, decoding literals, " +
+						"simplifying control flow, and creating synthetic readable aliases for illegal names) while keeping " +
+						"original classes as a supporting resource.",
+				McpAccess.WRITE,
+				McpToolSchema.create()
+						.integer("max_steps", "Evaluator instruction budget (100..1000000). Default 50000.")
+						.bool("aliases", "Create synthetic readable aliases for non-ASCII/illegal names. Default true.")
+						.string("resource", "Resource label or embedded path to copy. Defaults to the primary resource.")
+						.bool("force", "Replace the current workspace even if something blocks closing it."),
+				this::readableCopy);
 	}
 
 	@Nonnull
@@ -152,6 +168,35 @@ public class WorkspaceTools implements McpToolProvider {
 		json.addProperty("written", path.toString());
 		if (!directory)
 			json.addProperty("bytes", Files.size(path));
+		return McpToolResult.json(json);
+	}
+
+	@Nonnull
+	private McpToolResult readableCopy(@Nonnull McpArgs args) throws TransformationException {
+		Workspace workspace = support.workspace();
+		WorkspaceResource selected = args.has("resource")
+				? support.resolveResource(args.requireString("resource"))
+				: workspace.getPrimaryResource();
+		int maxSteps = Math.max(100, Math.min(1_000_000, args.integer("max_steps", 50_000)));
+		boolean aliases = args.bool("aliases", true);
+		ReadableWorkspaceService.Result result = readableWorkspaceService.build(
+				workspace, selected, maxSteps, aliases, () -> false, msg -> {});
+		Workspace copy = result.workspace();
+		if (args.bool("force", false)) {
+			support.workspaceManager().setCurrentIgnoringConditions(copy);
+		} else if (!support.workspaceManager().setCurrent(copy)) {
+			copy.close();
+			throw new McpToolException("The current workspace could not be closed, something blocked it " +
+					"(for example unsaved changes in the UI). Retry with force=true to replace it.");
+		}
+		JsonObject json = new JsonObject();
+		json.addProperty("dynamicStringsBefore", result.dynamicStringsBefore());
+		json.addProperty("dynamicStringsAfter", result.dynamicStringsAfter());
+		json.addProperty("helperCallsBefore", result.helperCallsBefore());
+		json.addProperty("helperCallsAfter", result.helperCallsAfter());
+		json.addProperty("classesAliased", result.classAliases().size());
+		json.addProperty("report", result.report());
+		json.add("workspace", describe(copy));
 		return McpToolResult.json(json);
 	}
 

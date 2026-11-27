@@ -6,6 +6,7 @@ import com.github.difflib.patch.Patch;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import jakarta.annotation.Nonnull;
+import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import software.coley.recaf.info.JvmClassInfo;
@@ -20,6 +21,7 @@ import software.coley.recaf.services.compile.JavacArgumentsBuilder;
 import software.coley.recaf.services.compile.JavacCompiler;
 import software.coley.recaf.services.decompile.DecompileResult;
 import software.coley.recaf.services.decompile.DecompilerManager;
+import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.services.mcp.McpAccess;
 import software.coley.recaf.services.mcp.McpArgs;
 import software.coley.recaf.services.mcp.McpSupport;
@@ -29,19 +31,24 @@ import software.coley.recaf.services.mcp.McpToolRegistry;
 import software.coley.recaf.services.mcp.McpToolResult;
 import software.coley.recaf.services.mcp.McpToolSchema;
 import software.coley.recaf.workspace.model.Workspace;
+import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 /**
  * Tools for working with classes as Java source.
@@ -76,12 +83,16 @@ public class SourceTools implements McpToolProvider {
 						.integer("target_version", "Java release to target, such as 8 or 17. Default: the class being replaced, or the compiler's own."),
 				this::compile);
 		registry.add("class_diff",
-				"Unified diff between two classes, or between a class and given text, as decompiled source or JASM assembly.",
+				"Unified diff between two classes (including the same class in two different resources via resource_a/resource_b), " +
+						"as decompiled source or JASM assembly.",
 				McpAccess.READ,
 				McpToolSchema.create()
 						.requiredString("a", "First class name.")
 						.requiredString("b", "Second class name.")
+						.string("resource_a", "Optional resource label or embedded path for class 'a'.")
+						.string("resource_b", "Optional resource label or embedded path for class 'b'.")
 						.enumeration("view", "What to compare. Default source.", List.of("source", "assembly"))
+						.string("decompiler", "Decompiler name when view=source. Defaults to the configured one.")
 						.integer("context", "Lines of context. Default 3."),
 				this::diff);
 		registry.add("decompile_export",
@@ -91,6 +102,8 @@ public class SourceTools implements McpToolProvider {
 				McpToolSchema.create()
 						.requiredString("directory", "Directory to write to, created if needed.")
 						.string("package", "Only classes in this package or below, such as 'com/example'. Default: all primary classes.")
+						.string("filter", "Only classes whose name matches this substring (case-insensitive) or 're:<regex>'.")
+						.string("decompiler", "Decompiler name. Defaults to the configured one.")
 						.integer("max_classes", "Safety cap. Default 5000."),
 				this::export);
 	}
@@ -144,13 +157,18 @@ public class SourceTools implements McpToolProvider {
 
 	@Nonnull
 	private McpToolResult diff(@Nonnull McpArgs args) throws Exception {
-		ClassPathNode a = support.requireClass(args.requireString("a"));
-		ClassPathNode b = support.requireClass(args.requireString("b"));
+		String resourceA = args.string("resource_a", null);
+		String resourceB = args.string("resource_b", null);
+		ClassPathNode a = support.requireClass(args.requireString("a"), resourceA);
+		ClassPathNode b = support.requireClass(args.requireString("b"), resourceB);
 		boolean assembly = "assembly".equals(args.string("view", "source"));
-		List<String> left = text(a, assembly);
-		List<String> right = text(b, assembly);
+		JvmDecompiler decompiler = resolveDecompiler(args.string("decompiler", null));
+		List<String> left = text(a, assembly, decompiler);
+		List<String> right = text(b, assembly, decompiler);
+		String leftLabel = resourceA == null ? a.getValue().getName() : resourceA + ":" + a.getValue().getName();
+		String rightLabel = resourceB == null ? b.getValue().getName() : resourceB + ":" + b.getValue().getName();
 		Patch<String> patch = DiffUtils.diff(left, right);
-		List<String> unified = UnifiedDiffUtils.generateUnifiedDiff(a.getValue().getName(), b.getValue().getName(),
+		List<String> unified = UnifiedDiffUtils.generateUnifiedDiff(leftLabel, rightLabel,
 				left, patch, Math.max(0, args.integer("context", 3)));
 		JsonObject json = McpSupport.bounded(String.join("\n", unified), 80_000);
 		json.addProperty("identical", patch.getDeltas().isEmpty());
@@ -158,7 +176,8 @@ public class SourceTools implements McpToolProvider {
 	}
 
 	@Nonnull
-	private List<String> text(@Nonnull ClassPathNode path, boolean assembly) throws Exception {
+	private List<String> text(@Nonnull ClassPathNode path, boolean assembly,
+	                          @Nonnull JvmDecompiler decompiler) throws Exception {
 		if (assembly) {
 			AssemblerPipeline<?, ?, ?> pipeline = pipelineManager.getPipeline(path);
 			var outcome = pipeline.disassemble(path);
@@ -166,15 +185,17 @@ public class SourceTools implements McpToolProvider {
 				throw new McpToolException("Disassembly of " + path.getValue().getName() + " failed");
 			return outcome.requireValue().lines().toList();
 		}
-		JvmClassInfo info = support.requireJvmClass(path.getValue().getName());
-		DecompileResult result = decompile(info);
+		if (!path.getValue().isJvmClass())
+			throw new McpToolException("'" + path.getValue().getName() + "' is not a JVM class");
+		JvmClassInfo info = path.getValue().asJvmClass();
+		DecompileResult result = decompile(info, decompiler);
 		return result.getText().lines().toList();
 	}
 
 	@Nonnull
-	private DecompileResult decompile(@Nonnull JvmClassInfo info) throws Exception {
+	private DecompileResult decompile(@Nonnull JvmClassInfo info, @Nonnull JvmDecompiler decompiler) throws Exception {
 		try {
-			DecompileResult result = decompilerManager.decompile(support.workspace(), info).get(2, TimeUnit.MINUTES);
+			DecompileResult result = decompilerManager.decompile(decompiler, support.workspace(), info).get(2, TimeUnit.MINUTES);
 			if (result.getType() != DecompileResult.ResultType.SUCCESS)
 				throw new McpToolException("Could not decompile " + info.getName() + ": " + result.getException());
 			return result;
@@ -188,22 +209,25 @@ public class SourceTools implements McpToolProvider {
 	@Nonnull
 	private McpToolResult export(@Nonnull McpArgs args) throws Exception {
 		Workspace workspace = support.workspace();
+		JvmDecompiler decompiler = resolveDecompiler(args.string("decompiler", null));
 		Path directory = Path.of(args.requireString("directory")).toAbsolutePath().normalize();
 		Files.createDirectories(directory);
 		String pkg = args.string("package", null);
 		String prefix = pkg == null ? null : McpSupport.normalizeClassName(pkg).replaceAll("/+$", "") + "/";
+		Predicate<String> nameFilter = classFilter(args.string("filter", null));
 		int max = Math.max(1, args.integer("max_classes", 5000));
 		List<JvmClassInfo> classes = workspace.jvmClassesStream(false)
-				.filter(path -> !support.isLibrary(path.getValueOfType(software.coley.recaf.workspace.model.resource.WorkspaceResource.class)))
+				.filter(path -> !support.isLibrary(path.getValueOfType(WorkspaceResource.class)))
 				.map(path -> path.getValue().asJvmClass())
 				.filter(info -> prefix == null || info.getName().startsWith(prefix))
-				.sorted(java.util.Comparator.comparing(JvmClassInfo::getName))
+				.filter(info -> nameFilter == null || nameFilter.test(info.getName()))
+				.sorted(Comparator.comparing(JvmClassInfo::getName))
 				.limit(max)
 				.toList();
 		AtomicInteger written = new AtomicInteger();
 		JsonArray failures = new JsonArray();
 		CompletableFuture<Void> batch = decompilerManager.decompileBatch(
-				decompilerManager.getTargetJvmDecompiler(), workspace, classes, Duration.ofMinutes(2), (info, result) -> {
+				decompiler, workspace, classes, Duration.ofMinutes(2), (info, result) -> {
 					String name = info.getName();
 					if (result.getType() != DecompileResult.ResultType.SUCCESS || result.getText() == null) {
 						Throwable error = result.getException();
@@ -231,9 +255,37 @@ public class SourceTools implements McpToolProvider {
 		}
 		JsonObject json = new JsonObject();
 		json.addProperty("directory", directory.toString());
+		json.addProperty("decompiler", decompiler.getName());
 		json.addProperty("classesSelected", classes.size());
 		json.addProperty("filesWritten", written.get());
 		json.add("failures", failures);
 		return McpToolResult.json(json);
+	}
+
+	@Nonnull
+	private JvmDecompiler resolveDecompiler(@Nullable String decompilerName) {
+		if (decompilerName == null)
+			return decompilerManager.getTargetJvmDecompiler();
+		JvmDecompiler decompiler = decompilerManager.getJvmDecompiler(decompilerName);
+		if (decompiler == null)
+			throw new McpToolException("Unknown decompiler '" + decompilerName + "'. See decompiler_list.");
+		return decompiler;
+	}
+
+	@Nullable
+	private static Predicate<String> classFilter(@Nullable String filter) {
+		if (filter == null || filter.isEmpty())
+			return null;
+		if (filter.startsWith("re:")) {
+			Pattern pattern;
+			try {
+				pattern = Pattern.compile(filter.substring(3));
+			} catch (RuntimeException ex) {
+				throw new McpToolException("Invalid regex: " + ex.getMessage());
+			}
+			return name -> pattern.matcher(name).find();
+		}
+		String lower = filter.toLowerCase(Locale.ROOT);
+		return name -> name.toLowerCase(Locale.ROOT).contains(lower);
 	}
 }
