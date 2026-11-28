@@ -12,6 +12,7 @@ import software.coley.recaf.services.deobfuscation.transform.generic.OpaquePredi
 import software.coley.recaf.services.deobfuscation.transform.generic.DeadCodeRemovingTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.GotoInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.LiteralStackSimplificationTransformer;
+import software.coley.recaf.services.deobfuscation.transform.generic.MethodUsageCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer;
 import software.coley.recaf.services.deobfuscation.transform.generic.TryCatchRepairTransformer;
@@ -77,6 +78,7 @@ public final class BuiltinTransformationPresets {
 			new TransformationPreset.TransformerPreset(DeadCodeRemovingTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(GotoInliningTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(VariableFoldingTransformer.class.getName(), Map.of()),
+			new TransformationPreset.TransformerPreset(MethodUsageCollectionTransformer.class.getName(), Map.of()),
 			new TransformationPreset.TransformerPreset(DeadPrivateMethodRemovingTransformer.class.getName(), Map.of())),
 			6, true, TransformationPreset.ScopeMode.NONE, List.of());
 

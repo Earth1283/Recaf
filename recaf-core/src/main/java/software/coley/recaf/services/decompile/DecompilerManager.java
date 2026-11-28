@@ -17,6 +17,7 @@ import software.coley.recaf.info.AndroidClassInfo;
 import software.coley.recaf.info.JvmClassInfo;
 import software.coley.recaf.info.properties.builtin.CachedDecompileProperty;
 import software.coley.recaf.services.Service;
+import software.coley.recaf.services.decompile.filter.AstAnalysisModeOutputFilter;
 import software.coley.recaf.services.decompile.filter.ConstantDefinitionRemovingOutputFilter;
 import software.coley.recaf.services.decompile.filter.DecompilerBytecodeRepairFilter;
 import software.coley.recaf.services.decompile.filter.JvmBytecodeFilter;
@@ -74,6 +75,7 @@ public class DecompilerManager implements Service {
 	private final ObservableObject<JvmDecompiler> targetJvmDecompiler;
 	private final ObservableObject<AndroidDecompiler> targetAndroidDecompiler;
 	private final DecompilerBytecodeRepairFilter repairFilter;
+	private final AstAnalysisModeOutputFilter astAnalysisFilter;
 	private final ConstantDefinitionRemovingOutputFilter constantDefinitionFilter;
 
 	/**
@@ -87,8 +89,10 @@ public class DecompilerManager implements Service {
 	                         @Nonnull Instance<Decompiler> implementations) {
 		this.config = config;
 		this.repairFilter = new DecompilerBytecodeRepairFilter(this::getServiceConfig);
+		this.astAnalysisFilter = new AstAnalysisModeOutputFilter(this::getServiceConfig);
 		this.constantDefinitionFilter = new ConstantDefinitionRemovingOutputFilter(this::getServiceConfig);
 		addNestedClassFilter(repairFilter);
+		addOutputTextFilter(astAnalysisFilter);
 		addOutputTextFilter(constantDefinitionFilter);
 
 		// Register implementations

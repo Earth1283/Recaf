@@ -100,6 +100,36 @@ class TransformationApplierTest extends TestBase {
 	}
 
 	@Test
+	void dependentBeforeDependencyInListDoesNotDuplicateDependency() {
+		JvmTransformerA transformerA = spy(new JvmTransformerA());
+		AtomicInteger observedRunCount = new AtomicInteger();
+		JvmClassTransformer readerB = new JvmTransformerDependingOnA() {
+			@Override
+			public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
+			                      @Nonnull WorkspaceResource resource, @Nonnull JvmClassBundle bundle,
+			                      @Nonnull JvmClassInfo initialClassState) {
+				try {
+					JvmTransformerA resolved = context.getTransformer(JvmTransformerA.class);
+					assertSame(transformerA, resolved);
+					observedRunCount.incrementAndGet();
+				} catch (TransformationException ex) {
+					fail(ex);
+				}
+			}
+		};
+
+		Map<Class<? extends JvmClassTransformer>, Supplier<JvmClassTransformer>> map = new IdentityHashMap<>();
+		map.put(JvmTransformerA.class, () -> transformerA);
+		map.put(JvmTransformerDependingOnA.class, () -> readerB);
+
+		TransformationManager manager = new TransformationManager(map);
+		TransformationApplier applier = new TransformationApplier(manager, config, inheritanceGraph, mappingApplier, workspace);
+		assertDoesNotThrow(() -> applier.transformJvm(List.of(JvmTransformerDependingOnA.class, JvmTransformerA.class)));
+		verify(transformerA, times(1)).transform(any(), same(workspace), any(), any(), any());
+		assertEquals(1, observedRunCount.get());
+	}
+
+	@Test
 	void cycleAB() {
 		JvmCycleA transformerA = spy(new JvmCycleA());
 		JvmCycleB transformerB = spy(new JvmCycleB());

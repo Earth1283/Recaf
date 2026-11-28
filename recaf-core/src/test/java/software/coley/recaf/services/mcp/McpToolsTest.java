@@ -372,6 +372,10 @@ class McpToolsTest extends TestBase {
 		assertTrue(analyzed.getAsJsonObject("summary").get("reachableInstructions").getAsInt() > 0);
 		assertTrue(analyzed.has("slice"));
 		assertTrue(analyzed.getAsJsonObject("instructions").get("total").getAsInt() > 0);
+		JsonObject localSlice = json(ok("method_analyze", args("class", USER, "method", "main", "slice_from", 0, "slice_local", 0)))
+				.getAsJsonObject("slice");
+		assertEquals("local", localSlice.get("slotKind").getAsString());
+		assertEquals("parameter local 0", localSlice.getAsJsonArray("entryDefinitions").get(0).getAsString());
 
 		// Add a class with a constant-input static string helper to test bytecode_call_sites & bytecode_evaluate
 		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES);

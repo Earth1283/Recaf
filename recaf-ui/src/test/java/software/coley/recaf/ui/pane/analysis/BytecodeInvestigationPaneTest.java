@@ -229,6 +229,15 @@ class BytecodeInvestigationPaneTest extends BaseFxTest {
 			onFx(() -> {
 				assertTrue(details.getText().contains("Definitions consumed  [@0, @1]"));
 				assertTrue(details.getText().contains("May exit through an uncaught exception"));
+				ComboBox<?> criterion = (ComboBox<?>) fixture.pane.lookup("#investigate-slice-criterion");
+				criterion.getSelectionModel().select(2);
+				return null;
+			});
+			await(() -> onFx(() -> {
+				String slice = details.getText().split("Backward slice\n", 2)[1];
+				return slice.contains("@1 ") && !slice.contains("@0 ");
+			}));
+			onFx(() -> {
 				Spinner<?> instruction = (Spinner<?>) fixture.pane.lookup("#investigate-method-instruction");
 				instruction.increment();
 				return null;

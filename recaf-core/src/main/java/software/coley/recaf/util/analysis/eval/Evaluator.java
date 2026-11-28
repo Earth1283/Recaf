@@ -61,6 +61,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
@@ -84,6 +85,8 @@ public class Evaluator {
 	private final Map<String, ClassNode> classNodeOverrides = new ConcurrentHashMap<>();
 	private List<ClassMethodPair> callStackSeed;
 	private boolean allowUnsupportedUnreachableInstructions;
+	@Nullable
+	private Function<String, ClassNode> classNodeProvider;
 
 	/**
 	 * @param workspace
@@ -152,6 +155,17 @@ public class Evaluator {
 	}
 
 	/**
+	 * Sets an optional provider for resolving up-to-date workspace {@link ClassNode} instances
+	 * (such as transformed nodes in a {@code JvmTransformerContext}) before falling back to raw workspace reads.
+	 *
+	 * @param classNodeProvider
+	 * 		Provider mapping internal class names to {@link ClassNode}, or {@code null}.
+	 */
+	public void setClassNodeProvider(@Nullable Function<String, ClassNode> classNodeProvider) {
+		this.classNodeProvider = classNodeProvider;
+	}
+
+	/**
 	 * Registers a listener for successfully executed instructions.
 	 *
 	 * @param listener
@@ -184,6 +198,19 @@ public class Evaluator {
 							&& !AccessFlag.isNative(methodNode.access)
 							&& canEvaluate(methodNode);
 			return false;
+		}
+
+		// Find class in the configured node provider (e.g. transformed context state).
+		if (classNodeProvider != null) {
+			ClassNode provided = classNodeProvider.apply(className);
+			if (provided != null) {
+				for (MethodNode methodNode : provided.methods)
+					if (methodName.equals(methodNode.name) && methodDescriptor.equals(methodNode.desc))
+						return !AccessFlag.isAbstract(methodNode.access)
+								&& !AccessFlag.isNative(methodNode.access)
+								&& canEvaluate(methodNode);
+				return false;
+			}
 		}
 
 		// Find class in workspace.
@@ -357,6 +384,11 @@ public class Evaluator {
 		ClassNode classNode = context.classNodeOverrides.get(className);
 		if (classNode == null)
 			classNode = context.workspaceNodeCache.get(className);
+		if (classNode == null && classNodeProvider != null) {
+			classNode = classNodeProvider.apply(className);
+			if (classNode != null)
+				context.workspaceNodeCache.put(className, classNode);
+		}
 		if (classNode == null) {
 			ClassPathNode classPath = workspace.findClass(evaluateInternals, className);
 			if (classPath == null)
@@ -928,6 +960,21 @@ public class Evaluator {
 		if (override != null)
 			return override;
 
+		if (context != null) {
+			ClassNode cached = context.workspaceNodeCache.get(className);
+			if (cached != null)
+				return cached;
+		}
+
+		if (classNodeProvider != null) {
+			ClassNode provided = classNodeProvider.apply(className);
+			if (provided != null) {
+				if (context != null)
+					context.workspaceNodeCache.put(className, provided);
+				return provided;
+			}
+		}
+
 		// Find the class in the workspace and parse it into a node.
 		ClassPathNode classPath = workspace.findClass(evaluateInternals, className);
 		if (classPath == null)
@@ -935,6 +982,8 @@ public class Evaluator {
 
 		ClassNode classNode = new ClassNode();
 		classPath.getValue().asJvmClass().getClassReader().accept(classNode, ClassReader.SKIP_FRAMES | ClassReader.SKIP_DEBUG);
+		if (context != null)
+			context.workspaceNodeCache.put(className, classNode);
 		return classNode;
 	}
 
@@ -954,6 +1003,21 @@ public class Evaluator {
 				: context.classNodeOverrides.get(className);
 		if (override != null)
 			return !AccessFlag.isAbstract(override.access) && !AccessFlag.isInterface(override.access);
+
+		if (context != null) {
+			ClassNode cached = context.workspaceNodeCache.get(className);
+			if (cached != null)
+				return !AccessFlag.isAbstract(cached.access) && !AccessFlag.isInterface(cached.access);
+		}
+
+		if (classNodeProvider != null) {
+			ClassNode provided = classNodeProvider.apply(className);
+			if (provided != null) {
+				if (context != null)
+					context.workspaceNodeCache.put(className, provided);
+				return !AccessFlag.isAbstract(provided.access) && !AccessFlag.isInterface(provided.access);
+			}
+		}
 
 		// Check the workspace for a concrete class.
 		ClassPathNode classPath = workspace.findClass(evaluateInternals, className);
@@ -978,6 +1042,10 @@ public class Evaluator {
 		if (context != null && context.classNodeOverrides.containsKey(className))
 			return true;
 		if (context == null && classNodeOverrides.containsKey(className))
+			return true;
+		if (context != null && context.workspaceNodeCache.containsKey(className))
+			return true;
+		if (classNodeProvider != null && classNodeProvider.apply(className) != null)
 			return true;
 		return workspace.findClass(evaluateInternals, className) != null;
 	}

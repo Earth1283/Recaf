@@ -37,6 +37,7 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 	private final ObservableBoolean filterRepairTryCatch = new ObservableBoolean(true);
 	private final ObservableBoolean filterRepairDebugRanges = new ObservableBoolean(true);
 	private final ObservableBoolean filterRemoveConstantDefinitions = new ObservableBoolean(false);
+	private final ObservableBoolean filterAstAnalysisMode = new ObservableBoolean(false);
 
 	@Inject
 	public DecompilerManagerConfig() {
@@ -59,6 +60,7 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 		addValue(new BasicConfigValue<>("filter-repair-try-catch", boolean.class, filterRepairTryCatch));
 		addValue(new BasicConfigValue<>("filter-repair-debug-ranges", boolean.class, filterRepairDebugRanges));
 		addValue(new BasicConfigValue<>("filter-remove-constant-definitions", boolean.class, filterRemoveConstantDefinitions));
+		addValue(new BasicConfigValue<>("filter-ast-analysis-mode", boolean.class, filterAstAnalysisMode));
 	}
 
 	/**
@@ -198,6 +200,15 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 	}
 
 	/**
+	 * @return {@code true} to enable the AST-walker-backed analysis mode for cross-class function result inlining
+	 * and unused function removal in decompiled Java text.
+	 */
+	@Nonnull
+	public ObservableBoolean getFilterAstAnalysisMode() {
+		return filterAstAnalysisMode;
+	}
+
+	/**
 	 * @return Hash of the active filter configuration for decompilation cache invalidation.
 	 */
 	public int computeFilterHash() {
@@ -215,6 +226,7 @@ public class DecompilerManagerConfig extends BasicConfigContainer implements Ser
 		h = 31 * h + Boolean.hashCode(filterRepairTryCatch.getValue());
 		h = 31 * h + Boolean.hashCode(filterRepairDebugRanges.getValue());
 		h = 31 * h + Boolean.hashCode(filterRemoveConstantDefinitions.getValue());
+		h = 31 * h + Boolean.hashCode(filterAstAnalysisMode.getValue());
 		return h;
 	}
 }

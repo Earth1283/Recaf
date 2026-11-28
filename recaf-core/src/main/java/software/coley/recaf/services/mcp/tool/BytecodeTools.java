@@ -85,6 +85,8 @@ public class BytecodeTools implements McpToolProvider {
 						.string("descriptor", "Method descriptor, needed when overloaded.")
 						.string("resource", "Resource label or embedded path.")
 						.integer("slice_from", "Optional 0-based instruction ordinal to compute a backward slice from.")
+						.integer("slice_local", "Slice this JVM local slot before slice_from.")
+						.integer("slice_stack", "Slice this operand stack slot before slice_from, counting from the bottom.")
 						.bool("include_instructions", "Include paged per-instruction frames, dominators and inputs. Default false.")
 						.paging(),
 				this::methodAnalyze);
@@ -159,6 +161,12 @@ public class BytecodeTools implements McpToolProvider {
 
 	@Nonnull
 	private McpToolResult methodAnalyze(@Nonnull McpArgs args) {
+		boolean sliceLocal = args.has("slice_local");
+		boolean sliceStack = args.has("slice_stack");
+		if ((sliceLocal || sliceStack) && !args.has("slice_from"))
+			throw new McpToolException("'slice_from' is required when selecting a local or stack slot");
+		if (sliceLocal && sliceStack)
+			throw new McpToolException("Select one of 'slice_local' and 'slice_stack'");
 		ClassPathNode classPath = support.requireClass(args.requireString("class"), args.string("resource", null));
 		if (!classPath.getValue().isJvmClass())
 			throw new McpToolException("'" + classPath.getValue().getName() + "' is not a JVM class");
@@ -186,12 +194,23 @@ public class BytecodeTools implements McpToolProvider {
 			if (sink < 0 || sink >= result.instructions().size())
 				throw new McpToolException("'slice_from' (" + sink + ") out of bounds for " +
 						result.instructions().size() + " instructions");
-			MethodAnalysis.Slice slice = result.backwardSlice(sink);
 			JsonObject sliceJson = new JsonObject();
 			sliceJson.addProperty("sink", sink);
-			JsonArray entries = new JsonArray();
-			slice.entryDefinitions().forEach(def -> entries.add(def.toString()));
-			sliceJson.add("entryDefinitions", entries);
+			MethodAnalysis.Slice slice;
+			try {
+				if (sliceLocal || sliceStack) {
+					int slot = args.requireInteger(sliceLocal ? "slice_local" : "slice_stack");
+					slice = sliceLocal ? result.backwardSliceLocal(sink, slot) : result.backwardSliceStack(sink, slot);
+					sliceJson.addProperty("slotKind", sliceLocal ? "local" : "stack");
+					sliceJson.addProperty("slot", slot);
+				} else {
+					slice = result.backwardSlice(sink);
+				}
+			} catch (IllegalArgumentException ex) {
+				throw new McpToolException(ex.getMessage());
+			}
+			sliceJson.add("entryDefinitions", definitionArray(slice.entryDefinitions()));
+			sliceJson.addProperty("dependsOnInitialHeap", slice.dependsOnInitialHeap());
 			JsonArray sliceInsns = new JsonArray();
 			for (int idx : slice.instructions()) {
 				MethodAnalysis.Instruction insn = result.instructions().get(idx);
@@ -415,9 +434,8 @@ public class BytecodeTools implements McpToolProvider {
 		json.addProperty("monitorOperations", summary.monitorOperations());
 		JsonObject returnSlice = new JsonObject();
 		returnSlice.add("instructions", intArray(summary.returnSlice().instructions()));
-		JsonArray entryDefs = new JsonArray();
-		summary.returnSlice().entryDefinitions().forEach(d -> entryDefs.add(d.toString()));
-		returnSlice.add("entryDefinitions", entryDefs);
+		returnSlice.add("entryDefinitions", definitionArray(summary.returnSlice().entryDefinitions()));
+		returnSlice.addProperty("dependsOnInitialHeap", summary.returnSlice().dependsOnInitialHeap());
 		json.add("returnSlice", returnSlice);
 		return json;
 	}

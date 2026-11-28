@@ -3,9 +3,9 @@ package software.coley.recaf.services.deobfuscation.transform.generic;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
+import jakarta.inject.Inject;
 import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.Handle;
-import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
@@ -13,31 +13,56 @@ import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import software.coley.recaf.info.JvmClassInfo;
+import software.coley.recaf.services.inheritance.InheritanceGraph;
+import software.coley.recaf.services.inheritance.InheritanceGraphService;
+import software.coley.recaf.services.transform.ClassTransformer;
 import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.transform.JvmTransformerContext;
 import software.coley.recaf.services.transform.TransformationException;
 import software.coley.recaf.services.transform.TransformationParameter;
+import software.coley.recaf.util.AccessFlag;
+import software.coley.recaf.util.analysis.MethodUsageSupport;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 /**
- * Removes unreferenced {@code private static} methods (such as decoy license traps or already-inlined
- * string/xor helpers) from a class.
+ * Removes unreferenced methods across a class and workspace:
+ * <ul>
+ *     <li>Unreferenced {@code private} methods (respecting Java 11+ nestmate calls and declared/lookup reflection)</li>
+ *     <li>Non-private methods whose callers were inlined to zero (or optionally any unused non-entry-point helpers)</li>
+ * </ul>
  */
 @Dependent
 public class DeadPrivateMethodRemovingTransformer implements JvmClassTransformer {
 	public static final String IDENTIFIER = "peephole.dead.privatemethods";
 	public static final String KEY_IGNORE_SELF_REFLECTION = IDENTIFIER + ".ignore-self-reflection";
+	public static final String KEY_REMOVE_INLINED_NON_PRIVATE = IDENTIFIER + ".remove-inlined-non-private";
+	public static final String KEY_REMOVE_UNUSED_NON_PRIVATE = IDENTIFIER + ".remove-unused-non-private";
 	private static final TransformationParameter<Boolean> IGNORE_SELF_REFLECTION_PARAMETER =
 			new TransformationParameter<>(KEY_IGNORE_SELF_REFLECTION, boolean.class, false);
-	private static final Set<String> SERIALIZATION_HOOKS = Set.of(
-			"readObject", "writeObject", "readObjectNoData", "readResolve", "writeReplace"
-	);
+	private static final TransformationParameter<Boolean> REMOVE_INLINED_NON_PRIVATE_PARAMETER =
+			new TransformationParameter<>(KEY_REMOVE_INLINED_NON_PRIVATE, boolean.class, true);
+	private static final TransformationParameter<Boolean> REMOVE_UNUSED_NON_PRIVATE_PARAMETER =
+			new TransformationParameter<>(KEY_REMOVE_UNUSED_NON_PRIVATE, boolean.class, false);
+
+	private final InheritanceGraphService graphService;
+	private InheritanceGraph inheritanceGraph;
+
+	@Inject
+	public DeadPrivateMethodRemovingTransformer(@Nonnull InheritanceGraphService graphService) {
+		this.graphService = graphService;
+	}
+
+	@Override
+	public void setup(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace) {
+		inheritanceGraph = graphService.getOrCreateInheritanceGraph(workspace);
+	}
 
 	@Override
 	public void transform(@Nonnull JvmTransformerContext context, @Nonnull Workspace workspace,
@@ -45,15 +70,33 @@ public class DeadPrivateMethodRemovingTransformer implements JvmClassTransformer
 	                      @Nonnull JvmClassInfo initialClassState) throws TransformationException {
 		ClassNode node = context.getNode(bundle, initialClassState);
 		boolean ignoreSelfReflection = context.getParameters().getBoolean(KEY_IGNORE_SELF_REFLECTION, false);
-		if (!ignoreSelfReflection && usesMethodReflection(node))
-			return;
+		boolean removeInlinedNonPrivate = context.getParameters().getBoolean(KEY_REMOVE_INLINED_NON_PRIVATE, true);
+		boolean removeUnusedNonPrivate = context.getParameters().getBoolean(KEY_REMOVE_UNUSED_NON_PRIVATE, false);
+
+		MethodUsageCollectionTransformer usageCollector = context.getOptionalTransformer(MethodUsageCollectionTransformer.class);
+		boolean declaredReflection = false;
+		boolean publicReflection = false;
+		if (!ignoreSelfReflection) {
+			if (usageCollector != null) {
+				declaredReflection = usageCollector.hasDeclaredMethodReflectionInNest(node);
+				publicReflection = usageCollector.hasPublicMethodReflection(node.name);
+			} else {
+				var localUsage = MethodUsageSupport.scanClassNode(node, inheritanceGraph);
+				declaredReflection = localUsage.usesDeclaredMethodReflection();
+				publicReflection = localUsage.usesPublicMethodReflection();
+			}
+		}
 
 		// Iterate to a fixed point so removing a dead helper also exposes helpers it alone called.
 		boolean anyRemoved = false;
 		boolean removedInPass;
+		final boolean finalDeclaredReflection = declaredReflection;
+		final boolean finalPublicReflection = publicReflection;
 		do {
-			Set<String> referenced = collectSameClassMethodReferences(node);
-			removedInPass = node.methods.removeIf(method -> isRemovableDeadPrivateStatic(method, referenced));
+			Set<String> referencedSameClass = collectSameClassMethodReferences(node);
+			removedInPass = node.methods.removeIf(method -> isRemovableMethod(
+					context, workspace, node, method, referencedSameClass, usageCollector,
+					finalDeclaredReflection, finalPublicReflection, removeInlinedNonPrivate, removeUnusedNonPrivate));
 			anyRemoved |= removedInPass;
 		} while (removedInPass);
 
@@ -61,38 +104,31 @@ public class DeadPrivateMethodRemovingTransformer implements JvmClassTransformer
 			context.setNode(bundle, initialClassState, node);
 	}
 
-	private static boolean isRemovableDeadPrivateStatic(@Nonnull MethodNode method, @Nonnull Set<String> referenced) {
-		int required = Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC;
-		if ((method.access & required) != required)
+	private boolean isRemovableMethod(@Nonnull JvmTransformerContext context,
+	                                  @Nonnull Workspace workspace,
+	                                  @Nonnull ClassNode owner,
+	                                  @Nonnull MethodNode method,
+	                                  @Nonnull Set<String> referencedSameClass,
+	                                  @Nullable MethodUsageCollectionTransformer usageCollector,
+	                                  boolean declaredReflection,
+	                                  boolean publicReflection,
+	                                  boolean removeInlinedNonPrivate,
+	                                  boolean removeUnusedNonPrivate) {
+		if (MethodUsageSupport.isAlwaysProtectedMethod(owner, method, inheritanceGraph, workspace))
 			return false;
-		if (method.name.startsWith("<") || SERIALIZATION_HOOKS.contains(method.name))
+		if (referencedSameClass.contains(method.name + method.desc))
 			return false;
-		if (method.visibleAnnotations != null && !method.visibleAnnotations.isEmpty())
+		if (usageCollector != null && usageCollector.isReferencedOutsideClass(owner.name, method.name, method.desc))
 			return false;
-		if (method.invisibleAnnotations != null && !method.invisibleAnnotations.isEmpty())
-			return false;
-		return !referenced.contains(method.name + method.desc);
-	}
 
-	private static boolean usesMethodReflection(@Nonnull ClassNode node) {
-		for (MethodNode method : node.methods) {
-			if (method.instructions == null)
-				continue;
-			for (AbstractInsnNode insn : method.instructions) {
-				if (insn instanceof MethodInsnNode call) {
-					if ("java/lang/Class".equals(call.owner)
-							&& ("getDeclaredMethod".equals(call.name) || "getDeclaredMethods".equals(call.name)
-							|| "getMethod".equals(call.name) || "getMethods".equals(call.name))) {
-						return true;
-					}
-					if ("java/lang/invoke/MethodHandles$Lookup".equals(call.owner)
-							&& ("findStatic".equals(call.name) || "findSpecial".equals(call.name) || "findVirtual".equals(call.name))) {
-						return true;
-					}
-				}
-			}
-		}
-		return false;
+		if (AccessFlag.isPrivate(method.access))
+			return !declaredReflection;
+
+		if (declaredReflection || (AccessFlag.isPublic(method.access) && publicReflection))
+			return false;
+		if (removeUnusedNonPrivate)
+			return true;
+		return removeInlinedNonPrivate && context.wasMethodInlined(owner.name, method.name, method.desc);
 	}
 
 	@Nonnull
@@ -136,8 +172,25 @@ public class DeadPrivateMethodRemovingTransformer implements JvmClassTransformer
 
 	@Nonnull
 	@Override
+	public Set<Class<? extends ClassTransformer>> dependencies() {
+		return Collections.singleton(MethodUsageCollectionTransformer.class);
+	}
+
+	@Nonnull
+	@Override
+	public Set<Class<? extends ClassTransformer>> recommendedPredecessors() {
+		return Set.of(
+				MethodUsageCollectionTransformer.class,
+				CallResultInliningTransformer.class,
+				OpaqueConstantFoldingTransformer.class,
+				DeadCodeRemovingTransformer.class
+		);
+	}
+
+	@Nonnull
+	@Override
 	public List<TransformationParameter<?>> getParameterDefinitions() {
-		return List.of(IGNORE_SELF_REFLECTION_PARAMETER);
+		return List.of(IGNORE_SELF_REFLECTION_PARAMETER, REMOVE_INLINED_NON_PRIVATE_PARAMETER, REMOVE_UNUSED_NON_PRIVATE_PARAMETER);
 	}
 
 	@Nonnull
@@ -160,7 +213,7 @@ public class DeadPrivateMethodRemovingTransformer implements JvmClassTransformer
 	@Override
 	public String afterExample() {
 		return """
-				// Unreferenced private static helper removed
+				// Unreferenced helper removed
 				""";
 	}
 }

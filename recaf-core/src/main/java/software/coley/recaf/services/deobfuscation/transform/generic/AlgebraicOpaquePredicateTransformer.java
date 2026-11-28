@@ -3,6 +3,7 @@ package software.coley.recaf.services.deobfuscation.transform.generic;
 import jakarta.annotation.Nonnull;
 import jakarta.annotation.Nullable;
 import jakarta.enterprise.context.Dependent;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
@@ -10,6 +11,7 @@ import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.LookupSwitchInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TableSwitchInsnNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
@@ -19,6 +21,8 @@ import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.transform.JvmTransformerContext;
 import software.coley.recaf.services.transform.TransformationException;
 import software.coley.recaf.util.AsmInsnUtil;
+import software.coley.recaf.util.analysis.MethodUsageSupport;
+import software.coley.recaf.util.analysis.symbolic.JvmSymbolicSimplifier;
 import software.coley.recaf.workspace.model.Workspace;
 import software.coley.recaf.workspace.model.bundle.JvmClassBundle;
 import software.coley.recaf.workspace.model.resource.WorkspaceResource;
@@ -34,8 +38,8 @@ import java.util.Set;
 import static org.objectweb.asm.Opcodes.*;
 
 /**
- * Folds provably exact two's-complement algebraic opaque predicates (while preserving operand side effects)
- * and removes dead pure-constant arithmetic expressions consumed by {@code POP} / {@code POP2}.
+ * Folds two's-complement arithmetic and opaque predicates using peephole identities,
+ * equality saturation, and SMT proofs. Removes dead pure arithmetic consumed by {@code POP} / {@code POP2}.
  */
 @Dependent
 public class AlgebraicOpaquePredicateTransformer implements JvmClassTransformer {
@@ -47,16 +51,19 @@ public class AlgebraicOpaquePredicateTransformer implements JvmClassTransformer 
 	                      @Nonnull JvmClassInfo initialClassState) throws TransformationException {
 		ClassNode node = context.getNode(bundle, initialClassState);
 		boolean dirty = false;
-		for (MethodNode method : node.methods) {
-			if (method.instructions == null || method.instructions.size() == 0)
-				continue;
-			boolean methodDirty;
-			do {
+		try (var symbolic = new JvmSymbolicSimplifier()) {
+			for (MethodNode method : node.methods) {
+				if (method.instructions == null || method.instructions.size() == 0)
+					continue;
 				Set<AbstractInsnNode> jumpTargets = collectJumpTargets(method);
-				methodDirty = foldAlgebraicIdentities(method.instructions, jumpTargets);
-				methodDirty |= pruneDeadPureConstantPop(method.instructions, jumpTargets);
-				dirty |= methodDirty;
-			} while (methodDirty);
+				boolean methodDirty;
+				do {
+					methodDirty = foldAlgebraicIdentities(method.instructions, jumpTargets);
+					methodDirty |= pruneDeadPureConstantPop(method.instructions, jumpTargets);
+					dirty |= methodDirty;
+				} while (methodDirty);
+				dirty |= symbolic.fold(method, jumpTargets);
+			}
 		}
 		if (dirty) {
 			context.setRecomputeFrames(initialClassState.getName());
@@ -214,6 +221,17 @@ public class AlgebraicOpaquePredicateTransformer implements JvmClassTransformer 
 				continue;
 			}
 
+			if (insn instanceof MethodInsnNode min && op == INVOKESTATIC
+					&& "java/lang/System".equals(min.owner)
+					&& "identityHashCode".equals(min.name)
+					&& "(Ljava/lang/Object;)I".equals(min.desc)) {
+				if (!stack.isEmpty() && stack.peek().size() == 1)
+					addInsnToTop(stack, insn);
+				else
+					stack.clear();
+				continue;
+			}
+
 			if (tryApplyPureOp(op, stack))
 				addInsnToTop(stack, insn);
 			else
@@ -287,8 +305,12 @@ public class AlgebraicOpaquePredicateTransformer implements JvmClassTransformer 
 			return true;
 		if (insn instanceof LdcInsnNode ldc) {
 			Object cst = ldc.cst;
-			return cst instanceof Integer || cst instanceof Long || cst instanceof Float
-					|| cst instanceof Double || cst instanceof String;
+			if (cst instanceof Integer || cst instanceof Long || cst instanceof Float
+					|| cst instanceof Double || cst instanceof String)
+				return true;
+			if (cst instanceof Type t)
+				return t.getSort() != Type.OBJECT && t.getSort() != Type.ARRAY
+						|| (t.getSort() == Type.OBJECT && MethodUsageSupport.GUARANTEED_JDK_CLASSES.contains(t.getInternalName()));
 		}
 		return false;
 	}

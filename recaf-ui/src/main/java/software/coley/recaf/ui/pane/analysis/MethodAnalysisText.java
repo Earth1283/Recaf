@@ -12,7 +12,7 @@ import java.util.List;
 final class MethodAnalysisText {
 	private MethodAnalysisText() {}
 
-	static String format(ClassMemberPathNode method, Result analysis, int index) {
+	static String format(ClassMemberPathNode method, Result analysis, int index, String criterion, MethodAnalysis.Slice slice) {
 		Instruction selected = analysis.instructions().get(index);
 		var summary = analysis.summary();
 		var report = new StringBuilder(method.getParent().getValue().getName()).append('.').append(method.getValue().getName())
@@ -43,8 +43,9 @@ final class MethodAnalysisText {
 				.append("\nReaching definitions and abstract values before this instruction\n");
 		appendStates(report, "Local", selected.locals());
 		appendStates(report, "Stack", selected.stack());
-		var slice = analysis.backwardSlice(index);
-		report.append("\nBackward slice\nEntry definitions  ").append(slice.entryDefinitions()).append('\n');
+		report.append("\nBackward slice\nCriterion  ").append(criterion)
+				.append("\nEntry definitions  ").append(slice.entryDefinitions()).append('\n');
+		if (slice.dependsOnInitialHeap()) report.append("May depend on heap state at method entry\n");
 		for (int instruction : slice.instructions())
 			report.append('@').append(instruction).append("  ").append(analysis.instructions().get(instruction).opcode()).append('\n');
 		return report.toString();

@@ -13,6 +13,54 @@ import static software.coley.recaf.services.analysis.bytecode.MethodAnalysis.Def
 
 class MethodAnalysisTest {
 	@Test
+	void slicesOnlyTheSelectedLocalOrStackValueAtTheObservationSite() throws Exception {
+		var method = new MethodNode(ACC_STATIC, "combine", "(II)I", null, null);
+		method.visitVarInsn(ILOAD, 0);
+		method.visitVarInsn(ILOAD, 1);
+		method.visitInsn(IADD);
+		method.visitInsn(IRETURN);
+		method.visitMaxs(2, 2);
+
+		var result = MethodAnalysis.analyze("Fixture", method, () -> false);
+		assertEquals(List.of(0, 1, 2), result.backwardSlice(2).instructions());
+		assertEquals(List.of(1, 2), result.backwardSliceStack(2, 1).instructions());
+		assertEquals(List.of(new MethodAnalysis.Definition(PARAMETER, 1)), result.backwardSliceStack(2, 1).entryDefinitions());
+		assertEquals(List.of(2), result.backwardSliceLocal(2, 0).instructions());
+		assertEquals(List.of(new MethodAnalysis.Definition(PARAMETER, 0)), result.backwardSliceLocal(2, 0).entryDefinitions());
+		assertFalse(result.backwardSliceLocal(2, 0).dependsOnInitialHeap());
+		assertThrows(IllegalArgumentException.class, () -> result.backwardSliceStack(2, 2));
+	}
+
+	@Test
+	void sliceIncludesLoopCarriedMemoryWritesAndOpaqueCalls() throws Exception {
+		var method = new MethodNode(ACC_STATIC, "heap", "([II)I", null, null);
+		var loop = new Label();
+		var write = new Label();
+		method.visitLabel(loop);
+		method.visitVarInsn(ILOAD, 1);
+		method.visitJumpInsn(IFNE, write);
+		method.visitVarInsn(ALOAD, 0);
+		method.visitInsn(ICONST_0);
+		method.visitInsn(IALOAD);
+		method.visitInsn(IRETURN);
+		method.visitLabel(write);
+		method.visitVarInsn(ALOAD, 0);
+		method.visitInsn(ICONST_0);
+		method.visitInsn(ICONST_2);
+		method.visitInsn(IASTORE);
+		method.visitMethodInsn(INVOKESTATIC, "Fixture", "mutate", "()V", false);
+		method.visitIincInsn(1, -1);
+		method.visitJumpInsn(GOTO, loop);
+		method.visitMaxs(3, 2);
+
+		var result = MethodAnalysis.analyze("Fixture", method, () -> false);
+		var slice = result.backwardSliceStack(5, 0);
+		assertTrue(slice.dependsOnInitialHeap());
+		assertTrue(slice.instructions().containsAll(List.of(4, 5, 6, 7, 8, 9, 10)));
+		assertEquals(slice, result.summary().returnSlice());
+	}
+
+	@Test
 	void computesReachingDefinitionsDominanceAbstractValuesAndSlicesAtAJoin() throws Exception {
 		var method = new MethodNode(ACC_STATIC, "diamond", "(I)I", null, null);
 		var alternate = new Label();

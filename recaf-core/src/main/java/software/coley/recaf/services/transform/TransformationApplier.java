@@ -540,7 +540,8 @@ public class TransformationApplier {
 	private TransformerQueue buildQueue(@Nonnull List<Class<? extends ClassTransformer>> transformerClasses) throws TransformationException {
 		TransformerQueue queue = new TransformerQueue();
 		for (Class<? extends ClassTransformer> transformerClass : transformerClasses)
-			insert(queue, transformerClass, Collections.emptySet());
+			if (!queue.containsType(transformerClass))
+				insert(queue, transformerClass, Collections.emptySet());
 		return queue;
 	}
 

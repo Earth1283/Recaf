@@ -53,17 +53,72 @@ public final class MethodAnalysis {
 	                          List<Handler> handlers, boolean mayEscape, int immediateDominator,
 	                          int immediatePostDominator, List<Integer> controlDependencies,
 	                          List<Definition> inputs, List<ValueState> locals, List<ValueState> stack) {}
-	public record Slice(List<Integer> instructions, List<Definition> entryDefinitions) {}
+	public record Slice(List<Integer> instructions, List<Definition> entryDefinitions, boolean dependsOnInitialHeap) {
+		public Slice(List<Integer> instructions, List<Definition> entryDefinitions) {
+			this(instructions, entryDefinitions, false);
+		}
+	}
+	public enum SliceCriterion { INSTRUCTION, LOCAL, STACK }
 	public record Summary(int reachableInstructions, List<Integer> returns, List<String> returnValues,
 	                      List<Integer> explicitThrows, List<Integer> escapingExceptionSites,
 	                      List<String> fieldReads, List<String> fieldWrites, List<String> calls,
 	                      List<String> allocations, int arrayWrites, int monitorOperations,
 	                      Slice returnSlice) {}
-	public record Result(List<Instruction> instructions, Map<Definition, List<Integer>> uses,
-	                     Summary summary, int nonTerminatingInstructions) {
+	public static final class Result {
+		private final List<Instruction> instructions;
+		private final Map<Definition, List<Integer>> uses;
+		private final Summary summary;
+		private final int nonTerminatingInstructions;
+		private final BackwardSlicer slicer;
+
+		public Result(List<Instruction> instructions, Map<Definition, List<Integer>> uses,
+		              Summary summary, int nonTerminatingInstructions) {
+			this(instructions, uses, summary, nonTerminatingInstructions,
+					new BackwardSlicer(instructions, new BackwardSlicer.Access[instructions.size()]));
+		}
+
+		private Result(List<Instruction> instructions, Map<Definition, List<Integer>> uses,
+		               Summary summary, int nonTerminatingInstructions, BackwardSlicer slicer) {
+			this.instructions = instructions;
+			this.uses = uses;
+			this.summary = summary;
+			this.nonTerminatingInstructions = nonTerminatingInstructions;
+			this.slicer = slicer;
+		}
+
+		public List<Instruction> instructions() { return instructions; }
+
+		public Map<Definition, List<Integer>> uses() { return uses; }
+
+		public Summary summary() { return summary; }
+
+		public int nonTerminatingInstructions() { return nonTerminatingInstructions; }
+
 		public Slice backwardSlice(int sink) {
-			Objects.checkIndex(sink, instructions.size());
-			return slice(instructions, List.of(sink));
+			return backwardSlice(sink, SliceCriterion.INSTRUCTION, 0, () -> false);
+		}
+
+		/** Slice a local slot at the input of the selected instruction. */
+		public Slice backwardSliceLocal(int sink, int slot) {
+			return backwardSlice(sink, SliceCriterion.LOCAL, slot, () -> false);
+		}
+
+		/** Slice an input stack slot, numbered from the bottom with one slot per ASM stack value. */
+		public Slice backwardSliceStack(int sink, int slot) {
+			return backwardSlice(sink, SliceCriterion.STACK, slot, () -> false);
+		}
+
+		/** Follow dependencies of an instruction or one value in its input frame. */
+		public Slice backwardSlice(int sink, SliceCriterion criterion, int slot, BooleanSupplier cancelled) {
+			checkCancelled(cancelled);
+			Instruction instruction = instructions.get(sink);
+			if (criterion == SliceCriterion.INSTRUCTION) return slicer.slice(List.of(sink), cancelled);
+			boolean local = criterion == SliceCriterion.LOCAL;
+			for (ValueState state : local ? instruction.locals() : instruction.stack()) {
+				if (state.slot() == slot)
+					return slicer.sliceValue(sink, state.definitions(), cancelled);
+			}
+			throw new IllegalArgumentException("No " + (local ? "local" : "stack") + " slot " + slot + " before instruction " + sink);
 		}
 	}
 
@@ -157,6 +212,7 @@ public final class MethodAnalysis {
 		}
 		var dominance = graph.analyze();
 		var instructions = new ArrayList<Instruction>(realCount);
+		var memory = new BackwardSlicer.Access[realCount];
 		Map<Definition, List<Integer>> uses = new TreeMap<>();
 		Frame<SourceValue> replay = new Frame<>(method.maxLocals, method.maxStack);
 		for (int i = 0; i < code.length; i++) {
@@ -167,6 +223,7 @@ public final class MethodAnalysis {
 			List<Definition> inputs = List.of();
 			List<ValueState> locals = List.of(), stack = List.of();
 			if (reachable) {
+				memory[ordinal] = BackwardSlicer.access(code[i]);
 				interpreter.inputs = new TreeSet<>();
 				int opcode = code[i].getOpcode();
 				if (opcode == POP || opcode == POP2) {
@@ -188,8 +245,9 @@ public final class MethodAnalysis {
 		}
 		uses.replaceAll((_, ords) -> List.copyOf(ords));
 		var immutableInstructions = List.copyOf(instructions);
-		return new Result(immutableInstructions, Collections.unmodifiableMap(uses), summarize(code, ordinals, immutableInstructions),
-				dominance.nonTerminating());
+		var slicer = new BackwardSlicer(immutableInstructions, memory);
+		return new Result(immutableInstructions, Collections.unmodifiableMap(uses),
+				summarize(code, ordinals, immutableInstructions, slicer, cancelled), dominance.nonTerminating(), slicer);
 	}
 
 	private static List<ValueState> states(Definitions interpreter, Frame<SourceValue> definitions, Frame<ReValue> values, boolean local) {
@@ -219,7 +277,8 @@ public final class MethodAnalysis {
 		return value.hasKnownValue() ? value.toString() : value.type().getDescriptor() + " (unknown)";
 	}
 
-	private static Summary summarize(AbstractInsnNode[] code, int[] ordinals, List<Instruction> instructions) {
+	private static Summary summarize(AbstractInsnNode[] code, int[] ordinals, List<Instruction> instructions,
+	                                 BackwardSlicer slicer, BooleanSupplier cancelled) {
 		var returns = new ArrayList<Integer>();
 		var throwsAt = new ArrayList<Integer>();
 		var escaping = new ArrayList<Integer>();
@@ -256,37 +315,7 @@ public final class MethodAnalysis {
 		}
 		return new Summary(reachable, List.copyOf(returns), List.copyOf(returnValues), List.copyOf(throwsAt), List.copyOf(escaping),
 				List.copyOf(reads), List.copyOf(writes), List.copyOf(calls), List.copyOf(allocations), arrayWrites, monitors,
-				slice(instructions, returns));
-	}
-
-	private static Slice slice(List<Instruction> instructions, List<Integer> sinks) {
-		var pending = new ArrayDeque<Integer>();
-		var seen = new BitSet();
-		for (int sink : sinks) enqueue(pending, seen, sink);
-		var entries = new TreeSet<Definition>();
-		Map<Integer, List<Integer>> exceptionSources = new HashMap<>();
-		for (Instruction insn : instructions) {
-			for (Handler handler : insn.handlers())
-				exceptionSources.computeIfAbsent(handler.target(), _ -> new ArrayList<>()).add(insn.index());
-		}
-		while (!pending.isEmpty()) {
-			int index = pending.removeFirst();
-			Instruction instruction = instructions.get(index);
-			for (int dependency : instruction.controlDependencies()) enqueue(pending, seen, dependency);
-			for (Definition def : instruction.inputs()) {
-				if (def.kind() == DefinitionKind.INSTRUCTION) enqueue(pending, seen, def.index());
-				else if (entries.add(def) && def.kind() == DefinitionKind.CAUGHT_EXCEPTION)
-					for (int source : exceptionSources.getOrDefault(def.index(), List.of())) enqueue(pending, seen, source);
-			}
-		}
-		return new Slice(seen.stream().boxed().toList(), List.copyOf(entries));
-	}
-
-	private static void enqueue(Deque<Integer> pending, BitSet seen, int index) {
-		if (!seen.get(index)) {
-			seen.set(index);
-			pending.add(index);
-		}
+				slicer.slice(returns, cancelled));
 	}
 
 	private static boolean isReturn(int opcode) { return opcode >= IRETURN && opcode <= RETURN; }

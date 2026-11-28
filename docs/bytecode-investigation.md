@@ -114,15 +114,26 @@ methods were analyzed or skipped. Complex or unsupported methods retain their re
 Use **Analysis → Deobfuscation → Simplify control flow** to preview bytecode changes from opaque predicate folding and
 dead-code cleanup. The technique scan provides read-only evidence to help decide where to apply those passes.
 
+**Algebraic opaque predicate folding** also simplifies pure JVM int and long expressions within one basic block.
+It uses a bounded Java e-graph inspired by the Rust project egg to find equivalent expressions. For unresolved
+integer branches, Z3 looks for a counterexample under JVM overflow, signed comparison, and shift rules. Only a proof
+can fold a symbolic branch. Solver work is bounded per check and per class, and transformations use Recaf's
+class-level parallelism. [egg](https://github.com/egraphs-good/egg) · [Z3](https://github.com/Z3Prover/z3)
+
 ## Method flow analysis
 
 Select a method or a call site in **Bytecode investigation**, then click **Analyze method flow**. Use **Instruction index**
-to select the sink for a backward slice and inspect its incoming locals and operand stack. Indices count JVM opcodes
-and omit labels, line numbers, and stack map frames. **Copy details** copies the currently displayed analysis.
+to select the sink for a backward slice. **Slice criterion** selects the instruction or a particular local or operand
+stack value just before it runs. Indices count JVM opcodes and omit labels, line numbers, and stack map frames.
+Stack slot 0 is the bottom of the stack, with one entry per value. **Copy details** copies the current analysis.
 
 The report shows reaching definitions for each local or stack slot, the definitions the selected instruction consumes,
 and the instructions that use its output. Abstract values include known numbers and strings, and available nullability.
 The backward slice follows data and control dependencies, including the possible origins of caught exceptions.
+It includes potentially aliasing field and array writes that can reach a read in the same method, including
+through loops and handlers. It treats calls and dynamic constants as opaque heap reads and writes. A slice can
+flag a dependency on heap state at method entry. Heap aliasing is conservative and callee bodies are outside
+the scope of the slice.
 
 Dominance and postdominance use structural branch targets and modeled exception edges. The scan resolves handler types
 for integer division, remainder, array length, and monitor entry. Other typed handlers are conservative. Uncaught

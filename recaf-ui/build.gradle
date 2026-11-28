@@ -65,6 +65,18 @@ shadowJar {
     exclude "META-INF/*.RSA"
     exclude "META-INF/*.EC"
 
+    // Platform-specific JavaFX packages need only the matching Z3 native libraries.
+    def z3Platforms = [
+            mac: 'osx/amd64', 'mac-aarch64': 'osx/aarch64', win: 'windows/amd64',
+            linux: 'linux/amd64', 'linux-aarch64': 'linux/aarch64'
+    ]
+    def z3Platform = z3Platforms[project.findProperty('jfx.platform')]
+    if (javaFxIncludeInDist && z3Platform != null) {
+        (z3Platforms.values() + ['windows/x86']).findAll { it != z3Platform }.each {
+            exclude "com/microsoft/z3/${it}/**"
+        }
+    }
+
     dependencies {
         exclude(dependency(javaFxIncludeInDist ? 'invalid:invalid:invalid' : 'org.openjfx:.*:.*'))
     }

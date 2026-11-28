@@ -22,6 +22,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
 import org.fxmisc.richtext.CodeArea;
 import org.slf4j.Logger;
+import software.coley.observables.ChangeListener;
 import software.coley.observables.ObservableBoolean;
 import software.coley.observables.ObservableObject;
 import software.coley.recaf.analytics.logging.Logging;
@@ -110,6 +111,10 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	protected final TutorialConfig tutorialConfig;
 	protected final Editor editor;
 	protected ClassPathNode path;
+	private final ChangeListener<Boolean> astAnalysisModeListener = (ob, old, cur) -> {
+		if (path != null && !isDisabled())
+			decompile();
+	};
 	private final Group astTools = new Group();
 	private boolean recordsNavigationHistory = true;
 	private boolean sourceWasEditable;
@@ -138,6 +143,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 
 		decompiler.setValue(decompilerManager.getTargetJvmDecompiler());
 		decompiler.addChangeListener((ob, old, cur) -> decompile());
+		decompilerManager.getServiceConfig().getFilterAstAnalysisMode().addChangeListener(astAnalysisModeListener);
 
 		// Configure the editor
 		editor = new Editor();
@@ -288,6 +294,7 @@ public class AbstractDecompilePane extends BorderPane implements ClassNavigable,
 	@Override
 	public void disable() {
 		decompileRequest++;
+		decompilerManager.getServiceConfig().getFilterAstAnalysisMode().removeChangeListener(astAnalysisModeListener);
 		clearFailureView();
 		setDisable(true);
 		setOnKeyPressed(null);

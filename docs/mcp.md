@@ -93,6 +93,10 @@ Editing round trip: `class_disassemble` returns JASM assembly, edit it, send it 
 returned as diagnostics and nothing is changed. `java_compile` does the same for Java source, and unresolved references
 are stubbed automatically.
 
+In `method_analyze`, use `slice_from` to select an instruction for backward slicing. Add `slice_local` or `slice_stack`
+to trace a single input value before that instruction. Stack indices start at zero from the bottom. The slice can
+include reaching heap writes and reports possible dependence on heap state at method entry.
+
 ## Adding tools from a plugin
 
 Tools come from `McpToolProvider` beans, so a Recaf plugin can add its own. Provide an application scoped implementation:

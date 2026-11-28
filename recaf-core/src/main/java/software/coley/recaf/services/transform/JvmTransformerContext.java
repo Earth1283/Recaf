@@ -21,6 +21,7 @@ import software.coley.recaf.services.inheritance.InheritanceGraph;
 import software.coley.recaf.services.mapping.aggregate.AggregatedMappings;
 import software.coley.recaf.util.ClassMethodPair;
 import software.coley.recaf.util.Types;
+import software.coley.recaf.util.analysis.MethodUsageSupport;
 import software.coley.recaf.util.analysis.ReAnalyzer;
 import software.coley.recaf.util.analysis.ReInterpreter;
 import software.coley.recaf.util.analysis.lookup.BasicGetStaticLookup;
@@ -55,6 +56,7 @@ public class JvmTransformerContext extends AbstractTransformerContext<JvmClassTr
 	private final AggregatedMappings mappings;
 	private final Map<String, JvmClassData> classData = new ConcurrentHashMap<>();
 	private final Set<String> recomputeFrameClasses = ConcurrentHashMap.newKeySet();
+	private final Set<String> inlinedMethodKeys = ConcurrentHashMap.newKeySet();
 	private Supplier<GetFieldLookup> getFieldLookupSupplier = () -> null;
 	private Supplier<GetStaticLookup> getStaticLookupSupplier = BasicGetStaticLookup::new;
 	private Supplier<InvokeVirtualLookup> invokeVirtualLookupSupplier = BasicInvokeVirtualLookup::new;
@@ -434,6 +436,28 @@ public class JvmTransformerContext extends AbstractTransformerContext<JvmClassTr
 	}
 
 	/**
+	 * Resolves a class in the workspace to its current transformed {@link ClassNode} in this context.
+	 *
+	 * @param owner
+	 * 		Internal name of the class to resolve.
+	 *
+	 * @return Current {@link ClassNode} for the class, or {@code null} if not found in the workspace.
+	 */
+	@Nullable
+	public ClassNode resolveClassNode(@Nonnull String owner) {
+		ClassPathNode classPath = workspace.findJvmClass(owner);
+		if (classPath == null)
+			return null;
+
+		JvmClassBundle bundle = classPath.getValueOfType(JvmClassBundle.class);
+		if (bundle == null)
+			return null;
+
+		JvmClassInfo classInfo = classPath.getValue().asJvmClass();
+		return getNode(bundle, classInfo);
+	}
+
+	/**
 	 * Resolves a method call to the class and method it is calling.
 	 *
 	 * @param owner
@@ -449,25 +473,49 @@ public class JvmTransformerContext extends AbstractTransformerContext<JvmClassTr
 	public ClassMethodPair resolveMethod(@Nonnull String owner,
 	                                     @Nonnull String methodName,
 	                                     @Nonnull String methodDesc) {
-		// Look up class in the workspace.
-		ClassPathNode classPath = workspace.findJvmClass(owner);
-		if (classPath == null)
+		ClassNode classNode = resolveClassNode(owner);
+		if (classNode == null)
 			return null;
-
-		// Look up the bundle for the class.
-		JvmClassBundle bundle = classPath.getValueOfType(JvmClassBundle.class);
-		if (bundle == null)
-			return null;
-
-		// We really only looked up the class to get the containing bundle.
-		// Now that we have the bundle, we can look up the class node in its current form in this context
-		// and up-to-date method contents in that class.
-		JvmClassInfo classInfo = classPath.getValue().asJvmClass();
-		ClassNode classNode = getNode(bundle, classInfo);
 		for (MethodNode method : classNode.methods)
 			if (methodName.equals(method.name) && methodDesc.equals(method.desc))
 				return new ClassMethodPair(classNode, method);
 		return null;
+	}
+
+	/**
+	 * Records that a call to the given method was inlined.
+	 *
+	 * @param owner
+	 * 		Declaring internal class name.
+	 * @param name
+	 * 		Method name.
+	 * @param desc
+	 * 		Method descriptor.
+	 */
+	public void recordInlinedMethod(@Nonnull String owner, @Nonnull String name, @Nonnull String desc) {
+		inlinedMethodKeys.add(MethodUsageSupport.methodKey(owner, name, desc));
+	}
+
+	/**
+	 * @param owner
+	 * 		Declaring internal class name.
+	 * @param name
+	 * 		Method name.
+	 * @param desc
+	 * 		Method descriptor.
+	 *
+	 * @return {@code true} when at least one call to this method was inlined in this transformation run.
+	 */
+	public boolean wasMethodInlined(@Nonnull String owner, @Nonnull String name, @Nonnull String desc) {
+		return inlinedMethodKeys.contains(MethodUsageSupport.methodKey(owner, name, desc));
+	}
+
+	/**
+	 * @return Unmodifiable view of method keys ({@code owner.name+desc}) whose calls were inlined in this run.
+	 */
+	@Nonnull
+	public Set<String> getInlinedMethodKeys() {
+		return java.util.Collections.unmodifiableSet(inlinedMethodKeys);
 	}
 
 	/**

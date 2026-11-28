@@ -69,7 +69,9 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private final TextArea details = new TextArea();
 	private final TextArea evaluation = new TextArea();
 	private final Spinner<Integer> methodInstruction = new Spinner<>();
-	private final HBox methodControls = new HBox(8, new Label(text("method-analysis.instruction")), methodInstruction);
+	private final ComboBox<SliceChoice> sliceCriterion = new ComboBox<>();
+	private final FlowPane methodControls = new FlowPane(8, 8, new Label(text("method-analysis.instruction")), methodInstruction,
+			new Label(text("method-analysis.slice")), sliceCriterion);
 	private final ScanReport fingerprints = new ScanReport("fingerprint", (selection, _, cancelled) -> scanFingerprints(selection, cancelled), null);
 	private final ScanReport technologies = new ScanReport("technology", this::scanTechnologies, new CheckBox(text("technology.control-flow")));
 	private final TabPane tabs = new TabPane();
@@ -103,6 +105,7 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private boolean rebuilding;
 	private volatile boolean disabled;
 	private boolean evaluating;
+	private boolean updatingSliceChoices;
 	private MethodAnalysis.Result analyzedMethod;
 
 	@Inject
@@ -187,7 +190,12 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		methodInstruction.setEditable(true);
 		methodInstruction.getEditor().setTextFormatter(new TextFormatter<>(change -> change.getControlNewText().matches("[0-9]{0,9}") ? change : null));
 		methodInstruction.setPrefWidth(100);
-		methodInstruction.valueProperty().addListener((_, _, value) -> { if (value != null) showMethodAnalysis(value); });
+		methodInstruction.valueProperty().addListener((_, _, value) -> { if (value != null) selectMethodInstruction(value); });
+		sliceCriterion.setId("investigate-slice-criterion");
+		sliceCriterion.valueProperty().addListener((_, _, value) -> {
+			Integer index = methodInstruction.getValue();
+			if (!updatingSliceChoices && index != null && value != null) showMethodAnalysis(index, value);
+		});
 		methodControls.managedProperty().bind(methodControls.visibleProperty());
 		methodControls.setVisible(false);
 		VBox inspector = new VBox(8, navigation, methodControls, details, evaluationControls, evaluation);
@@ -470,6 +478,8 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	private void clearSelection() {
 		analyzedMethod = null;
 		methodControls.setVisible(false);
+		sliceCriterion.getItems().clear();
+		sliceCriterion.setValue(null);
 		selectedCaller.set(null);
 		selectedTarget.set(null);
 		selectedCall.set(null);
@@ -498,7 +508,7 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 					methodInstruction.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(0, result.instructions().size() - 1, initial));
 					analyzedMethod = result;
 					methodControls.setVisible(true);
-					showMethodAnalysis(initial);
+					selectMethodInstruction(initial);
 				});
 			} catch (CancellationException ignored) {
 			} catch (Exception error) {
@@ -510,17 +520,40 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 		});
 	}
 
-	private void showMethodAnalysis(int index) {
+	private void selectMethodInstruction(int index) {
+		MethodAnalysis.Result result = analyzedMethod;
+		if (result == null) return;
+		var instruction = result.instructions().get(index);
+		var choices = new ArrayList<SliceChoice>(1 + instruction.locals().size() + instruction.stack().size());
+		choices.add(new SliceChoice(MethodAnalysis.SliceCriterion.INSTRUCTION, 0));
+		for (var local : instruction.locals())
+			choices.add(new SliceChoice(MethodAnalysis.SliceCriterion.LOCAL, local.slot()));
+		for (var stack : instruction.stack())
+			choices.add(new SliceChoice(MethodAnalysis.SliceCriterion.STACK, stack.slot()));
+		SliceChoice selected = sliceCriterion.getValue();
+		if (!choices.contains(selected)) selected = choices.getFirst();
+		updatingSliceChoices = true;
+		sliceCriterion.getItems().setAll(choices);
+		sliceCriterion.setValue(selected);
+		updatingSliceChoices = false;
+		showMethodAnalysis(index, selected);
+	}
+
+	private void showMethodAnalysis(int index, SliceChoice choice) {
 		ClassMemberPathNode path = selectedCaller.get();
 		MethodAnalysis.Result result = analyzedMethod;
 		if (disabled || path == null || result == null) return;
 		int request = detailGeneration.incrementAndGet();
 		worker.execute(() -> {
-			if (disabled || detailGeneration.get() != request) return;
-			String content = MethodAnalysisText.format(path, result, index);
-			Platform.runLater(() -> {
-				if (!disabled && detailGeneration.get() == request) details.setText(content);
-			});
+			try {
+				var slice = result.backwardSlice(index, choice.kind(), choice.slot(),
+						() -> disabled || detailGeneration.get() != request);
+				String content = MethodAnalysisText.format(path, result, index, choice.toString(), slice);
+				Platform.runLater(() -> {
+					if (!disabled && detailGeneration.get() == request) details.setText(content);
+				});
+			} catch (CancellationException ignored) {
+			}
 		});
 	}
 
@@ -705,6 +738,17 @@ public class BytecodeInvestigationPane extends BorderPane implements Navigable {
 	}
 
 	private record ResourceChoice(WorkspaceResource resource, String name) {}
+
+	private record SliceChoice(MethodAnalysis.SliceCriterion kind, int slot) {
+		@Override
+		public String toString() {
+			return switch (kind) {
+				case INSTRUCTION -> text("method-analysis.slice.instruction");
+				case LOCAL -> text("method-analysis.slice.local") + " " + slot;
+				case STACK -> text("method-analysis.slice.stack") + " " + slot;
+			};
+		}
+	}
 
 	@Override public boolean isTrackable() { return false; }
 	@Nullable @Override public PathNode<?> getPath() { return PathNodes.workspacePath(workspace); }

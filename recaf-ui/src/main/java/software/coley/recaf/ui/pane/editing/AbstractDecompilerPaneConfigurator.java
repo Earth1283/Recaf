@@ -26,6 +26,7 @@ import software.coley.recaf.services.decompile.JvmDecompiler;
 import software.coley.recaf.ui.control.ActionButton;
 import software.coley.recaf.ui.control.BoundLabel;
 import software.coley.recaf.ui.control.FontIconView;
+import software.coley.recaf.ui.control.ObservableCheckBox;
 import software.coley.recaf.ui.control.ObservableComboBox;
 import software.coley.recaf.ui.control.ObservableSpinner;
 import software.coley.recaf.ui.control.richtext.Editor;
@@ -115,11 +116,17 @@ public abstract class AbstractDecompilerPaneConfigurator extends Button {
 		Label labelTimeout = new BoundLabel(Lang.getBinding("service.ui.decompile-pane-config.timeout-seconds"));
 		Spinner<Integer> spinTimeout = ObservableSpinner.intSpinner(config.getTimeoutSeconds(), 1, Integer.MAX_VALUE);
 		spinTimeout.getStyleClass().add(Spinner.STYLE_CLASS_ARROWS_ON_RIGHT_HORIZONTAL);
+		Label labelAstAnalysisMode = new BoundLabel(Lang.getBinding("service.decompile.decompilers-config.filter-ast-analysis-mode"));
+		ObservableCheckBox checkAstAnalysisMode = new ObservableCheckBox(
+				decompilerManager.getServiceConfig().getFilterAstAnalysisMode(),
+				Lang.getBinding("misc.enabled"));
 		content.add(decompileTitle, 0, 0, 2, 1);
 		content.add(boxDecompilerLabel, 0, 1);
 		content.add(fix(new ObservableComboBox<>(decompiler, new ArrayList<>(decompilerManager.getJvmDecompilers()))), 1, 1);
 		content.add(labelTimeout, 0, 2);
 		content.add(fix(spinTimeout), 1, 2);
+		content.add(labelAstAnalysisMode, 0, 3);
+		content.add(fix(checkAstAnalysisMode), 1, 3);
 
 		return content;
 	}

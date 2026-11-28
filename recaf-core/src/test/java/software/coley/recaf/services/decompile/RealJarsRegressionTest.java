@@ -16,6 +16,7 @@ import software.coley.recaf.services.transform.JvmClassTransformer;
 import software.coley.recaf.services.transform.JvmTransformResult;
 import software.coley.recaf.services.transform.TransformationApplier;
 import software.coley.recaf.services.transform.TransformationApplierService;
+import software.coley.recaf.services.transform.TransformationManager;
 import software.coley.recaf.services.transform.TransformationParameters;
 import software.coley.recaf.test.TestBase;
 import software.coley.recaf.util.ReflectUtil;
@@ -221,12 +222,142 @@ class RealJarsRegressionTest extends TestBase {
 						"Expected unreferenced decoy method to be pruned");
 			}
 
+			JvmClassInfo qdAfter = resource.getJvmClassBundle().get("net/bundle/pantry/qd");
+			assertNotNull(qdAfter);
+			assertNull(qdAfter.getDeclaredMethod("z3j", "()Ljava/lang/String;"),
+					"Expected qd.z3j() to be inlined and removed");
+			assertEquals(0, qdAfter.getMethods().stream()
+					.filter(m -> m.hasPrivateModifier() && m.hasStaticModifier() && m.getName().matches("z[0-9a-z]+"))
+					.count(), "Expected all dead z* wrappers in qd to be removed");
+
+			JvmClassInfo qcAfter = resource.getJvmClassBundle().get("net/bundle/pantry/qc");
+			assertNotNull(qcAfter);
+			assertNull(qcAfter.getDeclaredMethod("m30", "([BI)Ljava/lang/String;"),
+					"Expected fully-inlined cross-class string decryptor qc.m30 to be removed");
+
+			JvmClassInfo q8After = resource.getJvmClassBundle().get("net/bundle/pantry/q8");
+			assertNotNull(q8After);
+			assertNull(q8After.getDeclaredMethod("addonVersion", "()Ljava/lang/String;"),
+					"Expected fully-inlined cross-class q8.addonVersion() to be removed");
+			assertNotNull(q8After.getDeclaredMethod("start", "(Ljava/lang/Object;)V"));
+
 			JvmDecompiler vf = decompilerManager.getJvmDecompiler(VineflowerDecompiler.NAME);
 			assertNotNull(vf);
 			DecompileResult decompiled = decompilerManager.decompile(vf, workspace, q0After).get(15, TimeUnit.SECONDS);
 			assertEquals(DecompileResult.ResultType.SUCCESS, decompiled.getType());
 			assertNotNull(decompiled.getText());
 			assertFalse(decompiled.getText().contains("z4()"));
+		} finally {
+			workspace.close();
+		}
+	}
+
+	@Test
+	void ultraProtectAllTransformersFiveRoundsAndAstAnalysisMode() throws Exception {
+		Path jar = REAL_JARS.resolve("UltraProtect.jar");
+		assumeTrue(Files.isRegularFile(jar), "Missing fixture: " + jar);
+
+		WorkspaceFileResource resource = loadJar(jar, null);
+		Workspace workspace = new BasicWorkspace(resource);
+		try {
+			TransformationManager tm = recaf.get(TransformationManager.class);
+			List<JvmClassTransformer> instances = new ArrayList<>();
+			for (Class<? extends JvmClassTransformer> cls : tm.getJvmClassTransformers())
+				instances.add(tm.newJvmTransformer(cls));
+			instances.sort(Comparator.comparing(t -> t.getClass().getName()));
+			List<Class<? extends JvmClassTransformer>> allTransformers = instances.stream()
+					.<Class<? extends JvmClassTransformer>>map(JvmClassTransformer::getClass)
+					.toList();
+
+			TransformationApplier applier = applierService.newApplier(workspace);
+			applier.setDropFaultyClasses(true);
+			applier.setMaxPasses(5);
+			JvmTransformResult result = applier.transformJvm(allTransformers);
+			assertTrue(result.getTransformerFailures().isEmpty(),
+					() -> "Unexpected failures: " + result.getTransformerFailures());
+			result.apply();
+
+			JvmClassInfo qdAfter = resource.getJvmClassBundle().get("net/bundle/pantry/qd");
+			JvmClassInfo q4After = resource.getJvmClassBundle().get("net/bundle/pantry/q4");
+			JvmClassInfo qcAfter = resource.getJvmClassBundle().get("net/bundle/pantry/qc");
+			JvmClassInfo q6After = resource.getJvmClassBundle().get("net/bundle/pantry/q6");
+			JvmClassInfo q8After = resource.getJvmClassBundle().get("net/bundle/pantry/q8");
+			assertNotNull(qdAfter);
+			assertNotNull(q4After);
+			assertNotNull(qcAfter);
+			assertNotNull(q6After);
+			assertNotNull(q8After);
+
+			assertNull(qdAfter.getDeclaredMethod("z3j", "()Ljava/lang/String;"), "qd.z3j() must be removed");
+			assertEquals(0, qdAfter.getMethods().stream().filter(m -> m.getName().matches("z[0-9a-z]+")).count(),
+					"Expected zero z* wrappers left in qd");
+			assertEquals(0, q4After.getMethods().stream().filter(m -> m.getName().matches("z[0-9a-z]+")).count(),
+					"Expected zero z* wrappers left in q4");
+			assertNull(qcAfter.getDeclaredMethod("m30", "([BI)Ljava/lang/String;"), "qc.m30 must be removed");
+			assertNull(qcAfter.getDeclaredMethod("m2z", "(Ljava/lang/String;)Ljava/lang/String;"), "qc.m2z must be removed");
+			assertNull(q6After.getDeclaredMethod("m19", "()Ljava/lang/String;"), "q6.m19 must be removed");
+			assertNull(q8After.getDeclaredMethod("addonVersion", "()Ljava/lang/String;"), "q8.addonVersion must be removed");
+			assertNotNull(qdAfter.getDeclaredMethod("m3t", "(Ljava/net/http/WebSocket;)V"),
+					"Nestmate-referenced qd.m3t must be preserved");
+			assertNotNull(q8After.getDeclaredMethod("start", "(Ljava/lang/Object;)V"));
+			assertNotNull(q8After.getDeclaredMethod("stop", "(Ljava/lang/Object;)V"));
+
+			JvmDecompiler vf = decompilerManager.getJvmDecompiler(VineflowerDecompiler.NAME);
+			assertNotNull(vf);
+			DecompileResult qdDecompiled = decompilerManager.decompile(vf, workspace, qdAfter).get(20, TimeUnit.SECONDS);
+			assertEquals(DecompileResult.ResultType.SUCCESS, qdDecompiled.getType());
+			String qdText = qdDecompiled.getText();
+			assertNotNull(qdText);
+			assertFalse(qdText.contains("z3j("));
+			assertFalse(qdText.contains("addonVersion("));
+			assertFalse(qdText.contains("q6.m19("));
+			assertTrue(qdText.contains("\"AIR\""));
+			assertTrue(qdText.contains("\"1.4.4\""));
+		} finally {
+			workspace.close();
+		}
+	}
+
+	@Test
+	void ultraProtectAstAnalysisModeInlinesAndHidesWithoutBytecodeMutation() throws Exception {
+		Path jar = REAL_JARS.resolve("UltraProtect.jar");
+		assumeTrue(Files.isRegularFile(jar), "Missing fixture: " + jar);
+
+		WorkspaceFileResource resource = loadJar(jar, null);
+		Workspace workspace = new BasicWorkspace(resource);
+		try {
+			// Run only folding + constant cleanup without CallResultInlining/DeadMethodRemoval so AST mode does the cross-class inlining & hiding.
+			TransformationApplier applier = applierService.newApplier(workspace);
+			applier.setDropFaultyClasses(true);
+			applier.setMaxPasses(3);
+			JvmTransformResult result = applier.transformJvm(List.of(
+					software.coley.recaf.services.deobfuscation.transform.generic.AlgebraicOpaquePredicateTransformer.class,
+					software.coley.recaf.services.deobfuscation.transform.generic.StaticValueCollectionTransformer.class,
+					software.coley.recaf.services.deobfuscation.transform.generic.StaticValueInliningTransformer.class,
+					software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer.class,
+					software.coley.recaf.services.deobfuscation.transform.generic.OpaqueConstantFoldingTransformer.class
+			), new TransformationParameters(Map.of(
+					software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer.KEY_ALLOW_UNREACHABLE_UNSUPPORTED, true,
+					software.coley.recaf.services.deobfuscation.transform.generic.CallResultInliningTransformer.KEY_EVALUATE_CLASS_INITIALIZERS, true
+			)));
+			result.apply();
+
+			JvmClassInfo qd = resource.getJvmClassBundle().get("net/bundle/pantry/qd");
+			assertNotNull(qd);
+			assertNotNull(qd.getDeclaredMethod("z3j", "()Ljava/lang/String;"),
+					"Bytecode method z3j() should still exist before AST-only mode");
+			byte[] qdBytesBefore = qd.getBytecode().clone();
+
+			decompilerManager.getServiceConfig().getFilterAstAnalysisMode().setValue(true);
+			JvmDecompiler vf = decompilerManager.getJvmDecompiler(VineflowerDecompiler.NAME);
+			assertNotNull(vf);
+			DecompileResult res = decompilerManager.decompile(vf, workspace, qd).get(25, TimeUnit.SECONDS);
+			assertEquals(DecompileResult.ResultType.SUCCESS, res.getType());
+			String text = res.getText();
+			assertNotNull(text);
+			assertFalse(text.contains("z3j()"), () -> "AST analysis mode should hide dead z3j() method:\n");
+			assertTrue(text.contains("\"AIR\""));
+			assertArrayEquals(qdBytesBefore, qd.getBytecode());
 		} finally {
 			workspace.close();
 		}
